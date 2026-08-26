@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -55,6 +57,40 @@ def _matches(match: Any, event: object) -> bool:
     if callable(match):
         return bool(match(event))
     return match == type(event).__name__ or match == getattr(event, "name", None)
+
+
+def _stored_model(value: str) -> str | list[str]:
+    models = [model for model in value.split(",") if model]
+    return models[0] if len(models) == 1 else models
+
+
+def _model_specs(
+    spec: str | list[str],
+    aliases: Mapping[str, str | list[str]],
+    seen: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    if isinstance(spec, list):
+        return tuple(
+            expanded
+            for model in spec
+            for expanded in _model_specs(model, aliases, seen)
+        )
+    target = aliases.get(spec)
+    if target is None or spec in seen:
+        return (spec,)
+    return _model_specs(target, aliases, seen | {spec})
+
+
+def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
+    foreign: set[str] = set()
+    for spec in _model_specs(cfg.model, cfg.models):
+        prefix, separator, _ = spec.partition(":")
+        if not separator:
+            continue
+        provider = registry.providers.get(prefix)
+        if provider is not None:
+            foreign.update(provider.foreign_block_types)
+    return foreign
 
 
 async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
@@ -124,27 +160,67 @@ class AppContext:
         await self.bus.emit(SessionSwitch(old=old, new=self.thread_id))
 
     async def resume(self, thread_id: str) -> None:
-        if not self.session.exists(thread_id):
+        saved_session = self.session.get(thread_id)
+        if saved_session is None:
             self.console.error(f"Unknown session: {thread_id}")
             return
+
         old = self.thread_id
+        old_cfg = self.cfg
+        old_rebuild_requested = self.rebuild_requested
+        old_states = deepcopy(self.plugin_states)
         self.persist_plugin_states()
         self.thread_id = thread_id
-        saved = self.session.all_plugin_state(thread_id)
+        saved_states = self.session.all_plugin_state(thread_id)
         for name, state in self.plugin_states.items():
             state.clear()
-            state.update(saved.get(name, {}))
-        await self.rebuild()
+            state.update(saved_states.get(name, {}))
+        candidate_cfg = replace(
+            self.cfg,
+            cwd=Path(saved_session.cwd),
+            model=_stored_model(saved_session.model),
+        )
+        self.cfg = candidate_cfg
+        try:
+            candidate_agent = await build_agent(
+                self.registry,
+                self.cfg,
+                self.session,
+                self.bus,
+                always_allowed=self._always_allowed(),
+            )
+        except Exception:
+            self.cfg = old_cfg
+            self.rebuild_requested = old_rebuild_requested
+            self.thread_id = old
+            for name, state in self.plugin_states.items():
+                state.clear()
+                state.update(old_states.get(name, {}))
+            raise
+
+        self.agent = candidate_agent
+        self.rebuild_requested = False
         await self.bus.emit(SessionSwitch(old=old, new=thread_id))
 
     async def switch_model(self, spec: str) -> None:
         old = self.cfg.model if isinstance(self.cfg.model, str) else ",".join(self.cfg.model)
-        foreign = set().union(
-            *(provider.foreign_block_types for provider in self.registry.providers.values())
+        candidate_cfg = replace(self.cfg, model=spec)
+        candidate_agent = await build_agent(
+            self.registry,
+            candidate_cfg,
+            self.session,
+            self.bus,
         )
-        strip_foreign_blocks(self.agent, self.thread_config, foreign)
-        self.cfg = replace(self.cfg, model=spec)
-        await self.rebuild()
+        foreign = _foreign_block_types(self.registry, self.cfg)
+        if foreign:
+            strip_foreign_blocks(
+                self.agent,
+                self.thread_config,
+                foreign,
+            )
+        self.cfg = candidate_cfg
+        self.agent = candidate_agent
+        self.rebuild_requested = False
         await self.bus.emit(ModelSwitch(old=old, new=spec))
 
     async def switch_mode(self, name: str) -> None:
@@ -175,8 +251,9 @@ class AppContext:
         return {"configurable": {"thread_id": self.thread_id}}
 
 
-async def _render(ctx: AppContext, event: object) -> None:
-    await ctx.bus.emit(event)
+async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
+    if emit:
+        await ctx.bus.emit(event)
     for registration in ctx.registry.renderers:
         if not _matches(registration.match, event):
             continue
@@ -187,7 +264,8 @@ async def _render(ctx: AppContext, event: object) -> None:
             ctx.console.print(rendered, end="")
         else:
             ctx.console.print(rendered)
-        break
+        return True
+    return False
 
 
 def _messages(value: Any) -> list[BaseMessage]:
@@ -201,6 +279,39 @@ def _messages(value: Any) -> list[BaseMessage]:
         for item in value:
             found.extend(_messages(item))
     return found
+
+
+def _model_name(message: BaseMessage, metadata: Any) -> str | None:
+    sources = (
+        metadata,
+        getattr(message, "response_metadata", None),
+        getattr(message, "additional_kwargs", None),
+    )
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        provider = next(
+            (
+                source[key]
+                for key in ("ls_provider", "model_provider", "provider")
+                if isinstance(source.get(key), str) and source[key]
+            ),
+            None,
+        )
+        model = next(
+            (
+                source[key]
+                for key in ("ls_model_name", "model_name", "model")
+                if isinstance(source.get(key), str) and source[key]
+            ),
+            None,
+        )
+        if model is None:
+            continue
+        if provider is not None and ":" not in model:
+            return f"{provider}:{model}"
+        return model
+    return None
 
 
 @dataclass(slots=True)
@@ -277,21 +388,22 @@ async def _message_event(ctx: AppContext, data: Any, tool_calls: _ToolCallBuffer
     if not isinstance(message, BaseMessage):
         return
     if isinstance(message, ToolMessage):
-        await _render(
-            ctx,
-            ToolCallEnd(
-                name=message.name or "tool",
-                id=message.tool_call_id,
-                result=message,
-            ),
-        )
         return
     if isinstance(message, AIMessage):
         for event in tool_calls.add(message):
             await _render(ctx, event)
-    role = "subagent" if "subagent" in str(metadata.get("langgraph_node", "")) else "main"
+    node = metadata.get("langgraph_node", "") if isinstance(metadata, Mapping) else ""
+    role = "subagent" if "subagent" in str(node) else "main"
     if getattr(message, "content", None):
-        await _render(ctx, ModelChunk(chunk=message, role=role))
+        await _render(
+            ctx,
+            ModelChunk(
+                chunk=message,
+                role=role,
+                model_name=_model_name(message, metadata),
+            ),
+        )
+
 
 async def _updates_event(ctx: AppContext, data: Any, seen_results: set[str]) -> Resolved | None:
     if not isinstance(data, dict):
@@ -322,26 +434,31 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
     tool_calls = _ToolCallBuffer()
     seen_results: set[str] = set()
-    while True:
-        resolution: Resolved | None = None
-        for mode, data in ctx.agent.stream(
-            next_input,
-            config=ctx.thread_config,
-            stream_mode=["messages", "updates"],
-        ):
-            if mode == "messages":
-                await _message_event(ctx, data, tool_calls)
-            elif mode == "updates":
-                candidate = await _updates_event(ctx, data, seen_results)
-                if candidate is not None:
-                    resolution = candidate
-        if resolution is None:
-            break
-        next_input = Command(resume=resolution.resume_value)
-        if ctx.rebuild_requested:
-            await ctx.rebuild()
-    ctx.console.print()
-    await ctx.bus.emit(TurnEnd(thread_id=ctx.thread_id))
+    try:
+        while True:
+            resolution: Resolved | None = None
+            async for mode, data in ctx.agent.astream(
+                next_input,
+                config=ctx.thread_config,
+                stream_mode=["messages", "updates"],
+            ):
+                if mode == "messages":
+                    await _message_event(ctx, data, tool_calls)
+                elif mode == "updates":
+                    candidate = await _updates_event(ctx, data, seen_results)
+                    if candidate is not None:
+                        resolution = candidate
+            if resolution is None:
+                break
+            next_input = Command(resume=resolution.resume_value)
+            if ctx.rebuild_requested:
+                await ctx.rebuild()
+    except Exception as exc:
+        if not await _render(ctx, exc, emit=False):
+            ctx.console.error(f"{type(exc).__name__}: {exc}")
+    finally:
+        ctx.console.print()
+        await ctx.bus.emit(TurnEnd(thread_id=ctx.thread_id))
 
 
 async def run_app(cfg: Config) -> int:
@@ -359,10 +476,16 @@ async def run_app(cfg: Config) -> int:
                 console.print(f"{session.thread_id}  {session.cwd}  {session.title or ''}")
             return 0
         if cfg.resume:
-            if not store.exists(cfg.resume):
+            saved_session = store.get(cfg.resume)
+            if saved_session is None:
                 ConsoleOutput().error(f"Unknown session: {cfg.resume}")
                 return 1
-            thread_id = cfg.resume
+            cfg = replace(
+                cfg,
+                cwd=Path(saved_session.cwd),
+                model=_stored_model(saved_session.model),
+            )
+            thread_id = saved_session.thread_id
         else:
             thread_id = store.create(cfg.cwd, cfg.model).thread_id
 

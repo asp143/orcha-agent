@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import sqlite3
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import (
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+)
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 
@@ -22,6 +31,67 @@ class SessionInfo:
     title: str | None
 
 
+class _AsyncSqliteSaver(SqliteSaver):
+    """Expose SqliteSaver's synchronized operations to async graph execution."""
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        return await asyncio.to_thread(self.get_tuple, config)
+
+    async def alist(
+        self,
+        config: RunnableConfig | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[CheckpointTuple]:
+        checkpoints = await asyncio.to_thread(
+            lambda: tuple(
+                self.list(
+                    config,
+                    filter=filter,
+                    before=before,
+                    limit=limit,
+                )
+            )
+        )
+        for checkpoint in checkpoints:
+            yield checkpoint
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        return await asyncio.to_thread(
+            self.put,
+            config,
+            checkpoint,
+            metadata,
+            new_versions,
+        )
+
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        await asyncio.to_thread(
+            self.put_writes,
+            config,
+            writes,
+            task_id,
+            task_path,
+        )
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        await asyncio.to_thread(self.delete_thread, thread_id)
+
+
 class SessionStore:
     """Own one SQLite connection shared by checkpoints and session metadata."""
 
@@ -30,7 +100,7 @@ class SessionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(self.db_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
-        self.saver = SqliteSaver(self._connection)
+        self.saver = _AsyncSqliteSaver(self._connection)
         self._connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS sessions (

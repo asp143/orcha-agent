@@ -218,3 +218,27 @@ async def test_plugin_interrupt_handler_can_auto_approve_and_resume(tmp_path: Pa
         assert (tmp_path / "approved.txt").read_text() == "approved by plugin\n"
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_async_graph_invocation_succeeds_with_session_store_saver(
+    tmp_path: Path,
+) -> None:
+    graph, session, _, thread_config = await _build_harness(
+        tmp_path,
+        mode="yolo",
+        thread_id="async-thread",
+        content="written asynchronously\n",
+    )
+
+    try:
+        result = await graph.ainvoke(
+            {"messages": [{"role": "user", "content": "Write the file asynchronously."}]},
+            config=thread_config,
+        )
+
+        assert "__interrupt__" not in result
+        assert result["messages"][-1].content == "The file was written."
+        assert (tmp_path / "approved.txt").read_text() == "written asynchronously\n"
+    finally:
+        session.close()

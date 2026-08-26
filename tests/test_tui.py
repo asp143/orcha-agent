@@ -1,6 +1,17 @@
-from langchain_core.messages import AIMessageChunk
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
-from orcha_agent.tui.app import _ToolCallBuffer
+import pytest
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+
+import orcha_agent.tui.app as app_module
+from orcha_agent.core.config import Config
+from orcha_agent.core.events import ToolCallEnd, TurnEnd, TurnStart
+from orcha_agent.core.registry import Registry
+from orcha_agent.core.session import SessionInfo
+from orcha_agent.tui.app import AppContext, _run_turn, _ToolCallBuffer
 
 
 def test_tool_call_chunks_are_buffered_until_arguments_form_complete_json() -> None:
@@ -37,3 +48,243 @@ def test_tool_call_chunks_are_buffered_until_arguments_form_complete_json() -> N
     assert events[0].name == "write_file"
     assert events[0].id == "call-1"
     assert events[0].args == {"file_path": "/notes.txt", "content": "hello"}
+
+
+class _RecordingBus:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    async def emit(self, event: object) -> None:
+        self.events.append(event)
+
+
+class _RecordingConsole:
+    def __init__(self) -> None:
+        self.output: list[tuple[object, ...]] = []
+        self.errors: list[str] = []
+
+    def print(self, *objects: object, **_kwargs: Any) -> None:
+        self.output.append(objects)
+
+    def error(self, message: str) -> None:
+        self.errors.append(message)
+
+
+class _SessionDouble:
+    def __init__(
+        self,
+        records: dict[str, SessionInfo] | None = None,
+        plugin_states: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> None:
+        self.records = records or {}
+        self.plugin_states = plugin_states or {}
+
+    def get(self, thread_id: str) -> SessionInfo | None:
+        return self.records.get(thread_id)
+
+    def exists(self, thread_id: str) -> bool:
+        return thread_id in self.records
+
+    def set_title(self, thread_id: str, title: str) -> None:
+        record = self.records[thread_id]
+        self.records[thread_id] = SessionInfo(
+            record.thread_id,
+            record.cwd,
+            record.model,
+            record.created,
+            title,
+        )
+
+    def set_plugin_state(self, thread_id: str, plugin: str, state: dict[str, Any]) -> None:
+        self.plugin_states.setdefault(thread_id, {})[plugin] = dict(state)
+
+    def all_plugin_state(self, thread_id: str) -> dict[str, dict[str, Any]]:
+        return self.plugin_states.get(thread_id, {})
+
+
+class _StreamGraph:
+    def __init__(
+        self,
+        events: list[tuple[str, Any]],
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.events = events
+        self.error = error
+
+    def stream(self, *_args: Any, **_kwargs: Any) -> Iterator[tuple[str, Any]]:
+        yield from self.events
+        if self.error is not None:
+            raise self.error
+
+    async def astream(self, *_args: Any, **_kwargs: Any) -> AsyncIterator[tuple[str, Any]]:
+        for event in self.events:
+            yield event
+        if self.error is not None:
+            raise self.error
+
+
+class _HistoryGraph:
+    def __init__(self, messages: list[Any]) -> None:
+        self.messages = messages
+
+    def get_state(self, _config: Any) -> SimpleNamespace:
+        return SimpleNamespace(values={"messages": self.messages})
+
+    def update_state(self, _config: Any, values: dict[str, list[Any]]) -> None:
+        self.messages = list(values["messages"][1:])
+
+
+def _config(tmp_path: Path, *, model: str = "old:model", cwd: Path | None = None) -> Config:
+    return Config(
+        model=model,
+        subagent_model=model,
+        summarizer_model=model,
+        mode="ask",
+        backend="local_shell",
+        memory=(),
+        db_path=tmp_path / "sessions.sqlite",
+        cwd=cwd or tmp_path,
+        resume=None,
+        list_sessions=False,
+        strict_plugins=False,
+        plugin_dirs=(),
+        models={},
+        providers={},
+        plugins={},
+    )
+
+
+def _context(
+    tmp_path: Path,
+    *,
+    agent: Any,
+    session: _SessionDouble | None = None,
+    plugin_states: dict[str, dict[str, Any]] | None = None,
+) -> AppContext:
+    return AppContext(
+        cfg=_config(tmp_path),
+        registry=Registry(),
+        bus=_RecordingBus(),
+        session=session or _SessionDouble(),
+        plugins=[],
+        plugin_states=plugin_states or {},
+        console=_RecordingConsole(),
+        thread_id="current",
+        agent=agent,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_result_in_message_and_update_streams_emits_one_end_event(
+    tmp_path: Path,
+) -> None:
+    result = ToolMessage(
+        content="wrote file",
+        tool_call_id="call-1",
+        name="write_file",
+    )
+    graph = _StreamGraph(
+        [
+            ("messages", (result, {"langgraph_node": "tools"})),
+            ("updates", {"tools": {"messages": [result]}}),
+        ]
+    )
+    ctx = _context(tmp_path, agent=graph)
+
+    await _run_turn(ctx, "Write the file")
+
+    ends = [event for event in ctx.bus.events if isinstance(event, ToolCallEnd)]
+    assert [(event.name, event.id) for event in ends] == [("write_file", "call-1")]
+
+
+@pytest.mark.asyncio
+async def test_stream_exception_is_rendered_and_still_ends_turn(tmp_path: Path) -> None:
+    ctx = _context(
+        tmp_path,
+        agent=_StreamGraph([], error=RuntimeError("stream disconnected")),
+    )
+
+    await _run_turn(ctx, "Continue")
+
+    assert [type(event) for event in ctx.bus.events] == [TurnStart, TurnEnd]
+    assert ctx.console.errors == ["RuntimeError: stream disconnected"]
+
+
+@pytest.mark.asyncio
+async def test_failed_model_switch_preserves_config_graph_and_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_history = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "provider-private"},
+            {"type": "text", "text": "visible"},
+        ]
+    )
+    old_graph = _HistoryGraph([private_history])
+    ctx = _context(tmp_path, agent=old_graph)
+    ctx.registry.providers["old"] = SimpleNamespace(
+        foreign_block_types=frozenset({"thinking"})
+    )
+    old_cfg = ctx.cfg
+
+    async def fail_build(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(app_module, "build_agent", fail_build)
+
+    try:
+        await ctx.switch_model("new:model")
+    except RuntimeError as exc:
+        assert str(exc) == "provider unavailable"
+
+    assert ctx.cfg == old_cfg
+    assert ctx.agent is old_graph
+    assert old_graph.messages == [private_history]
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_saved_cwd_and_model_before_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved_cwd = tmp_path / "saved-project"
+    saved = SessionInfo(
+        thread_id="saved",
+        cwd=str(saved_cwd),
+        model="saved:model",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+    )
+    session = _SessionDouble(
+        records={"saved": saved},
+        plugin_states={"saved": {"approval": {"always_allowed": ["write_file"]}}},
+    )
+    ctx = _context(
+        tmp_path,
+        agent=object(),
+        session=session,
+        plugin_states={"approval": {"always_allowed": ["execute"]}},
+    )
+    rebuilt: list[tuple[Path, str | list[str], str]] = []
+    replacement_graph = object()
+
+    async def capture_build(
+        _registry: Registry,
+        cfg: Config,
+        _session: Any,
+        _bus: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        rebuilt.append((cfg.cwd, cfg.model, ctx.thread_id))
+        return replacement_graph
+
+    monkeypatch.setattr(app_module, "build_agent", capture_build)
+
+    await ctx.resume("saved")
+
+    assert rebuilt == [(saved_cwd, "saved:model", "saved")]
+    assert ctx.cfg.cwd == saved_cwd
+    assert ctx.cfg.model == "saved:model"
+    assert ctx.agent is replacement_graph
