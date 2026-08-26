@@ -201,7 +201,8 @@ def _load_file_module(path: Path) -> Any:
 
 def _plugin_directories(cfg: Config) -> Iterable[Path]:
     yield Path.home() / ".config" / "orcha-agent" / "plugins"
-    yield cfg.cwd / ".orcha-agent" / "plugins"
+    if cfg.trust_cwd:
+        yield cfg.cwd / ".orcha-agent" / "plugins"
     yield from cfg.plugin_dirs
 
 
@@ -278,6 +279,34 @@ def _restore_registry(
             current[:] = saved
 
 
+def _order_candidates(candidates: list[_Candidate]) -> list[_Candidate]:
+    """Order dependencies before dependents while preserving priority ties."""
+    pending = sorted(candidates, key=lambda candidate: (candidate.spec.priority, candidate.spec.name))
+    candidate_names = {candidate.spec.name for candidate in pending}
+    ordered: list[_Candidate] = []
+    ordered_names: set[str] = set()
+    while pending:
+        ready_index = next(
+            (
+                index
+                for index, candidate in enumerate(pending)
+                if all(
+                    requirement not in candidate_names
+                    or requirement in ordered_names
+                    for requirement in _requirements(candidate.spec)
+                )
+            ),
+            None,
+        )
+        if ready_index is None:
+            ordered.extend(pending)
+            break
+        candidate = pending.pop(ready_index)
+        ordered.append(candidate)
+        ordered_names.add(candidate.spec.name)
+    return ordered
+
+
 def load_plugins(
     registry: Registry,
     bus: EventBus,
@@ -287,12 +316,13 @@ def load_plugins(
 ) -> list[PluginRecord]:
     """Discover plugins, register them in deterministic order, and report status."""
 
-    candidates = [
-        *_discover_builtins(),
-        *_discover_entry_points(),
-        *_discover_directories(cfg),
-    ]
-    candidates.sort(key=lambda candidate: (candidate.spec.priority, candidate.spec.name))
+    candidates = _order_candidates(
+        [
+            *_discover_builtins(),
+            *_discover_entry_points(),
+            *_discover_directories(cfg),
+        ]
+    )
 
     disabled = _disabled_plugins(cfg)
     states = {} if state_by_plugin is None else state_by_plugin

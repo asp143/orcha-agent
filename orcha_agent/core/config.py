@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import tomllib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -32,6 +33,8 @@ class Config:
     models: dict[str, str | list[str]]
     providers: dict[str, dict[str, Any]]
     plugins: dict[str, Any]
+    trust_cwd: bool = False
+    model_overridden: bool = False
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -47,6 +50,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-sessions", action="store_true")
     parser.add_argument("--strict-plugins", action="store_true")
     parser.add_argument("--plugin-dir", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--trust-cwd",
+        action="store_true",
+        help="trust project config and plugins in the working directory",
+    )
     return parser
 
 
@@ -85,6 +93,41 @@ def _memory(value: Any) -> tuple[str, ...]:
     return DEFAULT_MEMORY
 
 
+def _model_spec(value: Any, parser: argparse.ArgumentParser) -> str | list[str]:
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if not parts:
+            parser.error("model must be a non-empty prefix:model string")
+        return parts[0] if len(parts) == 1 else parts
+    if isinstance(value, list) and value and all(
+        isinstance(item, str) and item for item in value
+    ):
+        return list(value)
+    parser.error("model must be a prefix:model string or fallback list")
+
+
+def _trusted_cwd(
+    cwd: Path,
+    user_values: Mapping[str, Any],
+    *,
+    home: Path,
+    cli_trust: bool,
+) -> bool:
+    if cli_trust:
+        return True
+    trust = user_values.get("trust", {})
+    dirs = trust.get("dirs", ()) if isinstance(trust, Mapping) else ()
+    if isinstance(dirs, str):
+        dirs = (dirs,)
+    for value in dirs:
+        if not isinstance(value, str):
+            continue
+        trusted = _home_path(value, home).resolve()
+        if cwd == trusted or cwd.is_relative_to(trusted):
+            return True
+    return False
+
+
 def load_config(
     argv: Sequence[str] | None = None,
     *,
@@ -95,14 +138,30 @@ def load_config(
 ) -> Config:
     """Load defaults, user/project TOML, environment, then CLI overrides."""
 
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
     environ = os.environ if env is None else env
-    working_dir = Path(cwd or Path.cwd()).resolve()
     home = Path(environ.get("HOME", str(Path.home())))
+    working_dir = Path(args.cwd or cwd or Path.cwd()).resolve()
     user_path = user_config_path or home / ".config/orcha-agent/config.toml"
     project_path = project_config_path or working_dir / ".orcha-agent/config.toml"
 
-    values = _merge(_read_toml(user_path), _read_toml(project_path))
+    user_values = _read_toml(user_path)
+    trust_cwd = _trusted_cwd(
+        working_dir,
+        user_values,
+        home=home,
+        cli_trust=args.trust_cwd,
+    )
+    project_values: dict[str, Any] = {}
+    if trust_cwd:
+        project_values = _read_toml(project_path)
+    elif project_path.is_file() or (working_dir / ".orcha-agent/plugins").is_dir():
+        print(
+            "Skipping untrusted project config; use --trust-cwd or add cwd to [trust] dirs.",
+            file=sys.stderr,
+        )
+    values = _merge(user_values, project_values)
     core = dict(values.get("core", {}))
     env_to_core = {
         "ORCHA_MODEL": "model",
@@ -125,11 +184,9 @@ def load_config(
     if args.cwd is not None:
         core["cwd"] = args.cwd
 
-    model = core.get("model", DEFAULT_MODEL)
-    if not isinstance(model, (str, list)):
-        _parser().error("model must be a prefix:model string or fallback list")
-    subagent_model = core.get("subagent_model", model)
-    summarizer_model = core.get("summarizer_model", model)
+    model = _model_spec(core.get("model", DEFAULT_MODEL), parser)
+    subagent_model = _model_spec(core.get("subagent_model", model), parser)
+    summarizer_model = _model_spec(core.get("summarizer_model", model), parser)
     resolved_cwd = _home_path(core.get("cwd", working_dir), home).resolve()
     db_path = _home_path(core.get("db_path", "~/.local/share/orcha-agent/sessions.db"), home)
 
@@ -156,4 +213,6 @@ def load_config(
         models=dict(models),
         providers={key: dict(value) for key, value in providers.items() if isinstance(value, Mapping)},
         plugins=dict(plugins),
+        trust_cwd=trust_cwd,
+        model_overridden=args.model is not None,
     )

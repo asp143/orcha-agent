@@ -79,6 +79,44 @@ def _register_named(api: PluginAPI, kind: str, *, replace: bool = False) -> None
         raise AssertionError(f"unknown registry kind: {kind}")
 
 
+def _assert_replacement_is_stored(registry: Registry, kind: str) -> None:
+    if kind == "tool":
+        assert registry.tools["shared"]() == "beta"
+    elif kind == "command":
+        entry = registry.commands["shared"]
+        assert (entry.plugin, entry.help) == ("beta", "beta")
+    elif kind == "provider":
+        entry = registry.providers["shared"]
+        assert entry.plugin == "beta"
+        assert entry.factory("model", {}) == ("beta", "model")
+    elif kind == "backend":
+        entry = registry.backends["shared"]
+        assert entry.plugin == "beta"
+        assert entry.factory({"key": "value"}) == (
+            "beta",
+            {"key": "value"},
+        )
+    elif kind == "middleware":
+        entries = [entry for entry in registry.middleware if entry.name == "shared"]
+        assert len(entries) == 1
+        assert entries[0].plugin == "beta"
+        assert entries[0].middleware() == "beta"
+    elif kind == "renderer":
+        entries = [entry for entry in registry.renderers if entry.name == "shared"]
+        assert len(entries) == 1
+        assert entries[0].plugin == "beta"
+        assert entries[0].render("event") == "beta:'event'"
+    elif kind == "subagent":
+        entries = [entry for entry in registry.subagents if entry.name == "shared"]
+        assert len(entries) == 1
+        assert entries[0].plugin == "beta"
+        assert entries[0].spec["description"] == "beta"
+    elif kind == "mode":
+        assert registry.modes["shared"].description == "beta"
+    else:  # pragma: no cover - protects the test helper itself
+        raise AssertionError(f"unknown registry kind: {kind}")
+
+
 @pytest.mark.parametrize(
     "kind",
     [
@@ -125,6 +163,7 @@ def test_replace_transfers_duplicate_ownership_to_the_replacing_plugin(kind: str
     bus = EventBus()
     _register_named(_api("alpha", registry, bus), kind)
     _register_named(_api("beta", registry, bus), kind, replace=True)
+    _assert_replacement_is_stored(registry, kind)
     if kind in {"middleware", "renderer", "subagent"}:
         collection_name = {
             "middleware": "middleware",
