@@ -20,7 +20,14 @@ async def _model(ctx: Any, args: str) -> None:
     if any(any(character.isspace() for character in item) for item in specs):
         ctx.console.error("Usage: /model <provider:model>[,<provider:model>...]")
         return
-    await ctx.switch_model(spec)
+    try:
+        await ctx.switch_model(spec)
+    except Exception as exc:
+        reporter = getattr(ctx, "report_provider_error", None)
+        if reporter is not None:
+            reporter(exc)
+        else:
+            ctx.console.error(f"{type(exc).__name__}: {exc}")
 
 
 async def _mode(ctx: Any, args: str) -> None:

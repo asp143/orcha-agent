@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -18,6 +19,7 @@ from langgraph.types import Command
 from prompt_toolkit.keys import Keys
 
 import orcha_agent.tui.app as app_module
+from orcha_agent.builtin import commands_core, commands_model
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
     AppExit,
@@ -31,7 +33,7 @@ from orcha_agent.core.events import (
     TurnEnd,
     TurnStart,
 )
-from orcha_agent.core.plugin import ModeSpec, PluginAPI, Resolved
+from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps, Resolved
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionInfo, SessionStore
 from orcha_agent.tui.app import (
@@ -206,6 +208,58 @@ class _RecordingConsole:
 
     def clear(self) -> None:
         self.clear_calls += 1
+
+
+class _PromptScript:
+    def __init__(self, *responses: str) -> None:
+        self.responses = responses
+        self.prompts: list[str] = []
+        self._next_response = 0
+
+    async def prompt_async(self, message: str) -> str:
+        self.prompts.append(message)
+        if self._next_response == len(self.responses):
+            raise EOFError
+        response = self.responses[self._next_response]
+        self._next_response += 1
+        return response
+
+
+def _register_lazy_runtime(
+    registry: Registry,
+    bus: EventBus,
+    *,
+    provider_factory: Any,
+    available: Any = lambda: None,
+) -> PluginAPI:
+    api = PluginAPI(
+        name="lazy-runtime",
+        registry=registry,
+        bus=bus,
+        config={},
+        state={},
+        request_rebuild=lambda: None,
+    )
+    commands_core.register(api)
+    commands_model.register(api)
+    api.add_mode(
+        "ask",
+        ModeSpec(description="Ask mode", interrupt_on={}, allowed_tools=None),
+    )
+    api.add_backend("local_shell", lambda _cfg: object())
+    api.add_provider(
+        "fake",
+        provider_factory,
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=False,
+            structured_output=False,
+            max_context=None,
+        ),
+        available=available,
+    )
+    return api
 
 
 class _SessionDouble:
@@ -383,7 +437,7 @@ def _config(tmp_path: Path, *, model: str = "old:model", cwd: Path | None = None
 def _context(
     tmp_path: Path,
     *,
-    agent: Any,
+    agent: Any = None,
     session: _SessionDouble | None = None,
     plugin_states: dict[str, dict[str, Any]] | None = None,
 ) -> AppContext:
@@ -398,6 +452,33 @@ def _context(
         thread_id="current",
         agent=agent,
     )
+
+
+@pytest.mark.asyncio
+async def test_ensure_agent_builds_at_most_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = object()
+    builds: list[str | list[str]] = []
+
+    async def build_once(
+        _registry: Registry,
+        cfg: Config,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> object:
+        builds.append(cfg.model)
+        return graph
+
+    monkeypatch.setattr(app_module, "build_agent", build_once)
+    ctx = _context(tmp_path)
+
+    await ctx.ensure_agent()
+    await ctx.ensure_agent()
+
+    assert ctx.agent is graph
+    assert builds == ["old:model"]
 
 
 @pytest.mark.asyncio
@@ -720,6 +801,191 @@ async def test_run_app_continues_after_cancelled_command_and_emits_app_exit(
     assert Prompt.calls == 2
     assert console.warnings == ["interrupted"]
     assert len(app_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_app_provider_free_commands_never_construct_a_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    prompt = _PromptScript("/providers", "/help", "/plugins", "/mode")
+    factory_calls: list[str] = []
+
+    def forbidden_provider_factory(model_name: str, _config: Any) -> Any:
+        factory_calls.append(model_name)
+        raise AssertionError("provider factory must not run before a model turn")
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        _register_lazy_runtime(
+            registry,
+            bus,
+            provider_factory=forbidden_provider_factory,
+        )
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="fake:unconfigured"))
+
+    assert status == 0
+    assert prompt.prompts == ["> "] * 5
+    assert factory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_app_failed_first_turn_prints_provider_hints_and_reprompts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    prompt = _PromptScript("Try a turn without credentials")
+    factory_calls: list[str] = []
+
+    def forbidden_provider_factory(model_name: str, _config: Any) -> Any:
+        factory_calls.append(model_name)
+        raise AssertionError("unavailable providers must not be constructed")
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        _register_lazy_runtime(
+            registry,
+            bus,
+            provider_factory=forbidden_provider_factory,
+            available=lambda: "no credentials configured",
+        )
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="fake:unconfigured"))
+
+    rendered_errors = "\n".join(console.errors)
+    assert status == 0
+    assert prompt.prompts == ["> ", "> "]
+    assert "/login codex" in rendered_errors
+    assert "/model" in rendered_errors
+    assert factory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_app_failed_model_command_prints_provider_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    prompt = _PromptScript("/model fake:unconfigured")
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        _register_lazy_runtime(
+            registry,
+            bus,
+            provider_factory=lambda name, config: FakeListChatModel(
+                responses=[name]
+            ),
+            available=lambda: "provider unavailable",
+        )
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="fake:unconfigured"))
+
+    rendered_errors = "\n".join(console.errors)
+    assert status == 0
+    assert "/login codex" in rendered_errors
+    assert "/model" in rendered_errors
+
+
+@pytest.mark.asyncio
+async def test_run_app_model_switch_builds_before_the_following_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    prompt = _PromptScript("/model fake:ready", "Stream after switching")
+    order: list[str] = []
+
+    class FakeGraph:
+        async def astream(
+            self,
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> AsyncIterator[tuple[str, Any]]:
+            order.append("turn")
+            yield (
+                "messages",
+                (
+                    AIMessageChunk(content="response from selected model"),
+                    {"langgraph_node": "agent"},
+                ),
+            )
+
+    graph = FakeGraph()
+
+    async def build_selected_model(
+        _registry: Registry,
+        cfg: Config,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> FakeGraph:
+        assert cfg.model == "fake:ready", "agent built before /model selected it"
+        order.append("switch")
+        return graph
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        api = _register_lazy_runtime(
+            registry,
+            bus,
+            provider_factory=lambda model_name, _config: FakeListChatModel(
+                responses=[model_name]
+            ),
+        )
+        api.add_renderer(ModelChunk, lambda event: event.chunk.content)
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "build_agent", build_selected_model)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="fake:unconfigured"))
+
+    rendered = " ".join(str(value) for row in console.output for value in row)
+    assert status == 0
+    assert prompt.prompts == ["> "] * 3
+    assert order == ["switch", "turn"]
+    assert "response from selected model" in rendered
+
 
 @pytest.mark.asyncio
 async def test_failed_model_switch_preserves_config_graph_and_history(
@@ -1263,7 +1529,7 @@ async def test_app_context_exposes_live_read_only_registry_and_bus_views(
         plugin_states={},
         console=_RecordingConsole(),
         thread_id="current",
-        agent=object(),
+        agent=None,
     )
     api = PluginAPI(
         name="late-plugin",

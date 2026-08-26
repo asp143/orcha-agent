@@ -58,8 +58,9 @@ def _bindings() -> KeyBindings:
 
     return bindings
 
-
 def _matches(match: Any, event: object) -> bool:
+    if isinstance(match, type):
+        return isinstance(event, match)
     if callable(match):
         return bool(match(event))
     return match == type(event).__name__ or match == getattr(event, "name", None)
@@ -214,7 +215,38 @@ class AppContext:
             "summarizer",
         )
 
+    def report_provider_error(self, exc: Exception) -> None:
+        self.console.error(
+            f"{type(exc).__name__}: {exc}\n"
+            "Set the required provider environment variable, or `/login codex`, "
+            "or `/model <prefix:model>`."
+        )
+
+    async def ensure_agent(self) -> bool:
+        if self.agent is not None:
+            return True
+        try:
+            candidate_agent = await build_agent(
+                self.registry,
+                self.cfg,
+                self.session,
+                self._bus,
+                always_allowed=self._always_allowed(),
+            )
+            candidate_summarizer = self._resolve_summarizer(self.cfg)
+        except Exception as exc:
+            self.report_provider_error(exc)
+            return False
+        self.agent = candidate_agent
+        self.summarizer = candidate_summarizer
+        self.rebuild_requested = False
+        return True
+
+
     async def rebuild(self) -> None:
+        if self.agent is None:
+            self.rebuild_requested = False
+            return
         self.persist_plugin_states()
         candidate_agent = await build_agent(
             self.registry,
@@ -230,6 +262,7 @@ class AppContext:
 
     async def clear(self) -> None:
         old = self.thread_id
+        had_agent = self.agent is not None
         self.persist_plugin_states()
         created = self.session.create(
             self.cfg.cwd,
@@ -239,7 +272,12 @@ class AppContext:
         self.thread_id = created.thread_id
         for state in self.plugin_states.values():
             state.clear()
-        await self.rebuild()
+        self.agent = None if not had_agent else self.agent
+        self.summarizer = None if not had_agent else self.summarizer
+        if had_agent:
+            await self.rebuild()
+        else:
+            self.rebuild_requested = False
         self.console.console.clear()
         await self._bus.emit(SessionSwitch(old=old, new=self.thread_id))
 
@@ -274,6 +312,12 @@ class AppContext:
                 trust_all=self.cfg.trust_all_cwd,
             ),
         )
+        if self.agent is None:
+            self.cfg = candidate_cfg
+            self.summarizer = None
+            self.rebuild_requested = False
+            await self._bus.emit(SessionSwitch(old=old, new=thread_id))
+            return
         try:
             candidate_agent = await build_agent(
                 self.registry,
@@ -342,6 +386,11 @@ class AppContext:
             self.console.error(f"Unknown mode: {name}")
             return
         candidate_cfg = replace(self.cfg, mode=name)
+        if self.agent is None:
+            self.session.set_mode(self.thread_id, name)
+            self.cfg = candidate_cfg
+            self.rebuild_requested = False
+            return
         candidate_agent = await build_agent(
             self.registry,
             candidate_cfg,
@@ -628,6 +677,8 @@ async def _updates_event(
 
 
 async def _run_turn(ctx: AppContext, text: str) -> None:
+    if not await ctx.ensure_agent():
+        return
     session_info = ctx.session.get(ctx.thread_id)
     if session_info is not None and session_info.title is None:
         title = " ".join(text.split())[:80]
@@ -767,11 +818,6 @@ async def run_app(cfg: Config) -> int:
             thread_id=thread_id,
         )
         holder["ctx"] = ctx
-        try:
-            await ctx.rebuild()
-        except Exception as exc:
-            ctx.console.error(f"{type(exc).__name__}: {exc}")
-            return 1
         await bus.emit(AppStart(ctx=ctx))
         if ctx.rebuild_requested:
             await ctx.rebuild()

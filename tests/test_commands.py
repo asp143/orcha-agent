@@ -28,12 +28,7 @@ def _api(registry: Registry, bus: EventBus) -> PluginAPI:
 def _context(*, width: int = 100) -> tuple[SimpleNamespace, StringIO]:
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None, width=width)
-
-    class NoModelCalls:
-        async def ainvoke(self, *args: object, **kwargs: object) -> object:
-            raise AssertionError("slash command dispatch must not call the model")
-
-    return SimpleNamespace(console=ConsoleOutput(console), agent=NoModelCalls()), output
+    return SimpleNamespace(console=ConsoleOutput(console), agent=None), output
 
 
 @pytest.mark.asyncio
