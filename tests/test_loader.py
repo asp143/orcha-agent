@@ -1,0 +1,338 @@
+from __future__ import annotations
+
+import importlib.metadata
+import logging
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import pytest
+
+from orcha_agent.core.config import Config
+from orcha_agent.core.events import EventBus
+from orcha_agent.core.loader import load_plugins
+from orcha_agent.core.plugin import ModeSpec, PluginSpec
+from orcha_agent.core.registry import Registry
+
+
+class EntryPoints(list[object]):
+    def select(self, *, group: str) -> "EntryPoints":
+        return EntryPoints(entry_point for entry_point in self if entry_point.group == group)
+
+
+class EntryPoint:
+    def __init__(
+        self,
+        module: ModuleType,
+        *,
+        name: str,
+        group: str = "orcha_agent.plugins",
+    ) -> None:
+        self.group = group
+        self.name = name
+        self.value = module.__name__
+        self.module = module.__name__
+        self.attr = None
+        self.extras: list[str] = []
+        self.dist = SimpleNamespace(name="orcha-agent-test-plugin")
+        self._module = module
+
+    def load(self) -> ModuleType:
+        return self._module
+
+
+@pytest.fixture(autouse=True)
+def isolate_plugin_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kwargs: EntryPoints(),
+    )
+
+
+def config_for(
+    tmp_path: Path,
+    *,
+    plugin_dirs: tuple[Path, ...] = (),
+    disabled: tuple[str, ...] = (),
+    strict_plugins: bool = False,
+) -> Config:
+    cwd = tmp_path / "workspace"
+    cwd.mkdir(exist_ok=True)
+    return Config(
+        model="anthropic:test",
+        subagent_model="anthropic:test",
+        summarizer_model="anthropic:test",
+        mode="ask",
+        backend="local_shell",
+        memory=(),
+        db_path=tmp_path / "sessions.db",
+        cwd=cwd,
+        resume=None,
+        list_sessions=False,
+        strict_plugins=strict_plugins,
+        plugin_dirs=plugin_dirs,
+        models={},
+        providers={},
+        plugins={"disabled": disabled},
+    )
+
+
+def write_mode_plugin(
+    directory: Path,
+    *,
+    filename: str,
+    name: str,
+    mode: str,
+    priority: int = 100,
+    requires: tuple[str, ...] = (),
+) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / filename).write_text(
+        "from orcha_agent.core.plugin import ModeSpec, PluginSpec\n"
+        f"PLUGIN = PluginSpec(name={name!r}, version='1.0', "
+        f"requires={requires!r}, priority={priority})\n"
+        "def register(api):\n"
+        f"    api.add_mode({mode!r}, ModeSpec(description={name!r}, "
+        "interrupt_on={}, allowed_tools=None))\n"
+    )
+
+
+def third_party_order(records: list[Any], names: set[str]) -> list[str]:
+    return [record.name for record in records if record.name in names]
+
+
+def test_discovers_plugin_from_explicit_directory(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "explicit-plugins"
+    write_mode_plugin(
+        plugin_dir,
+        filename="directory_plugin.py",
+        name="directory-plugin",
+        mode="directory-mode",
+    )
+    registry = Registry()
+
+    records = load_plugins(
+        registry,
+        EventBus(),
+        config_for(tmp_path, plugin_dirs=(plugin_dir,)),
+    )
+
+    assert "directory-mode" in registry.modes
+    assert "directory-plugin" in {record.name for record in records}
+
+
+def test_discovers_distribution_entry_point(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = ModuleType("test_distribution_plugin")
+    module.PLUGIN = PluginSpec(name="distribution-plugin", version="2.0", priority=25)
+
+    def register(api: Any) -> None:
+        api.add_mode(
+            "distribution-mode",
+            ModeSpec(description="from an entry point", interrupt_on={}, allowed_tools=None),
+        )
+
+    module.register = register
+    ignored_module = ModuleType("test_unrelated_distribution_plugin")
+    ignored_module.PLUGIN = PluginSpec(name="unrelated-plugin", version="1.0")
+
+    def register_ignored(api: Any) -> None:
+        api.add_mode(
+            "unrelated-mode",
+            ModeSpec(description="wrong entry-point group", interrupt_on={}, allowed_tools=None),
+        )
+
+    ignored_module.register = register_ignored
+    entry_points = EntryPoints(
+        [
+            EntryPoint(module, name="distribution-plugin"),
+            EntryPoint(
+                ignored_module,
+                name="unrelated-plugin",
+                group="another_application.plugins",
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kwargs: entry_points.select(group=kwargs["group"]) if kwargs else entry_points,
+    )
+    registry = Registry()
+
+    records = load_plugins(registry, EventBus(), config_for(tmp_path))
+
+    assert "distribution-mode" in registry.modes
+    assert "distribution-plugin" in {record.name for record in records}
+    assert "unrelated-mode" not in registry.modes
+
+
+def test_disabled_plugin_is_discovered_but_not_registered(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    write_mode_plugin(
+        plugin_dir,
+        filename="disabled_plugin.py",
+        name="disabled-plugin",
+        mode="must-not-exist",
+    )
+    registry = Registry()
+
+    records = load_plugins(
+        registry,
+        EventBus(),
+        config_for(
+            tmp_path,
+            plugin_dirs=(plugin_dir,),
+            disabled=("disabled-plugin",),
+        ),
+    )
+
+    assert "disabled-plugin" in {record.name for record in records}
+    assert "must-not-exist" not in registry.modes
+
+
+def test_plugins_load_in_priority_then_name_order(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    write_mode_plugin(
+        plugin_dir,
+        filename="zulu.py",
+        name="zulu",
+        mode="zulu-mode",
+        priority=20,
+    )
+    write_mode_plugin(
+        plugin_dir,
+        filename="alpha.py",
+        name="alpha",
+        mode="alpha-mode",
+        priority=20,
+    )
+    write_mode_plugin(
+        plugin_dir,
+        filename="first.py",
+        name="first",
+        mode="first-mode",
+        priority=10,
+    )
+
+    records = load_plugins(
+        Registry(),
+        EventBus(),
+        config_for(tmp_path, plugin_dirs=(plugin_dir,)),
+    )
+
+    assert third_party_order(records, {"alpha", "first", "zulu"}) == [
+        "first",
+        "alpha",
+        "zulu",
+    ]
+
+
+def test_satisfied_requirement_loads_and_missing_requirement_skips(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    plugin_dir = tmp_path / "plugins"
+    write_mode_plugin(
+        plugin_dir,
+        filename="base.py",
+        name="base",
+        mode="base-mode",
+        priority=10,
+    )
+    write_mode_plugin(
+        plugin_dir,
+        filename="dependent.py",
+        name="dependent",
+        mode="dependent-mode",
+        priority=20,
+        requires=("base",),
+    )
+    write_mode_plugin(
+        plugin_dir,
+        filename="missing.py",
+        name="missing-dependent",
+        mode="missing-mode",
+        priority=30,
+        requires=("not-installed",),
+    )
+    registry = Registry()
+
+    records = load_plugins(
+        registry,
+        EventBus(),
+        config_for(tmp_path, plugin_dirs=(plugin_dir,)),
+    )
+
+    assert third_party_order(records, {"base", "dependent", "missing-dependent"}) == [
+        "base",
+        "dependent",
+        "missing-dependent",
+    ]
+    assert {"base-mode", "dependent-mode"} <= set(registry.modes)
+    assert "missing-mode" not in registry.modes
+    assert "missing-dependent" in caplog.text
+    assert "not-installed" in caplog.text
+
+
+def test_failed_plugin_is_isolated_and_later_plugin_still_loads(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "isolated_bad.py").write_text(
+        "from orcha_agent.core.plugin import PluginSpec\n"
+        "PLUGIN = PluginSpec(name='isolated-bad', version='1.0', priority=10)\n"
+        "def register(api):\n"
+        "    raise RuntimeError('broken registration')\n"
+    )
+    write_mode_plugin(
+        plugin_dir,
+        filename="good.py",
+        name="good",
+        mode="survived-mode",
+        priority=20,
+    )
+    registry = Registry()
+
+    load_plugins(
+        registry,
+        EventBus(),
+        config_for(tmp_path, plugin_dirs=(plugin_dir,)),
+    )
+
+    assert "survived-mode" in registry.modes
+    assert "plugin isolated-bad failed: broken registration" in caplog.text
+
+
+def test_strict_plugins_reraises_registration_failure(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "strict_bad.py").write_text(
+        "from orcha_agent.core.plugin import PluginSpec\n"
+        "PLUGIN = PluginSpec(name='strict-bad', version='1.0')\n"
+        "def register(api):\n"
+        "    raise RuntimeError('strict registration failure')\n"
+    )
+
+    with pytest.raises(RuntimeError, match="strict registration failure"):
+        load_plugins(
+            Registry(),
+            EventBus(),
+            config_for(
+                tmp_path,
+                plugin_dirs=(plugin_dir,),
+                strict_plugins=True,
+            ),
+        )
