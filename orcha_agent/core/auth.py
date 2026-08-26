@@ -1,0 +1,316 @@
+"""Credential storage, OAuth PKCE, and refreshing token sources."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import tempfile
+import threading
+import time
+import webbrowser
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
+
+import httpx
+
+Credential = dict[str, Any]
+
+_PATH_LOCKS: dict[Path, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path: Path) -> threading.RLock:
+    resolved = path.resolve()
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(resolved, threading.RLock())
+
+
+@dataclass(frozen=True, slots=True)
+class AuthFlow:
+    login: Callable[[Any], Awaitable[None]]
+    logout: Callable[[Any], Awaitable[None]]
+    status: Callable[[], str]
+
+
+class CredentialStore:
+    """Private, atomic JSON credential storage keyed by provider prefix."""
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path or Path.home() / ".config/orcha-agent/auth.json")
+        self._lock = _path_lock(self.path)
+
+    def _read(self) -> dict[str, Credential]:
+        if not self.path.is_file():
+            return {}
+        with self.path.open(encoding="utf-8") as stream:
+            value = json.load(stream)
+        if not isinstance(value, dict):
+            raise ValueError("credential store must contain a JSON object")
+        return {
+            str(prefix): dict(credential)
+            for prefix, credential in value.items()
+            if isinstance(credential, Mapping)
+        }
+
+    def _write(self, credentials: Mapping[str, Credential]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.path.parent, 0o700)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.",
+            dir=self.path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(credentials, stream, separators=(",", ":"), sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.path)
+            os.chmod(self.path, 0o600)
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            temporary.unlink(missing_ok=True)
+            raise
+
+    def get(self, prefix: str) -> Credential | None:
+        with self._lock:
+            credential = self._read().get(prefix)
+            return None if credential is None else dict(credential)
+
+    def set(self, prefix: str, credential: Mapping[str, Any]) -> None:
+        with self._lock:
+            credentials = self._read()
+            credentials[prefix] = dict(credential)
+            self._write(credentials)
+
+    def delete(self, prefix: str) -> None:
+        with self._lock:
+            credentials = self._read()
+            credentials.pop(prefix, None)
+            self._write(credentials)
+
+
+class OAuthPKCEFlow:
+    """Generic synchronous OAuth authorization-code flow with S256 PKCE."""
+
+    def __init__(
+        self,
+        client_id: str,
+        authorize_url: str,
+        token_url: str,
+        scopes: str | Sequence[str],
+        redirect_port: int,
+        redirect_path: str,
+        extra_authorize_params: Mapping[str, str] | None = None,
+        *,
+        http_client: httpx.Client | None = None,
+        input_fn: Callable[[str], str] = input,
+    ) -> None:
+        self.client_id = client_id
+        self.authorize_url = authorize_url
+        self.token_url = token_url
+        self.scopes = scopes if isinstance(scopes, str) else " ".join(scopes)
+        self.redirect_port = redirect_port
+        self.redirect_path = redirect_path
+        self.extra_authorize_params = dict(extra_authorize_params or {})
+        self.http_client = http_client
+        self.input_fn = input_fn
+
+    @staticmethod
+    def code_challenge(verifier: str) -> str:
+        digest = hashlib.sha256(verifier.encode("ascii")).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+    @staticmethod
+    def parse_paste(value: str, *, expected_state: str | None = None) -> str:
+        pasted = value.strip()
+        state: str | None = None
+        if "://" in pasted:
+            query = parse_qs(urlparse(pasted).query)
+            code = query.get("code", [""])[0]
+            state = query.get("state", [None])[0]
+        elif "#" in pasted:
+            code, state = pasted.split("#", 1)
+        else:
+            code = pasted
+        if not code:
+            raise ValueError("OAuth callback did not contain a code")
+        if expected_state is not None and state is not None and state != expected_state:
+            raise ValueError("OAuth state mismatch")
+        return code
+
+    def _authorization_url(self, verifier: str, state: str, redirect_uri: str) -> str:
+        parameters = {
+            "response_type": "code",
+            "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+            "scope": self.scopes,
+            "state": state,
+            "code_challenge": self.code_challenge(verifier),
+            "code_challenge_method": "S256",
+            **self.extra_authorize_params,
+        }
+        return f"{self.authorize_url}?{urlencode(parameters)}"
+
+    def _paste_code(self, authorization_url: str, state: str) -> str:
+        webbrowser.open(authorization_url)
+        pasted = self.input_fn("Paste the redirect URL or authorization code: ")
+        return self.parse_paste(pasted, expected_state=state)
+
+    def authorize(self, *, no_browser: bool = False) -> dict[str, Any]:
+        verifier = secrets.token_urlsafe(64)
+        state = secrets.token_urlsafe(32)
+        redirect_uri = f"http://127.0.0.1:{self.redirect_port}{self.redirect_path}"
+        authorization_url = self._authorization_url(verifier, state, redirect_uri)
+        if no_browser:
+            code = self._paste_code(authorization_url, state)
+            return self.exchange(code, verifier, redirect_uri)
+
+        result: dict[str, str | Exception] = {}
+        callback_done = threading.Event()
+        expected_path = self.redirect_path
+        expected_state = state
+
+        class CallbackHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                parsed = urlparse(self.path)
+                query = parse_qs(parsed.query)
+                code = query.get("code", [""])[0]
+                callback_state = query.get("state", [None])[0]
+                if parsed.path != expected_path or callback_state != expected_state:
+                    result["error"] = ValueError("OAuth state mismatch")
+                    body = b"OAuth state mismatch"
+                    self.send_response(400)
+                elif not code:
+                    result["error"] = ValueError("OAuth callback did not contain a code")
+                    body = b"Missing authorization code"
+                    self.send_response(400)
+                else:
+                    result["code"] = code
+                    body = b"Authentication complete. You may close this window."
+                    self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                callback_done.set()
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", self.redirect_port), CallbackHandler)
+        except OSError:
+            code = self._paste_code(authorization_url, state)
+            return self.exchange(code, verifier, redirect_uri)
+
+        try:
+            server.timeout = 120
+            webbrowser.open(authorization_url)
+            server.handle_request()
+            callback_done.wait(timeout=5)
+        finally:
+            server.server_close()
+        error = result.get("error")
+        if isinstance(error, Exception):
+            raise error
+        code = result.get("code")
+        if not isinstance(code, str):
+            raise TimeoutError("OAuth callback was not received")
+        return self.exchange(code, verifier, redirect_uri)
+
+    def _post_token(self, data: Mapping[str, str]) -> dict[str, Any]:
+        if self.http_client is not None:
+            response = self.http_client.post(self.token_url, data=data)
+        else:
+            response = httpx.post(self.token_url, data=data, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("OAuth token endpoint returned invalid JSON")
+        return dict(payload)
+
+    def exchange(self, code: str, verifier: str, redirect_uri: str) -> dict[str, Any]:
+        return self._post_token(
+            {
+                "grant_type": "authorization_code",
+                "client_id": self.client_id,
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": redirect_uri,
+            }
+        )
+
+    def refresh(self, refresh_token: str) -> dict[str, Any]:
+        return self._post_token(
+            {
+                "grant_type": "refresh_token",
+                "client_id": self.client_id,
+                "refresh_token": refresh_token,
+            }
+        )
+
+
+class TokenSource:
+    """Read and single-flight refresh OAuth access tokens."""
+
+    def __init__(
+        self,
+        store: CredentialStore,
+        prefix: str,
+        flow: Any,
+        *,
+        now_ms: Callable[[], int] | None = None,
+    ) -> None:
+        self.store = store
+        self.prefix = prefix
+        self.flow = flow
+        self.now_ms = now_ms or (lambda: int(time.time() * 1000))
+        self._refresh_lock = threading.Lock()
+
+    def _needs_refresh(self, credential: Mapping[str, Any]) -> bool:
+        expires = credential.get("expires")
+        return not isinstance(expires, int) or expires - self.now_ms() < 300_000
+
+    def get_token(self) -> tuple[str, str]:
+        credential = self.store.get(self.prefix)
+        if credential is None or credential.get("type") != "oauth":
+            raise RuntimeError(f"Not logged in to {self.prefix}; run /login {self.prefix}")
+        if self._needs_refresh(credential):
+            with self._refresh_lock:
+                credential = self.store.get(self.prefix)
+                if credential is None:
+                    raise RuntimeError(f"Not logged in to {self.prefix}; run /login {self.prefix}")
+                if self._needs_refresh(credential):
+                    refresh_token = credential.get("refresh")
+                    if not isinstance(refresh_token, str) or not refresh_token:
+                        raise RuntimeError(f"Login for {self.prefix} cannot be refreshed")
+                    refreshed = self.flow.refresh(refresh_token)
+                    access = refreshed.get("access_token")
+                    if not isinstance(access, str) or not access:
+                        raise RuntimeError("OAuth refresh response omitted access_token")
+                    expires_in = refreshed.get("expires_in", 3600)
+                    updated = {
+                        **credential,
+                        "access": access,
+                        "refresh": refreshed.get("refresh_token") or refresh_token,
+                        "expires": self.now_ms() + int(expires_in) * 1000,
+                    }
+                    self.store.set(self.prefix, updated)
+                    credential = updated
+        access = credential.get("access")
+        account_id = credential.get("account_id", "")
+        if not isinstance(access, str) or not access:
+            raise RuntimeError(f"Login for {self.prefix} has no access token")
+        return access, str(account_id)
