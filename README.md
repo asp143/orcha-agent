@@ -12,6 +12,9 @@ uv run orcha --help
 uv run orcha
 ```
 
+Starting without a configured provider or API key is supported. Use `/help`,
+`/providers`, `/plugins`, `/login`, or `/model` after the REPL starts.
+
 Optional model providers are extras:
 
 ```bash
@@ -20,9 +23,28 @@ uv sync --extra ollama
 uv sync --extra google
 ```
 
-Built-in provider prefixes are `anthropic:`, `openai:`, `ollama:`, `google:`,
-and `langchain:`. Set the provider's documented environment variable, such as
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; orcha never stores API keys.
+Built-in provider prefixes are `anthropic:`, `codex:`, `openai:`, `ollama:`,
+`google:`, and `langchain:`. Set the provider's documented environment
+variable, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; orcha never stores
+API keys.
+
+## Codex (ChatGPT subscription) login
+
+Codex uses a ChatGPT subscription through OAuth rather than an OpenAI API key:
+
+```bash
+uv run orcha login codex
+```
+
+Or log in from the REPL and select the model:
+
+```text
+/login codex
+/model codex:gpt-5.6-sol
+```
+
+Use `orcha login codex --no-browser` when the browser callback is unavailable.
+
 
 ## Configuration
 
@@ -37,6 +59,7 @@ subagent_model = "fast"
 summarizer_model = "fast"
 mode = "ask"
 backend = "local_shell"
+banner = true
 
 [models]
 fast = "anthropic:claude-haiku-4-5"
@@ -47,6 +70,9 @@ disabled = []
 
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
+
+Disable the startup banner with `[core] banner=false` or
+`ORCHA_NO_BANNER=1`.
 
 ## Trust model
 
@@ -83,5 +109,6 @@ See `examples/plugins/hello.py` for a complete external plugin.
 
 ## Commands
 
-`/help`, `/clear`, `/exit`, `/plugins`, `/providers`, `/sessions`,
-`/resume <id>`, `/compact`, `/model <spec>`, and `/mode <name>`.
+`/help`, `/clear`, `/exit`, `/plugins`, `/providers`, `/login <prefix>`,
+`/logout <prefix>`, `/sessions`, `/resume <id>`, `/compact`,
+`/model <spec>`, and `/mode <name>`.
