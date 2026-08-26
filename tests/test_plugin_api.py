@@ -157,3 +157,10 @@ def register(api) -> None:
     assert captured["tools"] == [module.external_echo]
     assert captured["interrupt_on"] == {"external_echo": True}
     assert captured["system_prompt"] == "Follow the external plugin instructions."
+    filesystem = [
+        middleware
+        for middleware in captured["middleware"]
+        if middleware.name == "FilesystemMiddleware"
+    ]
+    assert len(filesystem) == 1
+    assert list(filesystem[0].tools) == []

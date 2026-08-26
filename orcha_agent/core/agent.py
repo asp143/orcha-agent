@@ -165,11 +165,16 @@ async def build_agent(
     filesystem: FilesystemMiddleware | None = None
     if mode.allowed_tools is not None:
         filesystem_tools = set(mode.allowed_tools) & FILESYSTEM_TOOL_NAMES
-        filesystem_tools.add("read_file")
+        constructor_tools = filesystem_tools | {"read_file"}
         filesystem = FilesystemMiddleware(
             backend=backend,
-            tools=sorted(filesystem_tools),
+            tools=sorted(constructor_tools),
         )
+        if "read_file" not in filesystem_tools:
+            filesystem._enabled_tools = frozenset(filesystem_tools)
+            filesystem.tools = [
+                tool for tool in filesystem.tools if tool.name in filesystem_tools
+            ]
         middleware.append(filesystem)
     tools = [
         tool
