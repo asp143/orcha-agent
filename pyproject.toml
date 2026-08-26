@@ -1,5 +1,5 @@
 [project]
-name = "deepagent"
+name = "orcha-agent"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -12,6 +12,9 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "rich>=15.0.0",
 ]
+
+[project.scripts]
+orcha = "orcha_agent.__main__:main"
 
 [project.optional-dependencies]
 openai = [
