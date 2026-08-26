@@ -26,7 +26,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 class SessionInfo:
     thread_id: str
     cwd: str
-    model: str
+    model: str | list[str]
     created: str
     title: str | None
 
@@ -140,20 +140,35 @@ class SessionStore:
     ) -> SessionInfo:
         created = datetime.now(UTC).isoformat(timespec="microseconds")
         identifier = thread_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
-        model_text = model if isinstance(model, str) else ",".join(model)
-        info = SessionInfo(identifier, str(cwd), model_text, created, title)
+        model_text = model if isinstance(model, str) else json.dumps(model)
+        stored_model = model if isinstance(model, str) else list(model)
+        info = SessionInfo(identifier, str(cwd), stored_model, created, title)
         self._connection.execute(
             "INSERT INTO sessions(thread_id, cwd, model, created, title) VALUES (?, ?, ?, ?, ?)",
-            (info.thread_id, info.cwd, info.model, info.created, info.title),
+            (info.thread_id, info.cwd, model_text, info.created, info.title),
         )
         self._connection.commit()
         return info
 
     @staticmethod
+    def _decode_model(value: str) -> str | list[str]:
+        if value.startswith("["):
+            decoded = json.loads(value)
+            if isinstance(decoded, list) and all(isinstance(item, str) for item in decoded):
+                return decoded
+        return value
+
+    @staticmethod
     def _session(row: sqlite3.Row | None) -> SessionInfo | None:
         if row is None:
             return None
-        return SessionInfo(row["thread_id"], row["cwd"], row["model"], row["created"], row["title"])
+        return SessionInfo(
+            row["thread_id"],
+            row["cwd"],
+            SessionStore._decode_model(row["model"]),
+            row["created"],
+            row["title"],
+        )
 
     def get(self, thread_id: str) -> SessionInfo | None:
         row = self._connection.execute(

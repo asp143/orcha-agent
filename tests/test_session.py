@@ -70,3 +70,15 @@ def test_session_title_can_be_set_from_first_user_message(tmp_path: Path) -> Non
         store.set_title(session.thread_id, "Implement plugin loading")
 
         assert store.get(session.thread_id).title == "Implement plugin loading"
+
+
+def test_fallback_model_chain_round_trips_without_losing_specs(tmp_path: Path) -> None:
+    chain = ["anthropic:primary", "openai:fallback"]
+    db_path = tmp_path / "sessions.db"
+
+    with SessionStore(db_path) as store:
+        created = store.create(tmp_path, chain)
+        assert created.model == chain
+
+    with SessionStore(db_path) as reopened:
+        assert reopened.get(created.thread_id).model == chain
