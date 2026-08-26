@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import base64
 import hashlib
 import json
@@ -15,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -24,12 +26,20 @@ Credential = dict[str, Any]
 
 _PATH_LOCKS: dict[Path, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_TOKEN_LOCKS: dict[tuple[Path, str], threading.Lock] = {}
+_TOKEN_LOCKS_GUARD = threading.Lock()
 
 
 def _path_lock(path: Path) -> threading.RLock:
     resolved = path.resolve()
     with _PATH_LOCKS_GUARD:
         return _PATH_LOCKS.setdefault(resolved, threading.RLock())
+
+
+def _token_lock(path: Path, prefix: str) -> threading.Lock:
+    key = (path.resolve(), prefix)
+    with _TOKEN_LOCKS_GUARD:
+        return _TOKEN_LOCKS.setdefault(key, threading.Lock())
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +55,21 @@ class CredentialStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path or Path.home() / ".config/orcha-agent/auth.json")
         self._lock = _path_lock(self.path)
+
+    @contextmanager
+    def _locked(self) -> Any:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.path.parent, 0o700)
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.chmod(lock_path, 0o600)
+        with self._lock:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def _read(self) -> dict[str, Credential]:
         if not self.path.is_file():
@@ -84,21 +109,38 @@ class CredentialStore:
             raise
 
     def get(self, prefix: str) -> Credential | None:
-        with self._lock:
+        with self._locked():
             credential = self._read().get(prefix)
             return None if credential is None else dict(credential)
 
     def set(self, prefix: str, credential: Mapping[str, Any]) -> None:
-        with self._lock:
+        with self._locked():
             credentials = self._read()
             credentials[prefix] = dict(credential)
             self._write(credentials)
 
     def delete(self, prefix: str) -> None:
-        with self._lock:
+        with self._locked():
             credentials = self._read()
             credentials.pop(prefix, None)
             self._write(credentials)
+
+    def compare_and_set(
+        self,
+        prefix: str,
+        expected: Mapping[str, Any],
+        replacement: Mapping[str, Any] | None,
+    ) -> bool:
+        with self._locked():
+            credentials = self._read()
+            if credentials.get(prefix) != dict(expected):
+                return False
+            if replacement is None:
+                credentials.pop(prefix, None)
+            else:
+                credentials[prefix] = dict(replacement)
+            self._write(credentials)
+            return True
 
 
 class OAuthPKCEFlow:
@@ -163,9 +205,19 @@ class OAuthPKCEFlow:
         }
         return f"{self.authorize_url}?{urlencode(parameters)}"
 
-    def _paste_code(self, authorization_url: str, state: str) -> str:
-        webbrowser.open(authorization_url)
-        pasted = self.input_fn("Paste the redirect URL or authorization code: ")
+    def _paste_code(
+        self,
+        authorization_url: str,
+        state: str,
+        *,
+        open_browser: bool = True,
+    ) -> str:
+        if open_browser:
+            webbrowser.open(authorization_url)
+        pasted = self.input_fn(
+            f"Open this URL to authenticate:\n{authorization_url}\n"
+            "Paste the redirect URL or authorization code: "
+        )
         return self.parse_paste(pasted, expected_state=state)
 
     def authorize(self, *, no_browser: bool = False) -> dict[str, Any]:
@@ -174,7 +226,7 @@ class OAuthPKCEFlow:
         redirect_uri = f"http://127.0.0.1:{self.redirect_port}{self.redirect_path}"
         authorization_url = self._authorization_url(verifier, state, redirect_uri)
         if no_browser:
-            code = self._paste_code(authorization_url, state)
+            code = self._paste_code(authorization_url, state, open_browser=False)
             return self.exchange(code, verifier, redirect_uri)
 
         result: dict[str, str | Exception] = {}
@@ -262,6 +314,22 @@ class OAuthPKCEFlow:
         )
 
 
+def _definitive_refresh_error(exc: httpx.HTTPStatusError) -> bool:
+    response = exc.response
+    if response.status_code == 401:
+        return True
+    if response.status_code != 400:
+        return False
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return False
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    if isinstance(error, Mapping):
+        error = error.get("type") or error.get("code")
+    return error == "invalid_grant"
+
+
 class TokenSource:
     """Read and single-flight refresh OAuth access tokens."""
 
@@ -277,7 +345,8 @@ class TokenSource:
         self.prefix = prefix
         self.flow = flow
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self._refresh_lock = threading.Lock()
+        store_path = getattr(store, "path", Path(f".orcha-auth-{id(store)}"))
+        self._refresh_lock = _token_lock(Path(store_path), prefix)
 
     def _needs_refresh(self, credential: Mapping[str, Any]) -> bool:
         expires = credential.get("expires")
@@ -293,22 +362,44 @@ class TokenSource:
                 if credential is None:
                     raise RuntimeError(f"Not logged in to {self.prefix}; run /login {self.prefix}")
                 if self._needs_refresh(credential):
-                    refresh_token = credential.get("refresh")
+                    stale = dict(credential)
+                    refresh_token = stale.get("refresh")
                     if not isinstance(refresh_token, str) or not refresh_token:
                         raise RuntimeError(f"Login for {self.prefix} cannot be refreshed")
-                    refreshed = self.flow.refresh(refresh_token)
-                    access = refreshed.get("access_token")
-                    if not isinstance(access, str) or not access:
-                        raise RuntimeError("OAuth refresh response omitted access_token")
-                    expires_in = refreshed.get("expires_in", 3600)
-                    updated = {
-                        **credential,
-                        "access": access,
-                        "refresh": refreshed.get("refresh_token") or refresh_token,
-                        "expires": self.now_ms() + int(expires_in) * 1000,
-                    }
-                    self.store.set(self.prefix, updated)
-                    credential = updated
+                    try:
+                        refreshed = self.flow.refresh(refresh_token)
+                    except httpx.HTTPStatusError as exc:
+                        if not _definitive_refresh_error(exc):
+                            raise
+                        if self.store.compare_and_set(self.prefix, stale, None):
+                            raise RuntimeError(
+                                f"Refresh rejected; run /login {self.prefix}"
+                            ) from exc
+                        credential = self.store.get(self.prefix)
+                        if credential is None:
+                            raise RuntimeError(
+                                f"Not logged in to {self.prefix}; run /login {self.prefix}"
+                            ) from exc
+                    else:
+                        access = refreshed.get("access_token")
+                        if not isinstance(access, str) or not access:
+                            raise RuntimeError("OAuth refresh response omitted access_token")
+                        expires_in = refreshed.get("expires_in", 3600)
+                        updated = {
+                            **stale,
+                            "access": access,
+                            "refresh": refreshed.get("refresh_token") or refresh_token,
+                            "expires": self.now_ms() + int(expires_in) * 1000,
+                        }
+                        if self.store.compare_and_set(self.prefix, stale, updated):
+                            credential = updated
+                        else:
+                            credential = self.store.get(self.prefix)
+                            if credential is None:
+                                raise RuntimeError(
+                                    f"Not logged in to {self.prefix}; "
+                                    f"run /login {self.prefix}"
+                                )
         access = credential.get("access")
         account_id = credential.get("account_id", "")
         if not isinstance(access, str) or not access:

@@ -3,7 +3,7 @@ import os
 import socket
 import stat
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import urlopen
 
+import httpx
 import pytest
 
 from orcha_agent.core.auth import CredentialStore, OAuthPKCEFlow, TokenSource
@@ -25,6 +26,8 @@ def _flow(
     *,
     token_url: str = "https://tokens.invalid/token",
     redirect_port: int = 1455,
+    http_client: httpx.Client | None = None,
+    input_fn: Callable[[str], str] = input,
 ) -> OAuthPKCEFlow:
     return OAuthPKCEFlow(
         client_id="fake-client-id",
@@ -34,6 +37,8 @@ def _flow(
         redirect_port=redirect_port,
         redirect_path="/auth/callback",
         extra_authorize_params={"audience": "fake-audience"},
+        http_client=http_client,
+        input_fn=input_fn,
     )
 
 
@@ -185,6 +190,45 @@ def test_parse_paste_rejects_state_mismatch(pasted: str) -> None:
         _flow().parse_paste(pasted, expected_state="expected-state")
 
 
+def test_no_browser_authorize_prompts_with_url_without_opening_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    prompts: list[str] = []
+    opened_urls: list[str] = []
+
+    def exchange(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "fake-access",
+                "refresh_token": "fake-refresh",
+                "expires_in": 3600,
+            },
+        )
+
+    def paste_code(prompt: str) -> str:
+        prompts.append(prompt)
+        return "fake-pasted-code"
+
+    monkeypatch.setattr(
+        "orcha_agent.core.auth.webbrowser.open",
+        lambda url: opened_urls.append(url) or True,
+    )
+    with httpx.Client(transport=httpx.MockTransport(exchange)) as client:
+        response = _flow(http_client=client, input_fn=paste_code).authorize(
+            no_browser=True
+        )
+
+    assert opened_urls == []
+    assert len(prompts) == 1
+    assert "https://accounts.invalid/authorize?" in prompts[0]
+    assert response["access_token"] == "fake-access"
+    assert len(requests) == 1
+    assert parse_qs(requests[0].content.decode())["code"] == ["fake-pasted-code"]
+
+
 def test_loopback_callback_rejects_state_mismatch_and_authorize_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +327,22 @@ def _expired_credential() -> dict[str, Any]:
     }
 
 
+def _start_token_read(
+    source: TokenSource,
+) -> tuple[threading.Thread, Queue[tuple[str, str] | BaseException]]:
+    outcome: Queue[tuple[str, str] | BaseException] = Queue()
+
+    def read_token() -> None:
+        try:
+            outcome.put(source.get_token())
+        except BaseException as exc:
+            outcome.put(exc)
+
+    thread = threading.Thread(target=read_token, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
 def test_token_source_refreshes_inside_five_minutes_and_persists_result(
     tmp_path: Path,
 ) -> None:
@@ -352,3 +412,151 @@ def test_concurrent_token_callers_share_one_refresh(tmp_path: Path) -> None:
         "expires": FAKE_NOW_MS + 3_600_000,
         "account_id": "fake-account",
     }
+
+
+def test_logout_during_refresh_does_not_resurrect_deleted_credential(
+    tmp_path: Path,
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.set("codex", _expired_credential())
+    flow = _RefreshingFlow(
+        {"access_token": "fake-refreshed-access", "expires_in": 3600}
+    )
+    source = TokenSource(store, "codex", flow, now_ms=lambda: FAKE_NOW_MS)
+
+    reader, outcome = _start_token_read(source)
+    assert flow.entered.wait(timeout=2)
+    store.delete("codex")
+    flow.release.set()
+    result = outcome.get(timeout=2)
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert isinstance(result, RuntimeError)
+    assert "run /login codex" in str(result)
+    assert store.get("codex") is None
+
+
+def test_login_replacement_during_refresh_is_not_overwritten(
+    tmp_path: Path,
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.set("codex", _expired_credential())
+    flow = _RefreshingFlow(
+        {"access_token": "fake-refreshed-access", "expires_in": 3600}
+    )
+    source = TokenSource(store, "codex", flow, now_ms=lambda: FAKE_NOW_MS)
+    replacement = {
+        "type": "oauth",
+        "access": "fake-replacement-access",
+        "refresh": "fake-replacement-refresh",
+        "expires": FAKE_NOW_MS + 3_600_000,
+        "account_id": "fake-replacement-account",
+    }
+
+    reader, outcome = _start_token_read(source)
+    assert flow.entered.wait(timeout=2)
+    store.set("codex", replacement)
+    flow.release.set()
+    result = outcome.get(timeout=2)
+    reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert result == ("fake-replacement-access", "fake-replacement-account")
+    assert store.get("codex") == replacement
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload"),
+    [
+        (400, {"error": "invalid_grant"}),
+        (401, {"error": "unauthorized"}),
+    ],
+)
+def test_definitive_refresh_failure_clears_unchanged_stale_credential(
+    tmp_path: Path,
+    status_code: int,
+    payload: dict[str, str],
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.set("codex", _expired_credential())
+    requests: list[httpx.Request] = []
+
+    def reject_refresh(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(reject_refresh)) as client:
+        source = TokenSource(
+            store,
+            "codex",
+            _flow(http_client=client),
+            now_ms=lambda: FAKE_NOW_MS,
+        )
+        with pytest.raises(RuntimeError, match="run /login codex"):
+            source.get_token()
+
+    assert len(requests) == 1
+    assert parse_qs(requests[0].content.decode())["refresh_token"] == [
+        "fake-old-refresh"
+    ]
+    assert store.get("codex") is None
+
+
+def test_definitive_refresh_failure_does_not_clear_replacement_credential(
+    tmp_path: Path,
+) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    store.set("codex", _expired_credential())
+    entered = threading.Event()
+    release = threading.Event()
+    replacement = {
+        "type": "oauth",
+        "access": "fake-replacement-access",
+        "refresh": "fake-replacement-refresh",
+        "expires": FAKE_NOW_MS + 3_600_000,
+        "account_id": "fake-replacement-account",
+    }
+
+    def reject_refresh(_request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(timeout=2)
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    with httpx.Client(transport=httpx.MockTransport(reject_refresh)) as client:
+        source = TokenSource(
+            store,
+            "codex",
+            _flow(http_client=client),
+            now_ms=lambda: FAKE_NOW_MS,
+        )
+        reader, outcome = _start_token_read(source)
+        assert entered.wait(timeout=2)
+        store.set("codex", replacement)
+        release.set()
+        outcome.get(timeout=2)
+        reader.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert store.get("codex") == replacement
+
+
+def test_transient_refresh_failure_preserves_stale_credential(tmp_path: Path) -> None:
+    store = CredentialStore(tmp_path / "auth.json")
+    stale = _expired_credential()
+    store.set("codex", stale)
+
+    def unavailable(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "fake-server-error"})
+
+    with httpx.Client(transport=httpx.MockTransport(unavailable)) as client:
+        source = TokenSource(
+            store,
+            "codex",
+            _flow(http_client=client),
+            now_ms=lambda: FAKE_NOW_MS,
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            source.get_token()
+
+    assert store.get("codex") == stale
