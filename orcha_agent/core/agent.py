@@ -170,6 +170,9 @@ async def build_agent(
             backend=backend,
             tools=sorted(constructor_tools),
         )
+        # deepagents 0.7.9 requires read_file during construction even when a
+        # custom mode allows no filesystem tools. Remove that synthetic tool
+        # afterward so the effective allowlist remains exact.
         if "read_file" not in filesystem_tools:
             filesystem._enabled_tools = frozenset(filesystem_tools)
             filesystem.tools = [
