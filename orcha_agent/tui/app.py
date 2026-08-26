@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -204,7 +203,74 @@ def _messages(value: Any) -> list[BaseMessage]:
     return found
 
 
-async def _message_event(ctx: AppContext, data: Any, seen_tools: set[str]) -> None:
+@dataclass(slots=True)
+class _PendingToolCall:
+    name: str = ""
+    args: str = ""
+    id: str = ""
+
+
+class _ToolCallBuffer:
+    """Assemble provider tool-call chunks before rendering their arguments."""
+
+    def __init__(self) -> None:
+        self._pending: dict[int | str, _PendingToolCall] = {}
+        self._emitted: set[str] = set()
+
+    def add(self, message: AIMessage) -> list[ToolCallStart]:
+        chunks = getattr(message, "tool_call_chunks", ())
+        if not chunks:
+            events: list[ToolCallStart] = []
+            for call in message.tool_calls:
+                identifier = call.get("id") or f"{call['name']}:{len(self._emitted)}"
+                if identifier in self._emitted:
+                    continue
+                self._emitted.add(identifier)
+                events.append(
+                    ToolCallStart(
+                        name=call["name"],
+                        args=call.get("args", {}),
+                        id=identifier,
+                    )
+                )
+            return events
+
+        completed: list[ToolCallStart] = []
+        for chunk in chunks:
+            key = chunk.get("index")
+            if key is None:
+                key = chunk.get("id") or len(self._pending)
+            pending = self._pending.setdefault(key, _PendingToolCall())
+            name = chunk.get("name")
+            if name:
+                pending.name += name
+            args = chunk.get("args")
+            if args:
+                pending.args += args
+            identifier = chunk.get("id")
+            if identifier:
+                pending.id = identifier
+            if not pending.name or not pending.id or pending.id in self._emitted:
+                continue
+            try:
+                parsed_args = json.loads(pending.args)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(parsed_args, dict):
+                continue
+            self._emitted.add(pending.id)
+            completed.append(
+                ToolCallStart(
+                    name=pending.name,
+                    args=parsed_args,
+                    id=pending.id,
+                )
+            )
+            self._pending.pop(key, None)
+        return completed
+
+
+async def _message_event(ctx: AppContext, data: Any, tool_calls: _ToolCallBuffer) -> None:
     if not isinstance(data, tuple) or len(data) != 2:
         return
     message, metadata = data
@@ -221,19 +287,11 @@ async def _message_event(ctx: AppContext, data: Any, seen_tools: set[str]) -> No
         )
         return
     if isinstance(message, AIMessage):
-        for call in message.tool_calls:
-            identifier = call.get("id") or f"{call['name']}:{len(seen_tools)}"
-            if identifier in seen_tools:
-                continue
-            seen_tools.add(identifier)
-            await _render(
-                ctx,
-                ToolCallStart(name=call["name"], args=call.get("args", {}), id=identifier),
-            )
+        for event in tool_calls.add(message):
+            await _render(ctx, event)
     role = "subagent" if "subagent" in str(metadata.get("langgraph_node", "")) else "main"
     if getattr(message, "content", None):
         await _render(ctx, ModelChunk(chunk=message, role=role))
-
 
 async def _updates_event(ctx: AppContext, data: Any, seen_results: set[str]) -> Resolved | None:
     if not isinstance(data, dict):
@@ -262,7 +320,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
             ctx.session.set_title(ctx.thread_id, title)
     await ctx.bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
-    seen_tools: set[str] = set()
+    tool_calls = _ToolCallBuffer()
     seen_results: set[str] = set()
     while True:
         resolution: Resolved | None = None
@@ -272,7 +330,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
             stream_mode=["messages", "updates"],
         ):
             if mode == "messages":
-                await _message_event(ctx, data, seen_tools)
+                await _message_event(ctx, data, tool_calls)
             elif mode == "updates":
                 candidate = await _updates_event(ctx, data, seen_results)
                 if candidate is not None:
