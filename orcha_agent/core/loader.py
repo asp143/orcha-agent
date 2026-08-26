@@ -10,6 +10,7 @@ import logging
 import pkgutil
 import sys
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -256,6 +257,27 @@ def _requirements(spec: PluginSpec) -> tuple[str, ...]:
     return tuple(requirement for requirement in spec.requires if isinstance(requirement, str))
 
 
+def _snapshot_registry(registry: Registry) -> dict[str, dict[Any, Any] | list[Any]]:
+    return {
+        name: value.copy()
+        for name, value in vars(registry).items()
+        if isinstance(value, (dict, list))
+    }
+
+
+def _restore_registry(
+    registry: Registry,
+    snapshot: dict[str, dict[Any, Any] | list[Any]],
+) -> None:
+    for name, saved in snapshot.items():
+        current = getattr(registry, name)
+        if isinstance(current, dict) and isinstance(saved, dict):
+            current.clear()
+            current.update(saved)
+        elif isinstance(current, list) and isinstance(saved, list):
+            current[:] = saved
+
+
 def load_plugins(
     registry: Registry,
     bus: EventBus,
@@ -308,7 +330,11 @@ def load_plugins(
             )
             continue
 
+        state_existed = spec.name in states
         state = states.setdefault(spec.name, {})
+        state_snapshot = deepcopy(state)
+        registry_snapshot = _snapshot_registry(registry)
+        handlers_snapshot = bus.handlers.copy()
         api = PluginAPI(
             name=spec.name,
             config=cfg.plugin_config(spec.name),
@@ -321,6 +347,13 @@ def load_plugins(
             assert candidate.register is not None
             candidate.register(api)
         except Exception as exc:
+            _restore_registry(registry, registry_snapshot)
+            bus.handlers[:] = handlers_snapshot
+            if state_existed:
+                state.clear()
+                state.update(state_snapshot)
+            else:
+                states.pop(spec.name, None)
             logger.error("plugin %s failed: %s", spec.name, exc)
             records.append(
                 PluginRecord(spec.name, spec.version, candidate.source, "failed")

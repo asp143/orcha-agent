@@ -108,6 +108,9 @@ class Registry:
         self._provider_owners: dict[str, str] = {}
         self._backend_owners: dict[str, str] = {}
         self._mode_owners: dict[str, str] = {}
+        self._middleware_owners: dict[str, str] = {}
+        self._renderer_owners: dict[str, str] = {}
+        self._subagent_owners: dict[str, str] = {}
 
     @staticmethod
     def _claim(
@@ -206,6 +209,13 @@ class Registry:
         replace: bool = False,
     ) -> None:
         name = _value_name(middleware)
+        self._claim(
+            "middleware",
+            name,
+            plugin,
+            self._middleware_owners,
+            replace=replace,
+        )
         if replace:
             self.middleware[:] = [entry for entry in self.middleware if entry.name != name]
         self.middleware.append(
@@ -228,6 +238,13 @@ class Registry:
         replace: bool = False,
     ) -> None:
         name = _match_name(match)
+        self._claim(
+            "renderer",
+            name,
+            plugin,
+            self._renderer_owners,
+            replace=replace,
+        )
         if replace:
             self.renderers[:] = [entry for entry in self.renderers if entry.name != name]
         self.renderers.append(
@@ -251,6 +268,13 @@ class Registry:
         replace: bool = False,
     ) -> None:
         name = _value_name(spec)
+        self._claim(
+            "subagent",
+            name,
+            plugin,
+            self._subagent_owners,
+            replace=replace,
+        )
         if replace:
             self.subagents[:] = [entry for entry in self.subagents if entry.name != name]
         self.subagents.append(

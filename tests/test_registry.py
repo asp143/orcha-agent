@@ -49,6 +49,26 @@ def _register_named(api: PluginAPI, kind: str, *, replace: bool = False) -> None
         )
     elif kind == "backend":
         api.add_backend("shared", lambda config: (api.name, config), replace=replace)
+    elif kind == "middleware":
+        def shared() -> str:
+            return api.name
+
+        api.add_middleware(shared, replace=replace)
+    elif kind == "renderer":
+        api.add_renderer(
+            "shared",
+            lambda event: f"{api.name}:{event!r}",
+            replace=replace,
+        )
+    elif kind == "subagent":
+        api.add_subagent(
+            {
+                "name": "shared",
+                "description": api.name,
+                "system_prompt": f"{api.name} system prompt",
+            },
+            replace=replace,
+        )
     elif kind == "mode":
         api.add_mode(
             "shared",
@@ -59,8 +79,20 @@ def _register_named(api: PluginAPI, kind: str, *, replace: bool = False) -> None
         raise AssertionError(f"unknown registry kind: {kind}")
 
 
-@pytest.mark.parametrize("kind", ["tool", "command", "provider", "backend", "mode"])
-def test_named_registries_reject_a_second_plugin_instead_of_silently_overwriting(
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "tool",
+        "middleware",
+        "command",
+        "renderer",
+        "provider",
+        "backend",
+        "subagent",
+        "mode",
+    ],
+)
+def test_registrations_reject_a_second_plugin_instead_of_silently_overwriting(
     kind: str,
 ) -> None:
     registry = Registry()
@@ -75,12 +107,36 @@ def test_named_registries_reject_a_second_plugin_instead_of_silently_overwriting
     assert "beta" in message
 
 
-@pytest.mark.parametrize("kind", ["tool", "command", "provider", "backend", "mode"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "tool",
+        "middleware",
+        "command",
+        "renderer",
+        "provider",
+        "backend",
+        "subagent",
+        "mode",
+    ],
+)
 def test_replace_transfers_duplicate_ownership_to_the_replacing_plugin(kind: str) -> None:
     registry = Registry()
     bus = EventBus()
     _register_named(_api("alpha", registry, bus), kind)
     _register_named(_api("beta", registry, bus), kind, replace=True)
+    if kind in {"middleware", "renderer", "subagent"}:
+        collection_name = {
+            "middleware": "middleware",
+            "renderer": "renderers",
+            "subagent": "subagents",
+        }[kind]
+        registrations = getattr(registry, collection_name)
+        assert [
+            entry.plugin
+            for entry in registrations
+            if entry.name == "shared"
+        ] == ["beta"]
 
     with pytest.raises(ValueError) as raised:
         _register_named(_api("gamma", registry, bus), kind)
@@ -98,9 +154,21 @@ def test_renderer_priority_order_is_deterministic_even_when_registration_order_d
     def renderer_for(label: str) -> Callable[[object], str]:
         return lambda event: f"{label}:{event!r}"
 
-    _api("zeta", registry, bus).add_renderer("external", renderer_for("zeta"), priority=50)
-    _api("early", registry, bus).add_renderer("external", renderer_for("early"), priority=10)
-    _api("alpha", registry, bus).add_renderer("external", renderer_for("alpha"), priority=50)
+    _api("zeta", registry, bus).add_renderer(
+        "zeta-event",
+        renderer_for("zeta"),
+        priority=50,
+    )
+    _api("early", registry, bus).add_renderer(
+        "early-event",
+        renderer_for("early"),
+        priority=10,
+    )
+    _api("alpha", registry, bus).add_renderer(
+        "alpha-event",
+        renderer_for("alpha"),
+        priority=50,
+    )
 
     assert [entry.plugin for entry in registry.renderers] == ["early", "alpha", "zeta"]
     assert [entry.priority for entry in registry.renderers] == [10, 50, 50]

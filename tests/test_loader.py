@@ -9,9 +9,9 @@ from typing import Any
 import pytest
 
 from orcha_agent.core.config import Config
-from orcha_agent.core.events import EventBus
+from orcha_agent.core.events import AppStart, EventBus
 from orcha_agent.core.loader import load_plugins
-from orcha_agent.core.plugin import ModeSpec, PluginSpec
+from orcha_agent.core.plugin import ModeSpec, PluginSpec, ProviderCaps
 from orcha_agent.core.registry import Registry
 
 
@@ -314,6 +314,151 @@ def test_failed_plugin_is_isolated_and_later_plugin_still_loads(
 
     assert "survived-mode" in registry.modes
     assert "plugin isolated-bad failed: broken registration" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_failed_plugin_registration_rolls_back_registry_bus_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    failed_module = ModuleType("test_transaction_failed_plugin")
+    failed_module.PLUGIN = PluginSpec(
+        name="transaction-failed",
+        version="1.0",
+        priority=10,
+    )
+    good_module = ModuleType("test_transaction_good_plugin")
+    good_module.PLUGIN = PluginSpec(
+        name="transaction-good",
+        version="1.0",
+        priority=20,
+    )
+    observed: list[str] = []
+
+    def add_contributions(api: Any, label: str) -> None:
+        def transaction_tool() -> str:
+            return label
+
+        async def transaction_command(ctx: Any, args: str) -> None:
+            del ctx, args
+
+        class TransactionMiddleware:
+            name = "transaction-middleware"
+
+        async def observe_start(event: AppStart) -> None:
+            del event
+            observed.append(label)
+
+        api.add_command(
+            "transaction-command",
+            transaction_command,
+            help=label,
+        )
+        api.add_tool(transaction_tool)
+        api.add_middleware(TransactionMiddleware())
+        api.add_renderer(
+            "transaction-renderer",
+            lambda event: f"{label}:{event!r}",
+        )
+        api.add_provider(
+            "transaction-provider",
+            lambda model, config: (label, model, config),
+            capabilities=ProviderCaps(
+                tool_calling=True,
+                streaming=True,
+                thinking=False,
+                structured_output=False,
+                max_context=None,
+            ),
+        )
+        api.add_backend(
+            "transaction-backend",
+            lambda config: (label, config),
+        )
+        api.add_subagent(
+            {
+                "name": "transaction-subagent",
+                "description": label,
+                "system_prompt": f"{label} system prompt",
+            }
+        )
+        api.add_mode(
+            "transaction-mode",
+            ModeSpec(description=label, interrupt_on={}, allowed_tools=None),
+        )
+        api.on(AppStart, observe_start)
+        api.system_prompt_fragment("transaction prompt")
+
+    def register_failed(api: Any) -> None:
+        api.state["nested"]["value"] = "mutated"
+        api.state["temporary"] = "must be rolled back"
+        add_contributions(api, "failed")
+        raise RuntimeError("registration stopped after partial contributions")
+
+    def register_good(api: Any) -> None:
+        add_contributions(api, "good")
+
+    failed_module.register = register_failed
+    good_module.register = register_good
+    entry_points = EntryPoints(
+        [
+            EntryPoint(failed_module, name="transaction-failed"),
+            EntryPoint(good_module, name="transaction-good"),
+        ]
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda **kwargs: entry_points.select(group=kwargs["group"]) if kwargs else entry_points,
+    )
+    registry = Registry()
+    bus = EventBus()
+    state_by_plugin = {
+        "transaction-failed": {
+            "nested": {"value": "preserved"},
+        }
+    }
+
+    records = load_plugins(
+        registry,
+        bus,
+        config_for(tmp_path),
+        state_by_plugin=state_by_plugin,
+    )
+
+    statuses = {record.name: record.status for record in records}
+    assert statuses["transaction-failed"] == "failed"
+    assert statuses["transaction-good"] == "loaded"
+    await bus.emit(AppStart(ctx=object()))
+    assert registry.tools["transaction_tool"]() == "good"
+    assert registry.commands["transaction-command"].plugin == "transaction-good"
+    assert registry.providers["transaction-provider"].plugin == "transaction-good"
+    assert registry.backends["transaction-backend"].plugin == "transaction-good"
+    assert registry.modes["transaction-mode"].description == "good"
+    assert [
+        entry.plugin
+        for entry in registry.middleware
+        if entry.name == "transaction-middleware"
+    ] == ["transaction-good"]
+    assert [
+        entry.plugin
+        for entry in registry.renderers
+        if entry.name == "transaction-renderer"
+    ] == ["transaction-good"]
+    assert [
+        entry.plugin
+        for entry in registry.subagents
+        if entry.name == "transaction-subagent"
+    ] == ["transaction-good"]
+    assert observed == ["good"]
+    assert [
+        fragment.plugin
+        for fragment in registry.prompt_fragments
+        if fragment.text == "transaction prompt"
+    ] == ["transaction-good"]
+    assert state_by_plugin["transaction-failed"] == {
+        "nested": {"value": "preserved"},
+    }
 
 
 def test_strict_plugins_reraises_registration_failure(tmp_path: Path) -> None:
