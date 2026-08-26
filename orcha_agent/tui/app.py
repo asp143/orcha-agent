@@ -177,6 +177,7 @@ class AppContext:
     thread_id: str
     agent: Any = None
     summarizer: Any = None
+    history_model: str | list[str] | None = None
     exit_requested: bool = False
     rebuild_requested: bool = False
     _title_written: bool = False
@@ -215,6 +216,25 @@ class AppContext:
             "summarizer",
         )
 
+    def _clean_history_for_model(
+        self,
+        graph: Any,
+        source_model: str | list[str] | None,
+        target_model: str | list[str],
+    ) -> None:
+        if source_model is None:
+            return
+        if _primary_provider_prefix(
+            source_model,
+            self.cfg.models,
+        ) == _primary_provider_prefix(target_model, self.cfg.models):
+            return
+        source_cfg = replace(self.cfg, model=source_model)
+        foreign = _foreign_block_types(self.registry, source_cfg)
+        if foreign:
+            strip_foreign_blocks(graph, self.thread_config, foreign)
+
+
     def report_provider_error(self, exc: Exception) -> None:
         self.console.error(
             f"{type(exc).__name__}: {exc}\n"
@@ -234,12 +254,18 @@ class AppContext:
                 always_allowed=self._always_allowed(),
             )
             candidate_summarizer = self._resolve_summarizer(self.cfg)
+            self._clean_history_for_model(
+                candidate_agent,
+                self.history_model,
+                self.cfg.model,
+            )
         except Exception as exc:
             self.report_provider_error(exc)
             return False
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
         self.rebuild_requested = False
+        self.history_model = None
         return True
 
 
@@ -312,6 +338,7 @@ class AppContext:
                 trust_all=self.cfg.trust_all_cwd,
             ),
         )
+        self.history_model = _stored_model(saved_session.model)
         if self.agent is None:
             self.cfg = candidate_cfg
             self.summarizer = None
@@ -327,6 +354,11 @@ class AppContext:
                 always_allowed=self._always_allowed(),
             )
             candidate_summarizer = self._resolve_summarizer(candidate_cfg)
+            self._clean_history_for_model(
+                candidate_agent,
+                _stored_model(saved_session.model),
+                candidate_cfg.model,
+            )
         except Exception:
             self.cfg = old_cfg
             self.rebuild_requested = old_rebuild_requested
@@ -339,6 +371,7 @@ class AppContext:
         self.cfg = candidate_cfg
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
+        self.history_model = None
         self.rebuild_requested = False
         await self._bus.emit(SessionSwitch(old=old, new=thread_id))
 
@@ -368,7 +401,7 @@ class AppContext:
         try:
             if foreign:
                 strip_foreign_blocks(
-                    self.agent,
+                    self.agent or candidate_agent,
                     self.thread_config,
                     foreign,
                 )
@@ -762,6 +795,7 @@ async def run_app(cfg: Config) -> int:
         ConsoleOutput().error(f"Cannot open session database {cfg.db_path}: {exc}")
         return 1
     with store:
+        history_model: str | list[str] | None = None
         if cfg.list_sessions:
             console = ConsoleOutput()
             for session in store.list():
@@ -772,13 +806,14 @@ async def run_app(cfg: Config) -> int:
             if saved_session is None:
                 ConsoleOutput().error(f"Unknown session: {cfg.resume}")
                 return 1
+            history_model = _stored_model(saved_session.model)
             cfg = replace(
                 cfg,
                 cwd=Path(saved_session.cwd),
                 model=(
                     cfg.model
                     if cfg.model_overridden
-                    else _stored_model(saved_session.model)
+                    else history_model
                 ),
                 mode=saved_session.mode,
                 trust_cwd=is_trusted_cwd(
@@ -816,6 +851,7 @@ async def run_app(cfg: Config) -> int:
             plugin_states=states,
             console=ConsoleOutput(),
             thread_id=thread_id,
+            history_model=history_model,
         )
         holder["ctx"] = ctx
         await bus.emit(AppStart(ctx=ctx))

@@ -351,6 +351,14 @@ class _SessionDouble:
         return self.plugin_states.get(thread_id, {})
 
 
+class _SessionStoreDouble(_SessionDouble):
+    def __enter__(self) -> "_SessionStoreDouble":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
 class _StreamGraph:
     def __init__(
         self,
@@ -412,6 +420,20 @@ class _HistoryGraph:
         ):
             replacement = replacement[1:]
         self.messages = replacement
+
+
+class _ObservedHistoryGraph(_HistoryGraph):
+    def __init__(self, messages: list[Any]) -> None:
+        super().__init__(messages)
+        self.first_use_messages: list[Any] | None = None
+
+    async def astream(
+        self,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> AsyncIterator[tuple[str, Any]]:
+        self.first_use_messages = list(self.messages)
+        yield "updates", {}
 
 
 def _config(tmp_path: Path, *, model: str = "old:model", cwd: Path | None = None) -> Config:
@@ -988,6 +1010,84 @@ async def test_run_app_model_switch_builds_before_the_following_turn(
 
 
 @pytest.mark.asyncio
+async def test_first_model_command_cleans_candidate_history_before_lazy_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_history = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "provider-private"},
+            {"type": "text", "text": "visible"},
+        ]
+    )
+    candidate_graph = _HistoryGraph([private_history])
+    store = _SessionStoreDouble()
+    console = _RecordingConsole()
+    prompt = _PromptScript("/model new:ready")
+    switches: list[tuple[str, str]] = []
+
+    async def build_candidate(
+        _registry: Registry,
+        cfg: Config,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> _HistoryGraph:
+        assert cfg.model == "new:ready"
+        return candidate_graph
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        api = PluginAPI(
+            name="model-command-runtime",
+            registry=registry,
+            bus=bus,
+            config={},
+            state={},
+            request_rebuild=lambda: None,
+        )
+        commands_model.register(api)
+        registry.providers["old"] = SimpleNamespace(
+            foreign_block_types=frozenset({"reasoning"})
+        )
+
+        async def record_switch(event: ModelSwitch) -> None:
+            switches.append((event.old, event.new))
+
+        bus.on(ModelSwitch, record_switch, plugin="test", priority=0)
+        return []
+
+    monkeypatch.setattr(app_module, "SessionStore", lambda _path: store)
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "build_agent", build_candidate)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(
+        AppContext,
+        "_resolve_summarizer",
+        lambda _self, _cfg: object(),
+    )
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="old:configured"))
+
+    assert status == 0
+    assert console.errors == []
+    assert switches == [("old:configured", "new:ready")]
+    assert store.records["new-thread"].model == "new:ready"
+    assert candidate_graph.messages == [
+        private_history.model_copy(
+            update={"content": [{"type": "text", "text": "visible"}]}
+        )
+    ]
+    assert len(candidate_graph.update_calls) == 1
+    assert candidate_graph.update_calls[0][1] == "model"
+
+
+@pytest.mark.asyncio
 async def test_failed_model_switch_preserves_config_graph_and_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1430,6 +1530,120 @@ async def test_resume_keeps_explicit_cli_model_override(
 
 
 @pytest.mark.asyncio
+async def test_resume_with_cross_provider_override_cleans_candidate_before_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = SessionInfo(
+        thread_id="saved",
+        cwd=str(tmp_path / "saved"),
+        model="old:stored",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+        mode="ask",
+    )
+    private_history = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "provider-private"},
+            {"type": "text", "text": "visible"},
+        ]
+    )
+    candidate_graph = _ObservedHistoryGraph([private_history])
+    ctx = _context(
+        tmp_path,
+        agent=object(),
+        session=_SessionDouble(records={"saved": saved}),
+    )
+    ctx.cfg = replace(
+        ctx.cfg,
+        model="new:cli",
+        model_overridden=True,
+    )
+    ctx._registry.providers["old"] = SimpleNamespace(
+        foreign_block_types=frozenset({"reasoning"})
+    )
+
+    async def build_candidate(*_args: Any, **_kwargs: Any) -> _ObservedHistoryGraph:
+        return candidate_graph
+
+    monkeypatch.setattr(app_module, "build_agent", build_candidate)
+    monkeypatch.setattr(
+        AppContext,
+        "_resolve_summarizer",
+        lambda _self, _cfg: object(),
+    )
+
+    await ctx.resume("saved")
+    await _run_turn(ctx, "continue")
+
+    cleaned_history = [
+        private_history.model_copy(
+            update={"content": [{"type": "text", "text": "visible"}]}
+        )
+    ]
+    assert candidate_graph.messages == cleaned_history
+    assert candidate_graph.first_use_messages == cleaned_history
+    assert len(candidate_graph.update_calls) == 1
+    assert candidate_graph.update_calls[0][1] == "model"
+    assert ctx.cfg.model == "new:cli"
+    assert ctx.agent is candidate_graph
+
+
+@pytest.mark.asyncio
+async def test_resume_with_same_provider_override_leaves_candidate_history_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = SessionInfo(
+        thread_id="saved",
+        cwd=str(tmp_path / "saved"),
+        model="old:stored",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+        mode="ask",
+    )
+    private_history = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "provider-private"},
+            {"type": "text", "text": "visible"},
+        ]
+    )
+    candidate_graph = _ObservedHistoryGraph([private_history])
+    ctx = _context(
+        tmp_path,
+        agent=object(),
+        session=_SessionDouble(records={"saved": saved}),
+    )
+    ctx.cfg = replace(
+        ctx.cfg,
+        model="old:cli",
+        model_overridden=True,
+    )
+    ctx._registry.providers["old"] = SimpleNamespace(
+        foreign_block_types=frozenset({"reasoning"})
+    )
+
+    async def build_candidate(*_args: Any, **_kwargs: Any) -> _ObservedHistoryGraph:
+        return candidate_graph
+
+    monkeypatch.setattr(app_module, "build_agent", build_candidate)
+    monkeypatch.setattr(
+        AppContext,
+        "_resolve_summarizer",
+        lambda _self, _cfg: object(),
+    )
+
+    await ctx.resume("saved")
+    await _run_turn(ctx, "continue")
+
+    assert candidate_graph.messages == [private_history]
+    assert candidate_graph.first_use_messages == [private_history]
+    assert candidate_graph.update_calls == []
+    assert ctx.cfg.model == "old:cli"
+    assert ctx.agent is candidate_graph
+
+
+@pytest.mark.asyncio
 async def test_resume_rechecks_trust_for_saved_working_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1592,6 +1806,96 @@ async def test_run_app_lists_sessions_and_returns_zero_without_prompting(
     assert saved.thread_id in rendered
     assert saved.cwd in rendered
     assert "Saved work" in rendered
+
+
+@pytest.mark.parametrize(
+    ("configured_model", "should_clean"),
+    [("new:cli", True), ("old:cli", False)],
+    ids=["cross-provider", "same-provider"],
+)
+@pytest.mark.asyncio
+async def test_run_app_resume_override_cleans_only_across_providers_before_first_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_model: str,
+    should_clean: bool,
+) -> None:
+    saved = SessionInfo(
+        thread_id="saved",
+        cwd=str(tmp_path / "saved"),
+        model="old:stored",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+        mode="ask",
+    )
+    private_history = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "provider-private"},
+            {"type": "text", "text": "visible"},
+        ]
+    )
+    candidate_graph = _ObservedHistoryGraph([private_history])
+    store = _SessionStoreDouble(records={"saved": saved})
+    console = _RecordingConsole()
+    prompt = _PromptScript("continue")
+    built_models: list[str | list[str]] = []
+
+    async def build_candidate(
+        _registry: Registry,
+        cfg: Config,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> _ObservedHistoryGraph:
+        built_models.append(cfg.model)
+        return candidate_graph
+
+    def load_runtime(
+        registry: Registry,
+        _bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        registry.providers["old"] = SimpleNamespace(
+            foreign_block_types=frozenset({"reasoning"})
+        )
+        return []
+
+    monkeypatch.setattr(app_module, "SessionStore", lambda _path: store)
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "build_agent", build_candidate)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(
+        AppContext,
+        "_resolve_summarizer",
+        lambda _self, _cfg: object(),
+    )
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+    cfg = replace(
+        _config(tmp_path, model=configured_model),
+        resume="saved",
+        model_overridden=True,
+    )
+
+    status = await run_app(cfg)
+
+    expected_history = (
+        [
+            private_history.model_copy(
+                update={"content": [{"type": "text", "text": "visible"}]}
+            )
+        ]
+        if should_clean
+        else [private_history]
+    )
+    assert status == 0
+    assert console.errors == []
+    assert built_models == [configured_model]
+    assert candidate_graph.messages == expected_history
+    assert candidate_graph.first_use_messages == expected_history
+    assert [as_node for _messages, as_node in candidate_graph.update_calls] == (
+        ["model"] if should_clean else []
+    )
 
 
 @pytest.mark.asyncio
