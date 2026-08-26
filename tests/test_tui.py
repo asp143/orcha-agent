@@ -21,6 +21,7 @@ from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
     AppExit,
     EventBus,
+    InterruptRaised,
     ModelChunk,
     ModelSwitch,
     SessionSwitch,
@@ -29,7 +30,7 @@ from orcha_agent.core.events import (
     TurnEnd,
     TurnStart,
 )
-from orcha_agent.core.plugin import ModeSpec, PluginAPI
+from orcha_agent.core.plugin import ModeSpec, PluginAPI, Resolved
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionInfo, SessionStore
 from orcha_agent.tui.app import (
@@ -448,6 +449,85 @@ async def test_unhandled_interrupt_rejects_every_action_and_resumes_turn(
 
 
 @pytest.mark.asyncio
+async def test_non_dict_interrupt_payload_is_rejected_without_error(
+    tmp_path: Path,
+) -> None:
+    class MalformedInterruptGraph:
+        def __init__(self) -> None:
+            self.inputs: list[Any] = []
+
+        async def astream(
+            self,
+            next_input: Any,
+            **_kwargs: Any,
+        ) -> AsyncIterator[tuple[str, Any]]:
+            self.inputs.append(next_input)
+            if len(self.inputs) == 1:
+                yield (
+                    "updates",
+                    {
+                        "__interrupt__": [
+                            SimpleNamespace(id="malformed", value="not-a-dict")
+                        ]
+                    },
+                )
+
+    graph = MalformedInterruptGraph()
+    ctx = _context(tmp_path, agent=graph)
+
+    await _run_turn(ctx, "continue")
+
+    assert len(graph.inputs) == 2
+    assert isinstance(graph.inputs[1], Command)
+    assert graph.inputs[1].resume == {"decisions": []}
+    assert len(ctx.console.warnings) == 1
+    assert ctx.console.errors == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_interrupt_id_is_approved_once(
+    tmp_path: Path,
+) -> None:
+    interrupt = SimpleNamespace(
+        id="interrupt-1",
+        value={"action_requests": [{"name": "write_file", "args": {}}]},
+    )
+
+    class DuplicateInterruptGraph:
+        async def astream(
+            self,
+            next_input: Any,
+            **_kwargs: Any,
+        ) -> AsyncIterator[tuple[str, Any]]:
+            if isinstance(next_input, Command):
+                return
+            yield ("updates", {"__interrupt__": [interrupt]})
+            yield ("updates", {"__interrupt__": [interrupt]})
+
+    ctx = _context(tmp_path, agent=DuplicateInterruptGraph())
+    bus = EventBus()
+    ctx._bus = bus
+    ctx.bus = app_module.EventBusView(bus)
+    approvals: list[str] = []
+    raised: list[InterruptRaised] = []
+
+    async def record(event: InterruptRaised) -> None:
+        raised.append(event)
+
+    async def approve(event: InterruptRaised) -> Resolved:
+        approvals.append(event.payload["action_requests"][0]["name"])
+        return Resolved(resume_value={"decisions": [{"type": "approve"}]})
+
+    bus.on(InterruptRaised, record, plugin="record", priority=0)
+    bus.on(InterruptRaised, approve, plugin="approve", priority=1)
+
+    await _run_turn(ctx, "write")
+
+    assert approvals == ["write_file"]
+    assert len(raised) == 1
+
+
+@pytest.mark.asyncio
 async def test_subgraph_stream_namespace_marks_model_chunk_as_subagent(
     tmp_path: Path,
 ) -> None:
@@ -558,6 +638,60 @@ async def test_run_app_continues_after_cancelled_turn_and_emits_app_exit(
     assert [type(event) for event in app_events] == [AppExit]
     assert console.errors == []
     assert console.warnings == ["interrupted"]
+
+
+@pytest.mark.asyncio
+async def test_run_app_continues_after_cancelled_command_and_emits_app_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    app_events: list[AppExit] = []
+
+    class Prompt:
+        calls = 0
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def prompt_async(self, _message: str) -> str:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                return "/compact"
+            raise EOFError
+
+    async def cancelled_command(*_args: Any, **_kwargs: Any) -> bool:
+        raise asyncio.CancelledError
+
+    def load_test_plugins(
+        _registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        async def record_exit(event: AppExit) -> None:
+            app_events.append(event)
+
+        bus.on(AppExit, record_exit)
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", Prompt)
+    monkeypatch.setattr(app_module, "dispatch_command", cancelled_command)
+    monkeypatch.setattr(app_module, "load_plugins", load_test_plugins)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+    monkeypatch.setattr(
+        app_module,
+        "build_agent",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=_StreamGraph([])),
+    )
+
+    status = await run_app(_config(tmp_path))
+
+    assert status == 0
+    assert Prompt.calls == 2
+    assert console.warnings == ["interrupted"]
+    assert len(app_events) == 1
 
 @pytest.mark.asyncio
 async def test_failed_model_switch_preserves_config_graph_and_history(
@@ -1086,7 +1220,8 @@ async def test_clear_persists_current_plugin_state_before_clearing_in_place(
     ]
 
 
-def test_app_context_exposes_live_read_only_registry_and_bus_views(
+@pytest.mark.asyncio
+async def test_app_context_exposes_live_read_only_registry_and_bus_views(
     tmp_path: Path,
 ) -> None:
     registry = Registry()
@@ -1110,18 +1245,21 @@ def test_app_context_exposes_live_read_only_registry_and_bus_views(
         state={},
         request_rebuild=lambda: None,
     )
+    emitted: list[str] = []
 
     async def command_handler(_ctx: object, _args: str) -> None:
         return None
 
-    async def event_handler(_event: TurnStart) -> None:
-        return None
+    async def event_handler(event: TurnStart) -> None:
+        emitted.append(event.text)
 
     api.add_command("late", command_handler, help="registered after context creation")
     api.on(TurnStart, event_handler)
 
     assert ctx.registry.commands["late"].handler is command_handler
     assert any(entry.handler is event_handler for entry in ctx.bus.handlers)
+    await ctx.bus.emit(TurnStart(thread_id="current", text="plugin event"))
+    assert emitted == ["plugin event"]
     with pytest.raises(TypeError):
         ctx.registry.commands["forbidden"] = object()
     with pytest.raises(AttributeError):

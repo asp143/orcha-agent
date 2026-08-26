@@ -362,12 +362,14 @@ async def test_rejected_ask_write_ends_without_creating_a_file(
         writes=(("/rejected.txt", "must not be written\n"),),
         approval_state={},
     )
+    prompt_calls: list[str] = []
 
     async def reject(
         _name: str,
         _args: dict[str, Any],
         _description: str | None,
     ) -> str:
+        prompt_calls.append(_name)
         if isinstance(prompt_result, EOFError):
             raise prompt_result
         return prompt_result
@@ -379,6 +381,8 @@ async def test_rejected_ask_write_ends_without_creating_a_file(
 
         assert not (tmp_path / "rejected.txt").exists()
         assert ctx.console.errors == []
+        assert ctx.console.warnings == []
+        assert prompt_calls == ["write_file"]
     finally:
         session.close()
 

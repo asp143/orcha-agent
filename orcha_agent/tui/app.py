@@ -146,6 +146,9 @@ class EventBusView:
     def __init__(self, bus: Any) -> None:
         self._bus = bus
 
+    async def emit(self, event: object) -> Handled | None:
+        return await self._bus.emit(event)
+
     def __getattr__(self, name: str) -> Any:
         value = getattr(self._bus, name)
         if isinstance(value, dict):
@@ -291,9 +294,10 @@ class AppContext:
         self.rebuild_requested = False
         await self._bus.emit(SessionSwitch(old=old, new=thread_id))
 
-    async def switch_model(self, spec: str) -> None:
+    async def switch_model(self, spec: str | list[str]) -> None:
         old_model = self.cfg.model
         old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
+        new_label = spec if isinstance(spec, str) else ",".join(spec)
         candidate_cfg = replace(self.cfg, model=spec)
         candidate_agent = await build_agent(
             self.registry,
@@ -327,7 +331,7 @@ class AppContext:
         self.summarizer = candidate_summarizer
         self.agent = candidate_agent
         self.rebuild_requested = False
-        await self._bus.emit(ModelSwitch(old=old_label, new=spec))
+        await self._bus.emit(ModelSwitch(old=old_label, new=new_label))
 
     async def switch_mode(self, name: str) -> None:
         if name not in self.registry.modes:
@@ -568,12 +572,28 @@ async def _message_event(
         )
 
 
-async def _updates_event(ctx: AppContext, data: Any, seen_results: set[str]) -> Resolved | None:
+async def _updates_event(
+    ctx: AppContext,
+    data: Any,
+    seen_results: set[str],
+    seen_interrupts: set[str],
+) -> Resolved | None:
     if not isinstance(data, dict):
         return None
     interrupts = data.get("__interrupt__", ())
     if interrupts:
-        payload = interrupts[0].value
+        interrupt = interrupts[0]
+        interrupt_id = getattr(interrupt, "id", None)
+        if isinstance(interrupt_id, str):
+            if interrupt_id in seen_interrupts:
+                return None
+            seen_interrupts.add(interrupt_id)
+        raw_payload = getattr(interrupt, "value", None)
+        payload = (
+            raw_payload
+            if isinstance(raw_payload, dict)
+            else {"action_requests": [], "value": raw_payload}
+        )
         warning = "Approval unresolved; rejecting pending actions."
         try:
             resolution = await ctx._bus.emit(InterruptRaised(payload=payload))
@@ -614,6 +634,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     tool_calls = _ToolCallBuffer()
     model_labels = _ModelLabelBuffer()
     seen_results: set[str] = set()
+    seen_interrupts: set[str] = set()
     try:
         while True:
             resolution: Resolved | None = None
@@ -637,7 +658,12 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                         namespace,
                     )
                 elif mode == "updates":
-                    candidate = await _updates_event(ctx, data, seen_results)
+                    candidate = await _updates_event(
+                        ctx,
+                        data,
+                        seen_results,
+                        seen_interrupts,
+                    )
                     if candidate is not None:
                         resolution = candidate
             if resolution is None:
@@ -763,7 +789,7 @@ async def run_app(cfg: Config) -> int:
                         await ctx.rebuild()
                     continue
                 await _run_cancellable_turn(ctx, text)
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 ctx.console.warning("interrupted")
             except EOFError:
                 break
