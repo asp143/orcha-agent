@@ -137,12 +137,18 @@ def create_model(
         request.headers["chatgpt-account-id"] = account_id
 
     def check_response(response: httpx.Response) -> None:
-        response.read()
+        if response.status_code not in {401, 429}:
+            return
+        if response.status_code == 429:
+            response.read()
         if error := _friendly_error(response):
             raise error
 
     async def async_check_response(response: httpx.Response) -> None:
-        await response.aread()
+        if response.status_code not in {401, 429}:
+            return
+        if response.status_code == 429:
+            await response.aread()
         if error := _friendly_error(response):
             raise error
 

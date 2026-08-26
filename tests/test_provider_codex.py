@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from io import StringIO
 from types import SimpleNamespace
 from typing import Any
@@ -47,6 +47,20 @@ class FakeTokenSource:
     def get_token(self) -> tuple[str, str]:
         self.calls += 1
         return f"fake-access-{self.calls}", f"fake-account-{self.calls}"
+
+
+class _RecordingByteStream(httpx.SyncByteStream, httpx.AsyncByteStream):
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.iterations: list[str] = []
+
+    def __iter__(self) -> Iterator[bytes]:
+        self.iterations.append("sync")
+        yield self.body
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.iterations.append("async")
+        yield self.body
 
 
 def _successful_sse() -> httpx.Response:
@@ -205,6 +219,61 @@ async def test_async_request_uses_the_same_fresh_auth_hook() -> None:
     assert len(requests) == 1
     assert requests[0].headers["authorization"] == "Bearer fake-access-1"
     assert requests[0].headers["chatgpt-account-id"] == "fake-account-1"
+
+
+def test_successful_sse_sync_hook_does_not_read_before_consumption() -> None:
+    body = b"data: [DONE]\n\n"
+    stream = _RecordingByteStream(body)
+    model = provider_codex.create_model(
+        "gpt-5.6-sol",
+        {},
+        FakeTokenSource(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
+        ),
+    )
+
+    with model.http_client.stream(
+        "POST",
+        "https://chatgpt.com/backend-api/codex/responses",
+    ) as response:
+        assert response.status_code == 200
+        assert stream.iterations == []
+        assert response.read() == body
+
+    assert stream.iterations == ["sync"]
+
+
+@pytest.mark.asyncio
+async def test_successful_sse_async_hook_does_not_aread_before_consumption() -> None:
+    body = b"data: [DONE]\n\n"
+    stream = _RecordingByteStream(body)
+    model = provider_codex.create_model(
+        "gpt-5.6-sol",
+        {},
+        FakeTokenSource(),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
+        ),
+    )
+
+    async with model.http_async_client.stream(
+        "POST",
+        "https://chatgpt.com/backend-api/codex/responses",
+    ) as response:
+        assert response.status_code == 200
+        assert stream.iterations == []
+        assert await response.aread() == body
+
+    assert stream.iterations == ["async"]
 
 
 def test_unauthorized_response_directs_user_to_codex_login() -> None:
