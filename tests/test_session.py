@@ -61,3 +61,12 @@ def test_plugin_state_round_trips_as_json_across_reopen(tmp_path: Path) -> None:
             "planner": state,
             "theme": {"name": "dark"},
         }
+
+
+def test_session_title_can_be_set_from_first_user_message(tmp_path: Path) -> None:
+    with SessionStore(tmp_path / "sessions.db") as store:
+        session = store.create(tmp_path, "fake:model")
+
+        store.set_title(session.thread_id, "Implement plugin loading")
+
+        assert store.get(session.thread_id).title == "Implement plugin loading"

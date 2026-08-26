@@ -255,6 +255,11 @@ async def _updates_event(ctx: AppContext, data: Any, seen_results: set[str]) -> 
 
 
 async def _run_turn(ctx: AppContext, text: str) -> None:
+    session_info = ctx.session.get(ctx.thread_id)
+    if session_info is not None and session_info.title is None:
+        title = " ".join(text.split())[:80]
+        if title:
+            ctx.session.set_title(ctx.thread_id, title)
     await ctx.bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
     seen_tools: set[str] = set()

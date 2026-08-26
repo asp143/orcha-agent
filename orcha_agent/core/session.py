@@ -95,6 +95,13 @@ class SessionStore:
     def exists(self, thread_id: str) -> bool:
         return self.get(thread_id) is not None
 
+    def set_title(self, thread_id: str, title: str) -> None:
+        self._connection.execute(
+            "UPDATE sessions SET title = ? WHERE thread_id = ?",
+            (title, thread_id),
+        )
+        self._connection.commit()
+
     def list(self) -> list[SessionInfo]:
         rows = self._connection.execute(
             "SELECT thread_id, cwd, model, created, title FROM sessions ORDER BY created DESC"
