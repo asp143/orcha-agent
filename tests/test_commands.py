@@ -136,6 +136,7 @@ async def test_providers_reports_key_presence_without_printing_secret_value(
             max_context=None,
         ),
         env_keys=("ORCHA_TEST_API_KEY",),
+        models=("fake-chat", "fake-reasoner"),
     )
     commands_core.register(api)
     ctx, output = _context(width=240)
@@ -145,6 +146,8 @@ async def test_providers_reports_key_presence_without_printing_secret_value(
 
     rendered = output.getvalue()
     assert "ORCHA_TEST_API_KEY: yes" in rendered
+    assert "fake-chat" in rendered
+    assert "fake-reasoner" in rendered
     assert secret not in rendered
 
 

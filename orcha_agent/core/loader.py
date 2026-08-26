@@ -365,9 +365,16 @@ def load_plugins(
         state_snapshot = deepcopy(state)
         registry_snapshot = _snapshot_registry(registry)
         handlers_snapshot = bus.handlers.copy()
+        plugin_config = dict(cfg.plugin_config(spec.name))
+        if spec.name.startswith("provider_"):
+            prefix = spec.name.removeprefix("provider_")
+            plugin_config = {
+                **cfg.providers.get(prefix, {}),
+                **plugin_config,
+            }
         api = PluginAPI(
             name=spec.name,
-            config=cfg.plugin_config(spec.name),
+            config=plugin_config,
             state=state,
             registry=registry,
             bus=bus,

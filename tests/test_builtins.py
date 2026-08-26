@@ -27,6 +27,7 @@ EXPECTED_BUILTIN_PLUGINS = {
     "memory",
     "modes",
     "provider_anthropic",
+    "provider_codex",
     "provider_google",
     "provider_langchain",
     "provider_ollama",
@@ -38,6 +39,8 @@ EXPECTED_COMMANDS = {
     "compact",
     "exit",
     "help",
+    "login",
+    "logout",
     "mode",
     "model",
     "plugins",
@@ -45,7 +48,7 @@ EXPECTED_COMMANDS = {
     "resume",
     "sessions",
 }
-EXPECTED_PROVIDERS = {"anthropic", "google", "langchain", "ollama", "openai"}
+EXPECTED_PROVIDERS = {"anthropic", "codex", "google", "langchain", "ollama", "openai"}
 EXPECTED_MODES = {"ask", "edit", "plan", "yolo"}
 
 

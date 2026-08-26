@@ -28,6 +28,7 @@ class CommandRegistration:
 @dataclass(frozen=True, slots=True)
 class ProviderRegistration:
     plugin: str
+    models: tuple[str, ...]
     factory: ProviderFactory
     capabilities: Any
     env_keys: tuple[str, ...]
@@ -181,6 +182,7 @@ class Registry:
         factory: ProviderFactory,
         *,
         capabilities: Any,
+        models: Sequence[str] = (),
         env_keys: Sequence[str] = (),
         harness: Any | None = None,
         foreign_block_types: Sequence[str] = (),
@@ -190,6 +192,7 @@ class Registry:
         self._claim("provider", prefix, plugin, self._provider_owners, replace=replace)
         self.providers[prefix] = ProviderRegistration(
             plugin=plugin,
+            models=tuple(models),
             factory=factory,
             capabilities=capabilities,
             env_keys=tuple(env_keys),

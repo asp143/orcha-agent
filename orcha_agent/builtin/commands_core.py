@@ -90,6 +90,7 @@ async def _logout(ctx: Any, args: str) -> None:
 async def _providers(ctx: Any, _args: str) -> None:
     table = Table(title="Providers")
     table.add_column("Prefix", style="cyan")
+    table.add_column("Models")
     table.add_column("Available")
     table.add_column("Environment")
     table.add_column("Capabilities")
@@ -102,8 +103,10 @@ async def _providers(ctx: Any, _args: str) -> None:
         ) or "n/a"
         auth = ctx.registry.auth.get(prefix)
         auth_status = auth.flow.status() if auth is not None else "not configured"
+        models = ", ".join(provider.models) or "provider-defined"
         table.add_row(
             prefix,
+            models,
             availability,
             environment,
             _capabilities(provider.capabilities),
