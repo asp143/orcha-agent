@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import asyncio
 import base64
 import json
 import time
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from langchain_openai import ChatOpenAI
@@ -33,6 +35,8 @@ SCOPES = "openid profile email offline_access"
 REDIRECT_PORT = 1455
 REDIRECT_PATH = "/auth/callback"
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_HOST = urlparse(CODEX_BASE_URL).hostname
+ORIGINATOR_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 DEFAULT_ORIGINATOR = "pi"
 
 
@@ -52,6 +56,15 @@ def extract_account_id(access_token: str) -> str:
         return ""
     value = auth.get("chatgpt_account_id", "")
     return value if isinstance(value, str) else ""
+
+def _originator(value: Any) -> str:
+    originator = str(value or DEFAULT_ORIGINATOR)
+    if ORIGINATOR_PATTERN.fullmatch(originator) is None:
+        raise ValueError(
+            "originator must contain only letters, numbers, dot, underscore, or hyphen"
+        )
+    return originator
+
 
 
 def extract_email(id_token: str) -> str:
@@ -124,14 +137,22 @@ def create_model(
 ) -> ChatOpenAI:
     """Create a Codex Responses API model with per-request fresh OAuth headers."""
 
-    originator = str(config.get("originator") or DEFAULT_ORIGINATOR)
+    originator = _originator(config.get("originator"))
 
     def authorize(request: httpx.Request) -> None:
+        if request.url.scheme != "https" or request.url.host != CODEX_HOST:
+            request.headers.pop("Authorization", None)
+            request.headers.pop("chatgpt-account-id", None)
+            return
         access, account_id = token_source.get_token()
         request.headers["Authorization"] = f"Bearer {access}"
         request.headers["chatgpt-account-id"] = account_id
 
     async def async_authorize(request: httpx.Request) -> None:
+        if request.url.scheme != "https" or request.url.host != CODEX_HOST:
+            request.headers.pop("Authorization", None)
+            request.headers.pop("chatgpt-account-id", None)
+            return
         access, account_id = await asyncio.to_thread(token_source.get_token)
         request.headers["Authorization"] = f"Bearer {access}"
         request.headers["chatgpt-account-id"] = account_id
@@ -158,10 +179,12 @@ def create_model(
         sync_transport = transport
         async_transport = transport
     http_client = httpx.Client(
+        follow_redirects=False,
         transport=sync_transport,
         event_hooks={"request": [authorize], "response": [check_response]},
     )
     http_async_client = httpx.AsyncClient(
+        follow_redirects=False,
         transport=async_transport,
         event_hooks={
             "request": [async_authorize],
@@ -193,7 +216,7 @@ def create_model(
 
 
 def register(api: PluginAPI) -> None:
-    originator = str(api.config.get("originator") or DEFAULT_ORIGINATOR)
+    originator = _originator(api.config.get("originator"))
     store_path = api.config.get("auth_path")
     store = CredentialStore(store_path) if store_path else CredentialStore()
     oauth = OAuthPKCEFlow(
@@ -210,6 +233,7 @@ def register(api: PluginAPI) -> None:
         },
     )
     token_source = TokenSource(store, "codex", oauth)
+
     async def login(ctx: Any) -> None:
         response = await asyncio.to_thread(
             oauth.authorize,
@@ -224,10 +248,10 @@ def register(api: PluginAPI) -> None:
             "type": "oauth",
             "access": access,
             "refresh": refresh if isinstance(refresh, str) else "",
-            "expires": int(time.time() * 1000) + int(response.get("expires_in", 3600)) * 1000,
+            "expires": int(time.time() * 1000)
+            + int(response.get("expires_in", 3600)) * 1000,
             "account_id": extract_account_id(access),
             "email": extract_email(id_token) if isinstance(id_token, str) else "",
-            "id_token": id_token if isinstance(id_token, str) else "",
         }
         store.set("codex", credential)
         ctx.console.print(f"Logged in to codex as {_status(store)}")

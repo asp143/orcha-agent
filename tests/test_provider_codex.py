@@ -135,21 +135,97 @@ def test_create_model_uses_exact_codex_responses_configuration() -> None:
     assert model.max_tokens is None
     assert isinstance(model.http_client, httpx.Client)
     assert isinstance(model.http_async_client, httpx.AsyncClient)
+    assert model.http_client.follow_redirects is False
+    assert model.http_async_client.follow_redirects is False
 
 
 def test_create_model_maps_optional_reasoning_and_originator_configuration() -> None:
     model = provider_codex.create_model(
         "gpt-5.6-luna",
-        {"originator": "orcha-test", "reasoning_effort": "high"},
+        {"originator": "orcha_agent-42", "reasoning_effort": "high"},
         FakeTokenSource(),
         transport=httpx.MockTransport(lambda _request: _successful_sse()),
     )
 
     assert model.reasoning == {"effort": "high", "summary": "auto"}
     assert model.default_headers == {
-        "originator": "orcha-test",
+        "originator": "orcha_agent-42",
         "OpenAI-Beta": "responses=experimental",
     }
+
+
+def test_invalid_originator_is_rejected_for_models_and_oauth_registration() -> None:
+    invalid_originator = "orcha agent\r\nx-injected: true"
+
+    with pytest.raises(ValueError, match="originator"):
+        provider_codex.create_model(
+            "gpt-5.6-sol",
+            {"originator": invalid_originator},
+            FakeTokenSource(),
+            transport=httpx.MockTransport(lambda _request: _successful_sse()),
+        )
+
+    with pytest.raises(ValueError, match="originator"):
+        provider_codex.register(
+            _api(Registry(), config={"originator": invalid_originator})
+        )
+
+
+@pytest.mark.asyncio
+async def test_sync_and_async_clients_never_send_codex_auth_off_origin() -> None:
+    requests: list[httpx.Request] = []
+    codex_url = httpx.URL(f"{provider_codex.CODEX_BASE_URL}/responses")
+    redirected_url = httpx.URL("https://evil.example/redirected")
+    direct_https_url = httpx.URL("https://evil.example/direct")
+    direct_http_url = httpx.URL(
+        "http://chatgpt.com/backend-api/codex/responses"
+    )
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url == codex_url:
+            return httpx.Response(302, headers={"location": str(redirected_url)})
+        return httpx.Response(200)
+
+    model = provider_codex.create_model(
+        "gpt-5.6-sol",
+        {},
+        FakeTokenSource(),
+        transport=httpx.MockTransport(capture),
+    )
+    assert isinstance(model.http_client, httpx.Client)
+    assert isinstance(model.http_async_client, httpx.AsyncClient)
+    model.http_client.follow_redirects = True
+    model.http_async_client.follow_redirects = True
+
+    model.http_client.get(codex_url)
+    model.http_client.get(direct_https_url)
+    model.http_client.get(direct_http_url)
+    await model.http_async_client.get(codex_url)
+    await model.http_async_client.get(direct_https_url)
+    await model.http_async_client.get(direct_http_url)
+
+    codex_requests = [request for request in requests if request.url == codex_url]
+    assert len(codex_requests) == 2
+    assert all(
+        request.headers["authorization"].startswith("Bearer fake-access-")
+        for request in codex_requests
+    )
+    assert all(
+        request.headers["chatgpt-account-id"].startswith("fake-account-")
+        for request in codex_requests
+    )
+
+    for untrusted_url in (redirected_url, direct_https_url, direct_http_url):
+        untrusted_requests = [
+            request for request in requests if request.url == untrusted_url
+        ]
+        assert len(untrusted_requests) == 2
+        assert all(
+            "authorization" not in request.headers
+            and "chatgpt-account-id" not in request.headers
+            for request in untrusted_requests
+        )
 
 
 def test_each_request_uses_fresh_auth_and_never_sends_max_output_tokens() -> None:
@@ -380,7 +456,9 @@ async def test_register_exposes_models_and_safe_auth_status(
     monkeypatch.setattr(provider_codex, "OAuthPKCEFlow", FakeOAuthPKCEFlow)
     registry = Registry()
 
-    provider_codex.register(_api(registry))
+    provider_codex.register(
+        _api(registry, config={"originator": "orcha_agent-42"})
+    )
 
     assert oauth_options == {
         "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -392,7 +470,7 @@ async def test_register_exposes_models_and_safe_auth_status(
         "extra_authorize_params": {
             "id_token_add_organizations": "true",
             "codex_cli_simplified_flow": "true",
-            "originator": "pi",
+            "originator": "orcha_agent-42",
         },
     }
     provider = registry.providers["codex"]
@@ -429,3 +507,84 @@ async def test_register_exposes_models_and_safe_auth_status(
     assert access_token not in rendered
     assert id_token not in rendered
     assert "fake-refresh-token" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_login_persists_only_refreshable_credential_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access_token = _fake_jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_fake_login",
+            }
+        }
+    )
+    id_token = _fake_jwt({"email": "login@example.test"})
+    saved_credentials: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeCredentialStore:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def get(self, prefix: str) -> dict[str, Any] | None:
+            assert prefix == "codex"
+            if not saved_credentials:
+                return None
+            return dict(saved_credentials[-1][1])
+
+        def set(self, prefix: str, value: Mapping[str, Any]) -> None:
+            saved_credentials.append((prefix, dict(value)))
+
+        def delete(self, prefix: str) -> None:
+            assert prefix == "codex"
+
+    class FakeOAuthPKCEFlow:
+        def __init__(self, **_options: Any) -> None:
+            pass
+
+        def authorize(self, **options: Any) -> dict[str, Any]:
+            assert options == {"no_browser": True}
+            return {
+                "access_token": access_token,
+                "refresh_token": "fake-refresh-token",
+                "id_token": id_token,
+                "expires_in": 90,
+            }
+
+        def refresh(self, _refresh_token: str) -> dict[str, Any]:
+            raise AssertionError("login must not refresh a new credential")
+
+    monkeypatch.setattr(provider_codex, "CredentialStore", FakeCredentialStore)
+    monkeypatch.setattr(provider_codex, "OAuthPKCEFlow", FakeOAuthPKCEFlow)
+    monkeypatch.setattr(provider_codex.time, "time", lambda: 1_700_000_000.0)
+    registry = Registry()
+    provider_codex.register(_api(registry))
+    printed: list[str] = []
+    ctx = SimpleNamespace(
+        no_browser=True,
+        console=SimpleNamespace(print=printed.append),
+    )
+
+    await registry.auth["codex"].flow.login(ctx)
+
+    assert len(saved_credentials) == 1
+    prefix, credential = saved_credentials[0]
+    assert prefix == "codex"
+    assert set(credential) == {
+        "type",
+        "access",
+        "refresh",
+        "expires",
+        "account_id",
+        "email",
+    }
+    assert credential == {
+        "type": "oauth",
+        "access": access_token,
+        "refresh": "fake-refresh-token",
+        "expires": 1_700_000_090_000,
+        "account_id": "acct_fake_login",
+        "email": "login@example.test",
+    }
+    assert "id_token" not in credential
