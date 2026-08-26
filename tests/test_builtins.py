@@ -20,6 +20,7 @@ from orcha_agent.core.registry import Registry
 
 EXPECTED_BUILTIN_PLUGINS = {
     "approval_prompt",
+    "banner",
     "commands_core",
     "commands_model",
     "commands_session",

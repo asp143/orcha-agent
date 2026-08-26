@@ -40,6 +40,7 @@ class Config:
     command: str = "repl"
     login_prefix: str | None = None
     no_browser: bool = False
+    banner: bool = True
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -244,6 +245,7 @@ def load_config(
         command=args.command or "repl",
         login_prefix=getattr(args, "prefix", None),
         no_browser=getattr(args, "no_browser", False),
+        banner=bool(core.get("banner", True)),
         resume=args.resume,
         list_sessions=args.list_sessions,
         strict_plugins=args.strict_plugins,
