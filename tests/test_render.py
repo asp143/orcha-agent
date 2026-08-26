@@ -57,6 +57,20 @@ def test_model_chunk_renders_assistant_text_to_string_console() -> None:
     assert "hello from the agent" in rendered
 
 
+def test_model_chunk_renders_responding_model_name_when_present() -> None:
+    event = ModelChunk(
+        chunk=AIMessageChunk(content="fallback response"),
+        role="main",
+        model_name="fake:fallback",
+    )
+
+    _, rendered = _render(event)
+
+    assert event.model_name == "fake:fallback"
+    assert "fake:fallback" in rendered
+    assert "fallback response" in rendered
+
+
 def test_tool_call_start_renders_named_panel_and_arguments() -> None:
     renderables, rendered = _render(
         ToolCallStart(

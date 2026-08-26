@@ -38,7 +38,8 @@ def _render_model_chunk(event: ModelChunk) -> Text | None:
     if not content:
         return None
     subagent = event.role == "subagent" or event.role.startswith("subagent:")
-    return Text(content, style="dim" if subagent else "")
+    prefix = f"[{event.model_name}] " if event.model_name else ""
+    return Text(f"{prefix}{content}", style="dim" if subagent else "")
 
 
 def _limited_arguments(args: Mapping[str, Any]) -> Text:

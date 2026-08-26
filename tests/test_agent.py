@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from deepagents.backends import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
 from orcha_agent.core.agent import build_agent
@@ -192,3 +193,69 @@ async def test_agent_build_before_mutation_reaches_create_deep_agent(
         await build_agent(registry, _config(tmp_path, "yolo"), session, bus)
 
     assert captured["system_prompt"] == "mutated by AgentBuildBefore"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", [False, True], ids=["default", "explicit"])
+async def test_build_agent_uses_configured_model_for_general_purpose_subagent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: bool,
+) -> None:
+    registry, bus, api = _kernel()
+    if explicit:
+        api.add_subagent(
+            {
+                "name": "general-purpose",
+                "description": "Explicit general-purpose subagent",
+                "system_prompt": "Handle delegated work.",
+            }
+        )
+    captured: dict[str, Any] = {}
+
+    def fake_create_deep_agent(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("orcha_agent.core.agent.create_deep_agent", fake_create_deep_agent)
+
+    with SessionStore(tmp_path / "sessions.db") as session:
+        await build_agent(registry, _config(tmp_path, "yolo"), session, bus)
+
+    general_purpose = [
+        spec
+        for spec in captured["subagents"]
+        if spec["name"] == "general-purpose"
+    ]
+    assert len(general_purpose) == 1
+    model = general_purpose[0]["model"]
+    assert isinstance(model, FakeListChatModel)
+    assert model.responses == ["subagent"]
+
+
+@pytest.mark.asyncio
+async def test_build_agent_uses_configured_model_for_main_summarization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, _ = _kernel()
+    captured: dict[str, Any] = {}
+
+    def fake_create_deep_agent(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("orcha_agent.core.agent.create_deep_agent", fake_create_deep_agent)
+
+    with SessionStore(tmp_path / "sessions.db") as session:
+        await build_agent(registry, _config(tmp_path, "yolo"), session, bus)
+
+    summarizers = [
+        middleware
+        for middleware in captured["middleware"]
+        if isinstance(middleware, SummarizationMiddleware)
+    ]
+    assert len(summarizers) == 1
+    model = summarizers[0].model
+    assert isinstance(model, FakeListChatModel)
+    assert model.responses == ["summarizer"]

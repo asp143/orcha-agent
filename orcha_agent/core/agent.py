@@ -8,6 +8,8 @@ from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from deepagents.middleware.summarization import create_summarization_middleware
 
 from .config import Config
 from .events import AgentBuildAfter, AgentBuildBefore, EventBus
@@ -28,18 +30,39 @@ def _memory_sources(cfg: Config) -> list[str]:
     return sources
 
 
-def _subagents(registry: Registry, resolver: ModelResolver) -> list[Any]:
+def _subagents(
+    registry: Registry,
+    resolver: ModelResolver,
+    default_model: Any,
+    filesystem: FilesystemMiddleware | None,
+) -> list[Any]:
     configured: list[Any] = []
     for entry in registry.subagents:
         spec = entry.spec
-        if entry.model is None:
-            configured.append(spec)
-            continue
-        model = resolver.resolve(entry.model, f"subagent:{entry.name}")
+        model = (
+            default_model
+            if entry.model is None
+            else resolver.resolve(entry.model, f"subagent:{entry.name}")
+        )
         if isinstance(spec, dict):
-            configured.append({**spec, "model": model})
+            configured_spec = {**spec, "model": model}
+            if filesystem is not None:
+                configured_spec["middleware"] = [
+                    *(spec.get("middleware") or ()),
+                    filesystem,
+                ]
+            configured.append(configured_spec)
         else:
             configured.append(spec)
+
+    if not any(
+        isinstance(spec, dict) and spec.get("name") == GENERAL_PURPOSE_SUBAGENT["name"]
+        for spec in configured
+    ):
+        general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": default_model}
+        if filesystem is not None:
+            general_purpose["middleware"] = [filesystem]
+        configured.insert(0, general_purpose)
     return configured
 
 
@@ -67,17 +90,26 @@ async def build_agent(
     allowed = set(always_allowed)
     interrupts = {name: value for name, value in mode.interrupt_on.items() if name not in allowed}
     middleware = [entry.middleware for entry in registry.middleware]
+    filesystem: FilesystemMiddleware | None = None
     if mode.allowed_tools is not None:
-        middleware.append(
-            FilesystemMiddleware(backend=backend, tools=sorted(mode.allowed_tools))
+        filesystem = FilesystemMiddleware(
+            backend=backend,
+            tools=sorted(mode.allowed_tools),
         )
+        middleware.append(filesystem)
+    middleware.append(create_summarization_middleware(roles["summarizer"], backend))
 
     prompt = "\n\n".join(fragment.text for fragment in registry.prompt_fragments)
     kwargs: dict[str, Any] = {
         "model": roles["main"],
         "tools": list(registry.tools.values()),
         "middleware": middleware,
-        "subagents": _subagents(registry, resolver),
+        "subagents": _subagents(
+            registry,
+            resolver,
+            roles["subagent"],
+            filesystem,
+        ),
         "backend": backend,
         "memory": _memory_sources(cfg),
         "interrupt_on": interrupts,

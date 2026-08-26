@@ -37,6 +37,7 @@ class TurnStart(Event):
 class ModelChunk(Event):
     chunk: Any
     role: str
+    model_name: str | None = None
 
 
 @dataclass(slots=True)
