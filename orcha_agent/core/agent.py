@@ -79,6 +79,12 @@ def _subagents(
     configured: list[Any] = []
     for entry in registry.subagents:
         spec = entry.spec
+        if filesystem is not None and (
+            not isinstance(spec, dict)
+            or "runnable" in spec
+            or "graph_id" in spec
+        ):
+            continue
         model = (
             default_model
             if entry.model is None

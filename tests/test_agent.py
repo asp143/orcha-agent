@@ -262,6 +262,31 @@ async def test_disabled_general_purpose_harness_profile_is_honored(
     assert all(spec["name"] != "general-purpose" for spec in captured["subagents"])
 
 
+
+@pytest.mark.asyncio
+async def test_plan_mode_omits_unrestrictable_compiled_subagents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+    api.add_subagent(
+        {
+            "name": "compiled-writer",
+            "description": "Has its own unrestricted graph",
+            "runnable": object(),
+        }
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    with SessionStore(tmp_path / "sessions.db") as session:
+        await build_agent(registry, _config(tmp_path, "plan"), session, bus)
+
+    assert all(spec["name"] != "compiled-writer" for spec in captured["subagents"])
+
 @pytest.mark.asyncio
 async def test_build_agent_uses_configured_model_for_main_summarization(
     tmp_path: Path,
