@@ -113,3 +113,70 @@ def test_main_login_loads_auth_plugins_without_starting_repl(
     assert loaded_configs == [cfg]
     assert len(login_contexts) == 1
     assert getattr(login_contexts[0], "no_browser") is True
+
+
+def test_main_login_reports_auth_failure_without_starting_repl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = SimpleNamespace(
+        command="login",
+        login_prefix="codex",
+        no_browser=False,
+        cwd=Path("/unused"),
+        trust_cwd=False,
+    )
+    error_messages: list[str] = []
+    login_contexts: list[object] = []
+
+    async def login(ctx: object) -> None:
+        login_contexts.append(ctx)
+        raise RuntimeError("authentication failed")
+
+    async def logout(_ctx: object) -> None:
+        raise AssertionError("login command must not invoke logout")
+
+    flow = AuthFlow(
+        login=login,
+        logout=logout,
+        status=lambda: "not logged in",
+    )
+
+    def fake_load_plugins(
+        registry: Any,
+        bus: Any,
+        _cfg: object,
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[object]:
+        PluginAPI(
+            name="fake_auth_plugin",
+            config={},
+            state={},
+            registry=registry,
+            bus=bus,
+            request_rebuild=lambda: None,
+        ).add_auth("codex", flow)
+        return []
+
+    async def unexpected_run_app(_cfg: object) -> int:
+        raise AssertionError("failed login must not start run_app")
+
+    def unexpected_prompt_session(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("failed login must not create PromptSession")
+
+    monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
+    monkeypatch.setattr(entrypoint, "load_plugins", fake_load_plugins)
+    monkeypatch.setattr(
+        entrypoint,
+        "ConsoleOutput",
+        lambda: SimpleNamespace(error=error_messages.append),
+    )
+    monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
+    monkeypatch.setattr(tui_app, "PromptSession", unexpected_prompt_session)
+
+    with pytest.raises(SystemExit) as exc_info:
+        entrypoint.main()
+
+    assert exc_info.value.code == 1
+    assert error_messages == ["authentication failed"]
+    assert len(login_contexts) == 1
