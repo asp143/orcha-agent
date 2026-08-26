@@ -5,7 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents>=0.7.9",
+    "deepagents>=0.7.9,<0.8",
     "langchain-anthropic>=1.6.1",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "prompt-toolkit>=3.0.53",
     "python-dotenv>=1.2.3",
+    "rich>=15.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]
