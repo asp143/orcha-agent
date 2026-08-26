@@ -38,6 +38,9 @@ async def _resume(ctx: Any, args: str) -> None:
 
 
 async def _compact(ctx: Any, _args: str) -> None:
+    if getattr(ctx, "summarizer", None) is None:
+        ctx.console.error("Summarizer model is unavailable.")
+        return
     await ctx.compact()
 
 

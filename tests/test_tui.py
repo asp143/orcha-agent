@@ -20,16 +20,18 @@ import orcha_agent.tui.app as app_module
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
     AppExit,
+    EventBus,
     ModelChunk,
     ModelSwitch,
     SessionSwitch,
     ToolCallEnd,
+    ToolCallStart,
     TurnEnd,
     TurnStart,
 )
-from orcha_agent.core.plugin import ModeSpec
+from orcha_agent.core.plugin import ModeSpec, PluginAPI
 from orcha_agent.core.registry import Registry
-from orcha_agent.core.session import SessionInfo
+from orcha_agent.core.session import SessionInfo, SessionStore
 from orcha_agent.tui.app import (
     AppContext,
     _ModelLabelBuffer,
@@ -570,7 +572,7 @@ async def test_failed_model_switch_preserves_config_graph_and_history(
     )
     old_graph = _HistoryGraph([private_history])
     ctx = _context(tmp_path, agent=old_graph)
-    ctx.registry.providers["old"] = SimpleNamespace(
+    ctx._registry.providers["old"] = SimpleNamespace(
         foreign_block_types=frozenset({"thinking"})
     )
     old_cfg = ctx.cfg
@@ -603,7 +605,7 @@ async def test_same_provider_model_switch_keeps_provider_private_history(
     old_graph = _HistoryGraph([private_history])
     replacement_graph = object()
     ctx = _context(tmp_path, agent=old_graph)
-    ctx.registry.providers["old"] = SimpleNamespace(
+    ctx._registry.providers["old"] = SimpleNamespace(
         foreign_block_types=frozenset({"thinking"})
     )
     cleanup_calls: list[tuple[Any, ...]] = []
@@ -650,7 +652,7 @@ async def test_cross_provider_model_switch_cleans_history_before_atomic_swap(
     old_graph = _HistoryGraph([private_history])
     replacement_graph = object()
     ctx = _context(tmp_path, agent=old_graph)
-    ctx.registry.providers["old"] = SimpleNamespace(
+    ctx._registry.providers["old"] = SimpleNamespace(
         foreign_block_types=frozenset({"thinking"})
     )
     cleanup_order: list[tuple[Any, str | list[str]]] = []
@@ -713,7 +715,7 @@ async def test_valid_mode_switch_is_transactional_when_rebuild_fails(
     graph = object()
     ctx = _context(tmp_path, agent=graph)
     old_cfg = ctx.cfg
-    ctx.registry.modes["plan"] = ModeSpec(
+    ctx._registry.modes["plan"] = ModeSpec(
         description="Planning mode",
         interrupt_on={},
         allowed_tools=None,
@@ -740,7 +742,7 @@ async def test_valid_mode_switch_builds_candidate_before_swapping_state(
     replacement_graph = object()
     ctx = _context(tmp_path, agent=old_graph)
     old_cfg = ctx.cfg
-    ctx.registry.modes["plan"] = ModeSpec(
+    ctx._registry.modes["plan"] = ModeSpec(
         description="Planning mode",
         interrupt_on={},
         allowed_tools=None,
@@ -949,3 +951,115 @@ async def test_clear_persists_current_plugin_state_before_clearing_in_place(
     assert [(event.old, event.new) for event in switches] == [
         ("current", "new-thread")
     ]
+
+
+def test_app_context_exposes_live_read_only_registry_and_bus_views(
+    tmp_path: Path,
+) -> None:
+    registry = Registry()
+    bus = EventBus()
+    ctx = AppContext(
+        cfg=_config(tmp_path),
+        registry=registry,
+        bus=bus,
+        session=_SessionDouble(),
+        plugins=[],
+        plugin_states={},
+        console=_RecordingConsole(),
+        thread_id="current",
+        agent=object(),
+    )
+    api = PluginAPI(
+        name="late-plugin",
+        registry=registry,
+        bus=bus,
+        config={},
+        state={},
+        request_rebuild=lambda: None,
+    )
+
+    async def command_handler(_ctx: object, _args: str) -> None:
+        return None
+
+    async def event_handler(_event: TurnStart) -> None:
+        return None
+
+    api.add_command("late", command_handler, help="registered after context creation")
+    api.on(TurnStart, event_handler)
+
+    assert ctx.registry.commands["late"].handler is command_handler
+    assert any(entry.handler is event_handler for entry in ctx.bus.handlers)
+    with pytest.raises(TypeError):
+        ctx.registry.commands["forbidden"] = object()
+    with pytest.raises(AttributeError):
+        ctx.registry.renderers.append(object())
+    with pytest.raises(AttributeError):
+        ctx.bus.handlers.append(object())
+    with pytest.raises(AttributeError):
+        ctx.bus.on(TurnStart, event_handler)
+
+
+def _fail_if_prompt_is_constructed(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("non-interactive startup paths must not construct a prompt")
+
+
+@pytest.mark.asyncio
+async def test_run_app_lists_sessions_and_returns_zero_without_prompting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path, cwd=tmp_path / "workspace")
+    with SessionStore(cfg.db_path) as store:
+        saved = store.create(
+            cfg.cwd,
+            "fake:model",
+            title="Saved work",
+            thread_id="saved-session",
+        )
+    console = _RecordingConsole()
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+
+    status = await run_app(replace(cfg, list_sessions=True))
+
+    rendered = " ".join(str(value) for row in console.output for value in row)
+    assert status == 0
+    assert saved.thread_id in rendered
+    assert saved.cwd in rendered
+    assert "Saved work" in rendered
+
+
+@pytest.mark.asyncio
+async def test_run_app_unknown_resume_returns_one_without_prompting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = replace(_config(tmp_path), resume="missing-session")
+    console = _RecordingConsole()
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+
+    status = await run_app(cfg)
+
+    assert status == 1
+    assert console.errors == ["Unknown session: missing-session"]
+
+
+@pytest.mark.asyncio
+async def test_run_app_unopenable_database_returns_one_and_names_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "sessions-directory"
+    database_path.mkdir()
+    cfg = replace(_config(tmp_path), db_path=database_path)
+    console = _RecordingConsole()
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+
+    status = await run_app(cfg)
+
+    assert status == 1
+    assert len(console.errors) == 1
+    assert "cannot open session database" in console.errors[0].lower()
+    assert str(database_path) in console.errors[0]

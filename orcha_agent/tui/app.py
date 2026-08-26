@@ -7,9 +7,10 @@ import json
 import signal
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from types import MappingProxyType
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
@@ -122,10 +123,44 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
     return True
 
 
+class RegistryView:
+    """Live read-only view of plugin registrations."""
+
+    def __init__(self, registry: Registry) -> None:
+        self._registry = registry
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._registry, name)
+        if isinstance(value, dict):
+            return MappingProxyType(value)
+        if isinstance(value, list):
+            return tuple(value)
+        if callable(value) or name.startswith("_"):
+            raise AttributeError(name)
+        return value
+
+
+class EventBusView:
+    """Live read-only view of event registrations and observations."""
+
+    def __init__(self, bus: Any) -> None:
+        self._bus = bus
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._bus, name)
+        if isinstance(value, dict):
+            return MappingProxyType(value)
+        if isinstance(value, list):
+            return tuple(value)
+        if callable(value) or name.startswith("_"):
+            raise AttributeError(name)
+        return value
+
+
 @dataclass(slots=True)
 class AppContext:
     cfg: Config
-    registry: Registry
+    registry: Registry | RegistryView
     bus: Any
     session: SessionStore
     plugins: list[PluginRecord]
@@ -137,6 +172,17 @@ class AppContext:
     exit_requested: bool = False
     rebuild_requested: bool = False
     _title_written: bool = False
+    _registry: Registry = field(init=False, repr=False)
+    _bus: Any = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.registry, Registry):
+            self._registry = self.registry
+            self.registry = RegistryView(self.registry)
+        else:
+            self._registry = self.registry._registry
+        self._bus = self.bus._bus if isinstance(self.bus, EventBusView) else self.bus
+        self.bus = EventBusView(self._bus)
 
     def request_rebuild(self) -> None:
         self.rebuild_requested = True
@@ -167,7 +213,7 @@ class AppContext:
             self.registry,
             self.cfg,
             self.session,
-            self.bus,
+            self._bus,
             always_allowed=self._always_allowed(),
         )
         candidate_summarizer = self._resolve_summarizer(self.cfg)
@@ -188,7 +234,7 @@ class AppContext:
             state.clear()
         await self.rebuild()
         self.console.console.clear()
-        await self.bus.emit(SessionSwitch(old=old, new=self.thread_id))
+        await self._bus.emit(SessionSwitch(old=old, new=self.thread_id))
 
     async def resume(self, thread_id: str) -> None:
         saved_session = self.session.get(thread_id)
@@ -221,7 +267,7 @@ class AppContext:
                 self.registry,
                 candidate_cfg,
                 self.session,
-                self.bus,
+                self._bus,
                 always_allowed=self._always_allowed(),
             )
             candidate_summarizer = self._resolve_summarizer(candidate_cfg)
@@ -238,7 +284,7 @@ class AppContext:
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
         self.rebuild_requested = False
-        await self.bus.emit(SessionSwitch(old=old, new=thread_id))
+        await self._bus.emit(SessionSwitch(old=old, new=thread_id))
 
     async def switch_model(self, spec: str) -> None:
         old = self.cfg.model if isinstance(self.cfg.model, str) else ",".join(self.cfg.model)
@@ -251,7 +297,7 @@ class AppContext:
             self.registry,
             candidate_cfg,
             self.session,
-            self.bus,
+            self._bus,
             always_allowed=self._always_allowed(),
         )
         candidate_summarizer = self._resolve_summarizer(candidate_cfg)
@@ -275,7 +321,7 @@ class AppContext:
         self.agent = candidate_agent
         self.session.set_model(self.thread_id, spec)
         self.rebuild_requested = False
-        await self.bus.emit(ModelSwitch(old=old, new=spec))
+        await self._bus.emit(ModelSwitch(old=old, new=spec))
 
     async def switch_mode(self, name: str) -> None:
         if name not in self.registry.modes:
@@ -286,7 +332,7 @@ class AppContext:
             self.registry,
             candidate_cfg,
             self.session,
-            self.bus,
+            self._bus,
             always_allowed=self._always_allowed(),
         )
         candidate_summarizer = self._resolve_summarizer(candidate_cfg)
@@ -330,7 +376,7 @@ class AppContext:
 
 async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
     if emit:
-        handled = await ctx.bus.emit(event)
+        handled = await ctx._bus.emit(event)
         if isinstance(handled, Handled):
             return True
     for registration in ctx.registry.renderers:
@@ -523,7 +569,7 @@ async def _updates_event(ctx: AppContext, data: Any, seen_results: set[str]) -> 
         payload = interrupts[0].value
         warning = "Approval unresolved; rejecting pending actions."
         try:
-            resolution = await ctx.bus.emit(InterruptRaised(payload=payload))
+            resolution = await ctx._bus.emit(InterruptRaised(payload=payload))
         except Exception as exc:
             warning = (
                 f"Approval handler failed ({type(exc).__name__}); "
@@ -556,7 +602,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
         title = " ".join(text.split())[:80]
         if title:
             ctx.session.set_title(ctx.thread_id, title)
-    await ctx.bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
+    await ctx._bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
     tool_calls = _ToolCallBuffer()
     model_labels = _ModelLabelBuffer()
@@ -597,7 +643,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
             ctx.console.error(f"{type(exc).__name__}: {exc}")
     finally:
         ctx.console.print()
-        await ctx.bus.emit(TurnEnd(thread_id=ctx.thread_id))
+        await ctx._bus.emit(TurnEnd(thread_id=ctx.thread_id))
         if ctx.rebuild_requested:
             await ctx.rebuild()
 

@@ -5,10 +5,11 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rich.console import Console
 
-from orcha_agent.builtin import commands_core
+from orcha_agent.builtin import commands_core, commands_session
 from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
+from orcha_agent.core.session import SessionInfo
 from orcha_agent.tui.app import dispatch_command
 from orcha_agent.tui.console import ConsoleOutput
 
@@ -127,3 +128,66 @@ async def test_providers_reports_key_presence_without_printing_secret_value(
     rendered = output.getvalue()
     assert "ORCHA_TEST_API_KEY: yes" in rendered
     assert secret not in rendered
+
+
+@pytest.mark.asyncio
+async def test_resume_without_session_id_renders_usage_without_resuming() -> None:
+    registry = Registry()
+    bus = EventBus()
+    commands_session.register(_api(registry, bus))
+    ctx, output = _context()
+
+    async def unexpected_resume(_thread_id: str) -> None:
+        raise AssertionError("missing session id must not attempt a resume")
+
+    ctx.resume = unexpected_resume
+
+    assert await dispatch_command(registry, ctx, "/resume") is True
+
+    assert "usage: /resume <session-id>" in output.getvalue().lower()
+
+
+@pytest.mark.asyncio
+async def test_sessions_command_renders_registered_session_table() -> None:
+    registry = Registry()
+    bus = EventBus()
+    commands_session.register(_api(registry, bus))
+    ctx, output = _context(width=240)
+    session = SessionInfo(
+        thread_id="saved-session",
+        cwd="/work/project",
+        model="fake:model",
+        created="2026-08-27T10:30:00+00:00",
+        title="Investigate parser",
+    )
+    ctx.session = SimpleNamespace(list=lambda: [session])
+
+    assert await dispatch_command(registry, ctx, "/sessions") is True
+
+    rendered = output.getvalue()
+    assert "Sessions" in rendered
+    assert "saved-session" in rendered
+    assert "Investigate parser" in rendered
+    assert "fake:model" in rendered
+    assert "/work/project" in rendered
+    assert "2026-08-27T10:30:00+00:00" in rendered
+
+
+@pytest.mark.asyncio
+async def test_compact_without_summarizer_renders_error_without_compacting() -> None:
+    registry = Registry()
+    bus = EventBus()
+    commands_session.register(_api(registry, bus))
+    ctx, output = _context()
+    ctx.summarizer = None
+
+    async def unexpected_compact() -> None:
+        raise AssertionError("unavailable summarizer must not start compaction")
+
+    ctx.compact = unexpected_compact
+
+    assert await dispatch_command(registry, ctx, "/compact") is True
+
+    rendered = output.getvalue().lower()
+    assert "summarizer" in rendered
+    assert "unavailable" in rendered
