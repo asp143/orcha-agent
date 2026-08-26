@@ -48,9 +48,13 @@ def _history_path() -> Path:
 def _bindings() -> KeyBindings:
     bindings = KeyBindings()
 
-    @bindings.add("escape", "enter")
+    @bindings.add("enter")
     def _accept(event: Any) -> None:
         event.current_buffer.validate_and_handle()
+
+    @bindings.add("escape", "enter")
+    def _newline(event: Any) -> None:
+        event.current_buffer.insert_text("\n")
 
     return bindings
 

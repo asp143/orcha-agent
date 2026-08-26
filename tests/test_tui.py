@@ -15,6 +15,7 @@ from langchain_core.messages import (
 )
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
+from prompt_toolkit.keys import Keys
 
 import orcha_agent.tui.app as app_module
 from orcha_agent.core.config import Config
@@ -36,11 +37,38 @@ from orcha_agent.core.session import SessionInfo, SessionStore
 from orcha_agent.tui.app import (
     AppContext,
     _ModelLabelBuffer,
+    _bindings,
     _run_turn,
     _stored_model,
     _ToolCallBuffer,
     run_app,
 )
+
+
+def test_enter_submits_and_alt_enter_inserts_newline() -> None:
+    bindings = _bindings()
+    enter = bindings.get_bindings_for_keys((Keys.Enter,))[-1]
+    alt_enter = bindings.get_bindings_for_keys((Keys.Escape, Keys.Enter))[-1]
+
+    class Buffer:
+        def __init__(self) -> None:
+            self.submissions = 0
+            self.insertions: list[str] = []
+
+        def validate_and_handle(self) -> None:
+            self.submissions += 1
+
+        def insert_text(self, text: str) -> None:
+            self.insertions.append(text)
+
+    buffer = Buffer()
+    event = SimpleNamespace(current_buffer=buffer)
+
+    enter.handler(event)
+    alt_enter.handler(event)
+
+    assert buffer.submissions == 1
+    assert buffer.insertions == ["\n"]
 
 
 def test_stored_model_keeps_fallback_lists_and_decodes_legacy_strings() -> None:
