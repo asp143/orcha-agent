@@ -11,8 +11,43 @@ from orcha_agent.core.config import Config
 from orcha_agent.core.events import ToolCallEnd, TurnEnd, TurnStart
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionInfo
-from orcha_agent.tui.app import AppContext, _run_turn, _ToolCallBuffer
+from orcha_agent.tui.app import AppContext, _ModelLabelBuffer, _run_turn, _stored_model, _ToolCallBuffer
 
+
+
+def test_stored_model_keeps_fallback_lists_and_decodes_legacy_strings() -> None:
+    chain = ["anthropic:primary", "openai:fallback"]
+
+    assert _stored_model(chain) == chain
+    assert _stored_model("anthropic:primary,openai:fallback") == chain
+
+
+def test_model_label_is_emitted_once_per_streamed_response() -> None:
+    labels = _ModelLabelBuffer()
+    metadata = {"ls_model_name": "fallback:model"}
+
+    assert labels.take(AIMessageChunk(content="one", id="response-1"), metadata) == "fallback:model"
+    assert labels.take(AIMessageChunk(content="two", id="response-1"), metadata) is None
+    assert labels.take(AIMessageChunk(content="next", id="response-2"), metadata) == "fallback:model"
+
+
+@pytest.mark.asyncio
+async def test_compact_uses_the_configured_summarizer_model(tmp_path: Path) -> None:
+    history = _HistoryGraph([AIMessage(content="prior answer")])
+    ctx = _context(tmp_path, agent=history)
+    seen: list[list[Any]] = []
+
+    class Summarizer:
+        def invoke(self, messages: list[Any]) -> AIMessage:
+            seen.append(messages)
+            return AIMessage(content="compact summary")
+
+    ctx.summarizer = Summarizer()
+
+    await ctx.compact()
+
+    assert seen and seen[0][-1].content.startswith("Summarize the conversation")
+    assert [message.content for message in history.messages] == ["compact summary"]
 
 def test_tool_call_chunks_are_buffered_until_arguments_form_complete_json() -> None:
     buffer = _ToolCallBuffer()
@@ -242,6 +277,29 @@ async def test_failed_model_switch_preserves_config_graph_and_history(
     assert ctx.cfg == old_cfg
     assert ctx.agent is old_graph
     assert old_graph.messages == [private_history]
+
+
+@pytest.mark.asyncio
+async def test_model_switch_preserves_always_approved_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _context(
+        tmp_path,
+        agent=_HistoryGraph([]),
+        plugin_states={"approval": {"always_allowed": ["execute", "write_file"]}},
+    )
+    captured: list[set[str]] = []
+
+    async def capture_build(*_args: Any, **kwargs: Any) -> object:
+        captured.append(set(kwargs["always_allowed"]))
+        return object()
+
+    monkeypatch.setattr(app_module, "build_agent", capture_build)
+
+    await ctx.switch_model("new:model")
+
+    assert captured == [{"execute", "write_file"}]
 
 
 @pytest.mark.asyncio

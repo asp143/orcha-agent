@@ -8,8 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-
-from langchain_core.messages import AIMessage, BaseMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from prompt_toolkit import PromptSession
@@ -31,7 +30,7 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.loader import PluginRecord, load_plugins
-from orcha_agent.core.models import strip_foreign_blocks
+from orcha_agent.core.models import ModelResolver, strip_foreign_blocks
 from orcha_agent.core.plugin import Resolved
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
@@ -59,7 +58,9 @@ def _matches(match: Any, event: object) -> bool:
     return match == type(event).__name__ or match == getattr(event, "name", None)
 
 
-def _stored_model(value: str) -> str | list[str]:
+def _stored_model(value: str | list[str]) -> str | list[str]:
+    if isinstance(value, list):
+        return list(value)
     models = [model for model in value.split(",") if model]
     return models[0] if len(models) == 1 else models
 
@@ -119,6 +120,7 @@ class AppContext:
     console: ConsoleOutput
     thread_id: str
     agent: Any = None
+    summarizer: Any = None
     exit_requested: bool = False
     rebuild_requested: bool = False
     _title_written: bool = False
@@ -138,15 +140,26 @@ class AppContext:
         for plugin, state in self.plugin_states.items():
             self.session.set_plugin_state(self.thread_id, plugin, state)
 
+    def _resolve_summarizer(self, cfg: Config) -> Any:
+        if not self.registry.providers:
+            return self.summarizer
+        return ModelResolver(self.registry, cfg).resolve(
+            cfg.summarizer_model,
+            "summarizer",
+        )
+
     async def rebuild(self) -> None:
         self.persist_plugin_states()
-        self.agent = await build_agent(
+        candidate_agent = await build_agent(
             self.registry,
             self.cfg,
             self.session,
             self.bus,
             always_allowed=self._always_allowed(),
         )
+        candidate_summarizer = self._resolve_summarizer(self.cfg)
+        self.agent = candidate_agent
+        self.summarizer = candidate_summarizer
         self.rebuild_requested = False
 
     async def clear(self) -> None:
@@ -189,6 +202,7 @@ class AppContext:
                 self.bus,
                 always_allowed=self._always_allowed(),
             )
+            candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         except Exception:
             self.cfg = old_cfg
             self.rebuild_requested = old_rebuild_requested
@@ -199,6 +213,7 @@ class AppContext:
             raise
 
         self.agent = candidate_agent
+        self.summarizer = candidate_summarizer
         self.rebuild_requested = False
         await self.bus.emit(SessionSwitch(old=old, new=thread_id))
 
@@ -210,7 +225,9 @@ class AppContext:
             candidate_cfg,
             self.session,
             self.bus,
+            always_allowed=self._always_allowed(),
         )
+        candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         foreign = _foreign_block_types(self.registry, self.cfg)
         if foreign:
             strip_foreign_blocks(
@@ -219,6 +236,7 @@ class AppContext:
                 foreign,
             )
         self.cfg = candidate_cfg
+        self.summarizer = candidate_summarizer
         self.agent = candidate_agent
         self.rebuild_requested = False
         await self.bus.emit(ModelSwitch(old=old, new=spec))
@@ -235,11 +253,13 @@ class AppContext:
             "Summarize the conversation for continuation. Preserve decisions, current files, "
             "constraints, failures, and remaining work."
         )
-        result = self.agent.invoke(
-            {"messages": [{"role": "user", "content": instruction}]},
-            config=self.thread_config,
+        state = self.agent.get_state(self.thread_config)
+        messages = list(getattr(state, "values", {}).get("messages", ()))
+        if self.summarizer is None:
+            raise RuntimeError("summarizer model is unavailable")
+        summary = self.summarizer.invoke(
+            [*messages, HumanMessage(content=instruction)]
         )
-        summary = result["messages"][-1]
         self.agent.update_state(
             self.thread_config,
             {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary]},
@@ -314,6 +334,26 @@ def _model_name(message: BaseMessage, metadata: Any) -> str | None:
     return None
 
 
+class _ModelLabelBuffer:
+    """Return a model label only for the first chunk of each response."""
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    def take(self, message: BaseMessage, metadata: Any) -> str | None:
+        model_name = _model_name(message, metadata)
+        if model_name is None:
+            return None
+        identifier = getattr(message, "id", None)
+        if not identifier and isinstance(metadata, Mapping):
+            identifier = metadata.get("run_id")
+        key = str(identifier or model_name)
+        if key in self._seen:
+            return None
+        self._seen.add(key)
+        return model_name
+
+
 @dataclass(slots=True)
 class _PendingToolCall:
     name: str = ""
@@ -381,7 +421,12 @@ class _ToolCallBuffer:
         return completed
 
 
-async def _message_event(ctx: AppContext, data: Any, tool_calls: _ToolCallBuffer) -> None:
+async def _message_event(
+    ctx: AppContext,
+    data: Any,
+    tool_calls: _ToolCallBuffer,
+    model_labels: _ModelLabelBuffer,
+) -> None:
     if not isinstance(data, tuple) or len(data) != 2:
         return
     message, metadata = data
@@ -400,7 +445,7 @@ async def _message_event(ctx: AppContext, data: Any, tool_calls: _ToolCallBuffer
             ModelChunk(
                 chunk=message,
                 role=role,
-                model_name=_model_name(message, metadata),
+                model_name=model_labels.take(message, metadata),
             ),
         )
 
@@ -433,6 +478,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     await ctx.bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
     tool_calls = _ToolCallBuffer()
+    model_labels = _ModelLabelBuffer()
     seen_results: set[str] = set()
     try:
         while True:
@@ -443,7 +489,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                 stream_mode=["messages", "updates"],
             ):
                 if mode == "messages":
-                    await _message_event(ctx, data, tool_calls)
+                    await _message_event(ctx, data, tool_calls, model_labels)
                 elif mode == "updates":
                     candidate = await _updates_event(ctx, data, seen_results)
                     if candidate is not None:
