@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import importlib
+import importlib.metadata
+import inspect
+import pkgutil
+from pathlib import Path
+from types import ModuleType
+from typing import get_type_hints
+
+import pytest
+
+import orcha_agent.builtin
+from orcha_agent.core.config import Config
+from orcha_agent.core.events import EventBus
+from orcha_agent.core.loader import load_plugins
+from orcha_agent.core.plugin import PluginAPI
+from orcha_agent.core.registry import Registry
+
+
+EXPECTED_BUILTIN_PLUGINS = {
+    "approval_prompt",
+    "commands_core",
+    "commands_model",
+    "commands_session",
+    "filesystem",
+    "memory",
+    "modes",
+    "provider_anthropic",
+    "provider_google",
+    "provider_langchain",
+    "provider_ollama",
+    "provider_openai",
+    "render_default",
+}
+EXPECTED_COMMANDS = {
+    "clear",
+    "compact",
+    "exit",
+    "help",
+    "mode",
+    "model",
+    "plugins",
+    "providers",
+    "resume",
+    "sessions",
+}
+EXPECTED_PROVIDERS = {"anthropic", "google", "langchain", "ollama", "openai"}
+EXPECTED_MODES = {"ask", "edit", "plan", "yolo"}
+
+
+def config_for(tmp_path: Path) -> Config:
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    return Config(
+        model="anthropic:test",
+        subagent_model="anthropic:test",
+        summarizer_model="anthropic:test",
+        mode="ask",
+        backend="local_shell",
+        memory=(),
+        db_path=tmp_path / "sessions.db",
+        cwd=cwd,
+        resume=None,
+        list_sessions=False,
+        strict_plugins=False,
+        plugin_dirs=(),
+        models={},
+        providers={},
+        plugins={"disabled": ()},
+    )
+
+
+def assert_registry_empty(registry: Registry) -> None:
+    assert not registry.tools
+    assert not registry.commands
+    assert not registry.providers
+    assert not registry.backends
+    assert not registry.modes
+    assert not registry.middleware
+    assert not registry.renderers
+    assert not registry.subagents
+    assert not registry.prompt_fragments
+
+
+def builtin_modules() -> list[ModuleType]:
+    return [
+        importlib.import_module(module_info.name)
+        for module_info in pkgutil.iter_modules(
+            orcha_agent.builtin.__path__,
+            prefix=f"{orcha_agent.builtin.__name__}.",
+        )
+    ]
+
+
+def test_registry_stays_empty_until_builtins_are_loaded() -> None:
+    registry = Registry()
+
+    assert_registry_empty(registry)
+    modules = builtin_modules()
+    assert_registry_empty(registry)
+
+    assert EXPECTED_BUILTIN_PLUGINS <= {
+        module.__name__.rsplit(".", maxsplit=1)[-1] for module in modules
+    }
+
+
+def test_every_builtin_has_only_plugin_api_as_its_registration_boundary() -> None:
+    modules = builtin_modules()
+
+    for module in modules:
+        signature = inspect.signature(module.register)
+        parameters = list(signature.parameters.values())
+        assert len(parameters) == 1, module.__name__
+        parameter = parameters[0]
+        assert parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }, module.__name__
+        assert get_type_hints(module.register)[parameter.name] is PluginAPI
+
+        result = module.register(
+            PluginAPI(
+                name=module.__name__.rsplit(".", maxsplit=1)[-1],
+                config={},
+                state={},
+                registry=Registry(),
+                bus=EventBus(),
+                request_rebuild=lambda: None,
+            )
+        )
+        assert result is None, module.__name__
+
+
+def test_loading_builtins_registers_expected_plugins_and_features(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda **kwargs: [])
+    registry = Registry()
+    bus = EventBus()
+    assert_registry_empty(registry)
+
+    records = load_plugins(registry, bus, config_for(tmp_path))
+
+    assert EXPECTED_BUILTIN_PLUGINS <= {record.name for record in records}
+    assert set(registry.backends) == {"local_shell"}
+    assert set(registry.modes) == EXPECTED_MODES
+    assert set(registry.providers) == EXPECTED_PROVIDERS
+    assert set(registry.commands) == EXPECTED_COMMANDS
+    assert registry.renderers

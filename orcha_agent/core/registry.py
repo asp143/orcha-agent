@@ -27,6 +27,7 @@ class ProviderRegistration:
     env_keys: tuple[str, ...]
     harness: Any | None
     available: AvailabilityCheck
+    foreign_block_types: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +160,7 @@ class Registry:
         capabilities: Any,
         env_keys: Sequence[str] = (),
         harness: Any | None = None,
+        foreign_block_types: Sequence[str] = (),
         available: AvailabilityCheck,
         replace: bool = False,
     ) -> None:
@@ -170,6 +172,7 @@ class Registry:
             env_keys=tuple(env_keys),
             harness=harness,
             available=available,
+            foreign_block_types=frozenset(foreign_block_types),
         )
 
     def _add_backend(

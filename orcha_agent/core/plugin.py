@@ -133,6 +133,7 @@ class PluginAPI:
         env_keys: Sequence[str] = (),
         harness: Any | None = None,
         available: AvailabilityCheck = _available,
+        foreign_block_types: Sequence[str] = (),
         replace: bool = False,
     ) -> None:
         self._registry._add_provider(
@@ -143,6 +144,7 @@ class PluginAPI:
             env_keys=env_keys,
             harness=harness,
             available=available,
+            foreign_block_types=foreign_block_types,
             replace=replace,
         )
 

@@ -104,3 +104,25 @@ def test_renderer_priority_order_is_deterministic_even_when_registration_order_d
 
     assert [entry.plugin for entry in registry.renderers] == ["early", "alpha", "zeta"]
     assert [entry.priority for entry in registry.renderers] == [10, 50, 50]
+
+
+def test_provider_keeps_foreign_history_block_types() -> None:
+    registry = Registry()
+    api = _api("provider", registry, EventBus())
+
+    api.add_provider(
+        "example",
+        lambda model, config: (model, config),
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=True,
+            max_context=None,
+        ),
+        foreign_block_types=("thinking", "reasoning"),
+    )
+
+    assert registry.providers["example"].foreign_block_types == frozenset(
+        {"thinking", "reasoning"}
+    )
