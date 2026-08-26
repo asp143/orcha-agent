@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import socket
 import stat
 import threading
@@ -135,6 +136,45 @@ def test_credential_store_writes_atomically_with_private_permissions(
     assert CredentialStore(auth_path).get("codex") == credential
 
 
+def test_credential_store_write_failure_does_not_reclose_owned_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_path = tmp_path / "config" / "auth.json"
+    store = CredentialStore(auth_path)
+    real_fdopen = os.fdopen
+    real_close = os.close
+    handed_over_descriptors: list[int] = []
+    explicitly_closed_descriptors: list[int] = []
+
+    def record_fdopen(
+        descriptor: int,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        handed_over_descriptors.append(descriptor)
+        return real_fdopen(descriptor, *args, **kwargs)
+
+    def record_close(descriptor: int) -> None:
+        explicitly_closed_descriptors.append(descriptor)
+        real_close(descriptor)
+
+    def fail_write(*args: Any, **kwargs: Any) -> None:
+        raise OSError("fake credential write failure")
+
+    monkeypatch.setattr(os, "fdopen", record_fdopen)
+    monkeypatch.setattr(os, "close", record_close)
+    monkeypatch.setattr("orcha_agent.core.auth.json.dump", fail_write)
+
+    with pytest.raises(OSError, match="fake credential write failure"):
+        store.set("codex", {"type": "oauth", "access": "fake-access"})
+
+    assert len(handed_over_descriptors) == 1
+    assert handed_over_descriptors[0] not in explicitly_closed_descriptors
+    assert not auth_path.exists()
+    assert list(auth_path.parent.glob(f".{auth_path.name}.*")) == []
+
+
 def test_credential_store_delete_removes_only_requested_prefix(tmp_path: Path) -> None:
     auth_path = tmp_path / "config" / "auth.json"
     store = CredentialStore(auth_path)
@@ -167,7 +207,7 @@ def test_code_challenge_matches_rfc_7636_s256_example() -> None:
             "fake-url-code",
         ),
         ("fake-fragment-code#fake-state", "fake-state", "fake-fragment-code"),
-        ("fake-raw-code", None, "fake-raw-code"),
+        ("fake-raw-code", "fake-state", "fake-raw-code"),
     ],
 )
 def test_parse_paste_accepts_redirect_fragment_and_raw_code(
@@ -176,6 +216,34 @@ def test_parse_paste_accepts_redirect_fragment_and_raw_code(
     expected_code: str,
 ) -> None:
     assert _flow().parse_paste(pasted, expected_state=expected_state) == expected_code
+
+
+def test_parse_paste_uses_constant_time_state_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    comparisons: list[tuple[str, str]] = []
+
+    def accept_state(callback_state: str, expected_state: str) -> bool:
+        comparisons.append((callback_state, expected_state))
+        return True
+
+    monkeypatch.setattr(
+        "orcha_agent.core.auth.secrets.compare_digest",
+        accept_state,
+    )
+
+    code = _flow().parse_paste(
+        "http://127.0.0.1:1455/auth/callback"
+        "?code=fake-code&state=fake-callback-state",
+        expected_state="fake-expected-state",
+    )
+
+    assert code == "fake-code"
+    assert len(comparisons) == 1
+    assert set(comparisons[0]) == {
+        "fake-callback-state",
+        "fake-expected-state",
+    }
 
 
 @pytest.mark.parametrize(
@@ -229,40 +297,101 @@ def test_no_browser_authorize_prompts_with_url_without_opening_browser(
     assert parse_qs(requests[0].content.decode())["code"] == ["fake-pasted-code"]
 
 
-def test_loopback_callback_rejects_state_mismatch_and_authorize_raises(
+def test_loopback_authorize_survives_invalid_requests_then_exchanges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    flow = _flow(redirect_port=_unused_loopback_port())
+    token_requests: list[httpx.Request] = []
+    state_comparisons: list[tuple[str, str]] = []
     opened_urls: Queue[str] = Queue()
     outcome: Queue[dict[str, Any] | BaseException] = Queue()
+    real_compare_digest = secrets.compare_digest
+
+    def exchange(request: httpx.Request) -> httpx.Response:
+        token_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "fake-loopback-access",
+                "refresh_token": "fake-loopback-refresh",
+                "expires_in": 3600,
+            },
+        )
+
+    def record_compare_digest(left: str, right: str) -> bool:
+        state_comparisons.append((left, right))
+        return real_compare_digest(left, right)
+
+    def request(url: str) -> tuple[int, bytes]:
+        try:
+            with urlopen(url, timeout=2) as response:
+                return response.status, response.read()
+        except HTTPError as error:
+            try:
+                return error.code, error.read()
+            finally:
+                error.close()
+
     monkeypatch.setattr(
         "orcha_agent.core.auth.webbrowser.open",
         lambda url: opened_urls.put(url) or True,
     )
+    monkeypatch.setattr(
+        "orcha_agent.core.auth.secrets.compare_digest",
+        record_compare_digest,
+    )
 
-    def authorize() -> None:
-        try:
-            outcome.put(flow.authorize())
-        except BaseException as exc:
-            outcome.put(exc)
+    with httpx.Client(transport=httpx.MockTransport(exchange)) as client:
+        flow = _flow(
+            redirect_port=_unused_loopback_port(),
+            http_client=client,
+        )
 
-    authorize_thread = threading.Thread(target=authorize, daemon=True)
-    authorize_thread.start()
-    authorization_url = opened_urls.get(timeout=2)
-    authorization_query = parse_qs(urlparse(authorization_url).query)
-    redirect_uri = authorization_query["redirect_uri"][0]
-    callback_url = f"{redirect_uri}?{urlencode({'code': 'fake-code', 'state': 'wrong-state'})}"
+        def authorize() -> None:
+            try:
+                outcome.put(flow.authorize())
+            except BaseException as exc:
+                outcome.put(exc)
 
-    with pytest.raises(HTTPError) as response:
-        urlopen(callback_url, timeout=2)
-    assert response.value.code == 400
-    response.value.read()
+        authorize_thread = threading.Thread(target=authorize, daemon=True)
+        authorize_thread.start()
+        authorization_url = opened_urls.get(timeout=2)
+        authorization_query = parse_qs(urlparse(authorization_url).query)
+        redirect_uri = authorization_query["redirect_uri"][0]
+        expected_state = authorization_query["state"][0]
+        redirect = urlparse(redirect_uri)
+        origin = f"{redirect.scheme}://{redirect.netloc}"
 
-    result = outcome.get(timeout=2)
-    assert isinstance(result, Exception)
-    assert "state" in str(result).lower()
-    authorize_thread.join(timeout=2)
+        favicon_status, _ = request(f"{origin}/favicon.ico")
+        bad_state_status, _ = request(
+            f"{redirect_uri}?"
+            f"{urlencode({'code': 'fake-wrong-code', 'state': 'wrong-state'})}"
+        )
+        callback_status, callback_body = request(
+            f"{redirect_uri}?"
+            f"{urlencode({'code': 'fake-correct-code', 'state': expected_state})}"
+        )
+        result = outcome.get(timeout=2)
+        authorize_thread.join(timeout=2)
+
+    assert favicon_status == 404
+    assert bad_state_status == 400
+    assert callback_status == 200
+    assert b"Authentication complete" in callback_body
+    assert isinstance(result, dict)
+    assert result["access_token"] == "fake-loopback-access"
     assert not authorize_thread.is_alive()
+    assert len(token_requests) == 1
+    assert parse_qs(token_requests[0].content.decode())["code"] == [
+        "fake-correct-code"
+    ]
+    assert any(
+        (left, right) in {
+            ("wrong-state", expected_state),
+            (expected_state, "wrong-state"),
+        }
+        for left, right in state_comparisons
+    )
+    assert (expected_state, expected_state) in state_comparisons
 
 
 def test_exchange_and_refresh_post_oauth_forms_to_token_endpoint() -> None:

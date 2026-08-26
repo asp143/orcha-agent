@@ -94,17 +94,20 @@ class CredentialStore:
         temporary = Path(temporary_name)
         try:
             os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream = os.fdopen(descriptor, "w", encoding="utf-8")
+            descriptor = -1
+            with stream:
                 json.dump(credentials, stream, separators=(",", ":"), sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
             os.chmod(self.path, 0o600)
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             temporary.unlink(missing_ok=True)
             raise
 
@@ -185,10 +188,16 @@ class OAuthPKCEFlow:
         elif "#" in pasted:
             code, state = pasted.split("#", 1)
         else:
+            # Raw codes carry no callback state; accepting them is the explicit
+            # paste fallback for headless or unavailable loopback flows.
             code = pasted
         if not code:
             raise ValueError("OAuth callback did not contain a code")
-        if expected_state is not None and state is not None and state != expected_state:
+        if (
+            expected_state is not None
+            and state is not None
+            and not secrets.compare_digest(state, expected_state)
+        ):
             raise ValueError("OAuth state mismatch")
         return code
 
@@ -240,23 +249,27 @@ class OAuthPKCEFlow:
                 query = parse_qs(parsed.query)
                 code = query.get("code", [""])[0]
                 callback_state = query.get("state", [None])[0]
-                if parsed.path != expected_path or callback_state != expected_state:
-                    result["error"] = ValueError("OAuth state mismatch")
+                if parsed.path != expected_path:
+                    body = b"Not found"
+                    self.send_response(404)
+                elif (
+                    not isinstance(callback_state, str)
+                    or not secrets.compare_digest(callback_state, expected_state)
+                ):
                     body = b"OAuth state mismatch"
                     self.send_response(400)
                 elif not code:
-                    result["error"] = ValueError("OAuth callback did not contain a code")
                     body = b"Missing authorization code"
                     self.send_response(400)
                 else:
                     result["code"] = code
                     body = b"Authentication complete. You may close this window."
                     self.send_response(200)
+                    callback_done.set()
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-                callback_done.set()
 
             def log_message(self, format: str, *args: object) -> None:
                 return
@@ -268,10 +281,14 @@ class OAuthPKCEFlow:
             return self.exchange(code, verifier, redirect_uri)
 
         try:
-            server.timeout = 120
+            deadline = time.monotonic() + 120
             webbrowser.open(authorization_url)
-            server.handle_request()
-            callback_done.wait(timeout=5)
+            while not callback_done.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                server.timeout = min(1, remaining)
+                server.handle_request()
         finally:
             server.server_close()
         error = result.get("error")
