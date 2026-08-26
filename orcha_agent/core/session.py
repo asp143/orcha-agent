@@ -29,6 +29,7 @@ class SessionInfo:
     model: str | list[str]
     created: str
     title: str | None
+    mode: str = "ask"
 
 
 class _AsyncSqliteSaver(SqliteSaver):
@@ -108,7 +109,8 @@ class SessionStore:
                 cwd TEXT NOT NULL,
                 model TEXT NOT NULL,
                 created TEXT NOT NULL,
-                title TEXT
+                title TEXT,
+                mode TEXT NOT NULL DEFAULT 'ask'
             );
             CREATE TABLE IF NOT EXISTS plugin_state (
                 thread_id TEXT NOT NULL,
@@ -119,6 +121,14 @@ class SessionStore:
             );
             """
         )
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(sessions)")
+        }
+        if "mode" not in columns:
+            self._connection.execute(
+                "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'ask'"
+            )
         self._connection.commit()
 
     def __enter__(self) -> SessionStore:
@@ -134,21 +144,26 @@ class SessionStore:
         self,
         cwd: str | Path,
         model: str | list[str],
+        mode: str = "ask",
         *,
         title: str | None = None,
         thread_id: str | None = None,
     ) -> SessionInfo:
         created = datetime.now(UTC).isoformat(timespec="microseconds")
         identifier = thread_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
-        model_text = model if isinstance(model, str) else json.dumps(model)
+        model_text = self._encode_model(model)
         stored_model = model if isinstance(model, str) else list(model)
-        info = SessionInfo(identifier, str(cwd), stored_model, created, title)
+        info = SessionInfo(identifier, str(cwd), stored_model, created, title, mode)
         self._connection.execute(
-            "INSERT INTO sessions(thread_id, cwd, model, created, title) VALUES (?, ?, ?, ?, ?)",
-            (info.thread_id, info.cwd, model_text, info.created, info.title),
+            "INSERT INTO sessions(thread_id, cwd, model, created, title, mode) VALUES (?, ?, ?, ?, ?, ?)",
+            (info.thread_id, info.cwd, model_text, info.created, info.title, info.mode),
         )
         self._connection.commit()
         return info
+
+    @staticmethod
+    def _encode_model(value: str | list[str]) -> str:
+        return value if isinstance(value, str) else json.dumps(value)
 
     @staticmethod
     def _decode_model(value: str) -> str | list[str]:
@@ -168,11 +183,12 @@ class SessionStore:
             SessionStore._decode_model(row["model"]),
             row["created"],
             row["title"],
+            row["mode"],
         )
 
     def get(self, thread_id: str) -> SessionInfo | None:
         row = self._connection.execute(
-            "SELECT thread_id, cwd, model, created, title FROM sessions WHERE thread_id = ?",
+            "SELECT thread_id, cwd, model, created, title, mode FROM sessions WHERE thread_id = ?",
             (thread_id,),
         ).fetchone()
         return self._session(row)
@@ -186,10 +202,24 @@ class SessionStore:
             (title, thread_id),
         )
         self._connection.commit()
+    def set_model(self, thread_id: str, model: str | list[str]) -> None:
+        self._connection.execute(
+            "UPDATE sessions SET model = ? WHERE thread_id = ?",
+            (self._encode_model(model), thread_id),
+        )
+        self._connection.commit()
+
+    def set_mode(self, thread_id: str, mode: str) -> None:
+        self._connection.execute(
+            "UPDATE sessions SET mode = ? WHERE thread_id = ?",
+            (mode, thread_id),
+        )
+        self._connection.commit()
+
 
     def list(self) -> list[SessionInfo]:
         rows = self._connection.execute(
-            "SELECT thread_id, cwd, model, created, title FROM sessions ORDER BY created DESC"
+            "SELECT thread_id, cwd, model, created, title, mode FROM sessions ORDER BY created DESC"
         ).fetchall()
         return [session for row in rows if (session := self._session(row)) is not None]
 

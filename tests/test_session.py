@@ -82,3 +82,34 @@ def test_fallback_model_chain_round_trips_without_losing_specs(tmp_path: Path) -
 
     with SessionStore(db_path) as reopened:
         assert reopened.get(created.thread_id).model == chain
+
+
+def test_set_model_persists_fallback_chain_across_reopen(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    replacement = ["anthropic:primary", "openai:fallback"]
+
+    with SessionStore(db_path) as store:
+        session = store.create(tmp_path, "fake:original", mode="ask")
+        store.set_model(session.thread_id, replacement)
+
+    with SessionStore(db_path) as reopened:
+        resumed = reopened.get(session.thread_id)
+
+        assert resumed is not None
+        assert resumed.model == replacement
+        assert resumed.mode == "ask"
+
+
+def test_set_mode_persists_without_changing_model_across_reopen(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+
+    with SessionStore(db_path) as store:
+        session = store.create(tmp_path, "fake:model", mode="ask")
+        store.set_mode(session.thread_id, "plan")
+
+    with SessionStore(db_path) as reopened:
+        resumed = reopened.get(session.thread_id)
+
+        assert resumed is not None
+        assert resumed.model == "fake:model"
+        assert resumed.mode == "plan"

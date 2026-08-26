@@ -1,4 +1,5 @@
 from io import StringIO
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,8 +10,9 @@ from rich.panel import Panel
 
 from orcha_agent.builtin import render_default
 from orcha_agent.core.events import EventBus, ModelChunk, ToolCallEnd, ToolCallStart
-from orcha_agent.core.plugin import PluginAPI
+from orcha_agent.core.plugin import Handled, PluginAPI
 from orcha_agent.core.registry import Registry
+from orcha_agent.tui import app
 from orcha_agent.tui.console import ConsoleOutput
 
 
@@ -25,54 +27,62 @@ def _api(registry: Registry, bus: EventBus) -> PluginAPI:
     )
 
 
-def _matches(match: Any, event: object) -> bool:
-    if callable(match):
-        return bool(match(event))
-    return match == type(event).__name__ or match == getattr(event, "name", None)
+class _CapturingConsole:
+    def __init__(self) -> None:
+        self.output = StringIO()
+        self.renderables: list[object] = []
+        self._delegate = ConsoleOutput(
+            Console(
+                file=self.output,
+                force_terminal=False,
+                color_system=None,
+                width=120,
+            )
+        )
+
+    def print(self, *objects: object, **kwargs: Any) -> None:
+        self.renderables.extend(objects)
+        self._delegate.print(*objects, **kwargs)
 
 
-def _render(event: object) -> tuple[list[object], str]:
+async def _render(event: object) -> tuple[list[object], str]:
     registry = Registry()
     bus = EventBus()
     render_default.register(_api(registry, bus))
+    console = _CapturingConsole()
+    ctx = SimpleNamespace(registry=registry, bus=bus, console=console)
 
-    output = StringIO()
-    console = ConsoleOutput(
-        Console(file=output, force_terminal=False, color_system=None, width=120)
+    await app._render(ctx, event)
+
+    return console.renderables, console.output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_model_chunk_renders_assistant_text_to_string_console() -> None:
+    _, rendered = await _render(
+        ModelChunk(chunk=AIMessageChunk(content="hello from the agent"), role="main")
     )
-    renderables: list[object] = []
-    for registration in registry.renderers:
-        if not _matches(registration.match, event):
-            continue
-        rendered = registration.render(event)
-        if rendered is not None:
-            renderables.append(rendered)
-            console.print(rendered)
-    return renderables, output.getvalue()
-
-
-def test_model_chunk_renders_assistant_text_to_string_console() -> None:
-    _, rendered = _render(ModelChunk(chunk=AIMessageChunk(content="hello from the agent"), role="main"))
 
     assert "hello from the agent" in rendered
 
 
-def test_model_chunk_renders_responding_model_name_when_present() -> None:
+@pytest.mark.asyncio
+async def test_model_chunk_renders_responding_model_name_when_present() -> None:
     event = ModelChunk(
         chunk=AIMessageChunk(content="fallback response"),
         role="main",
         model_name="fake:fallback",
     )
 
-    _, rendered = _render(event)
+    _, rendered = await _render(event)
 
-    assert event.model_name == "fake:fallback"
     assert "fake:fallback" in rendered
     assert "fallback response" in rendered
 
 
-def test_tool_call_start_renders_named_panel_and_arguments() -> None:
-    renderables, rendered = _render(
+@pytest.mark.asyncio
+async def test_tool_call_start_renders_named_panel_and_arguments() -> None:
+    renderables, rendered = await _render(
         ToolCallStart(
             name="write_file",
             args={"file_path": "/notes.txt", "content": "hello"},
@@ -87,15 +97,18 @@ def test_tool_call_start_renders_named_panel_and_arguments() -> None:
     assert "hello" in rendered
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tool_name", ["edit_file", "write_file"])
-def test_file_tool_result_renders_unified_diff_text(tool_name: str) -> None:
+async def test_file_tool_result_renders_unified_diff_text(tool_name: str) -> None:
     diff = """--- /notes.txt
 +++ /notes.txt
 @@ -1 +1 @@
 -old line
 +new line"""
 
-    _, rendered = _render(ToolCallEnd(name=tool_name, id="call-2", result=diff))
+    _, rendered = await _render(
+        ToolCallEnd(name=tool_name, id="call-2", result=diff)
+    )
 
     assert "--- /notes.txt" in rendered
     assert "+++ /notes.txt" in rendered
@@ -103,7 +116,8 @@ def test_file_tool_result_renders_unified_diff_text(tool_name: str) -> None:
     assert "+new line" in rendered
 
 
-def test_execute_result_renders_stdout_stderr_and_exit_code() -> None:
+@pytest.mark.asyncio
+async def test_execute_result_renders_stdout_stderr_and_exit_code() -> None:
     result = ToolMessage(
         content="build output\nbuild warning",
         name="execute",
@@ -112,7 +126,9 @@ def test_execute_result_renders_stdout_stderr_and_exit_code() -> None:
         status="success",
     )
 
-    renderables, rendered = _render(ToolCallEnd(name="execute", id="call-3", result=result))
+    renderables, rendered = await _render(
+        ToolCallEnd(name="execute", id="call-3", result=result)
+    )
 
     assert any(isinstance(value, Panel) for value in renderables)
     assert "build output" in rendered
@@ -120,7 +136,8 @@ def test_execute_result_renders_stdout_stderr_and_exit_code() -> None:
     assert "2" in rendered
 
 
-def test_tool_error_text_is_rendered() -> None:
+@pytest.mark.asyncio
+async def test_tool_error_text_is_rendered() -> None:
     result = ToolMessage(
         content="Error: file does not exist",
         name="read_file",
@@ -128,6 +145,35 @@ def test_tool_error_text_is_rendered() -> None:
         status="error",
     )
 
-    _, rendered = _render(ToolCallEnd(name="read_file", id="call-4", result=result))
+    _, rendered = await _render(
+        ToolCallEnd(name="read_file", id="call-4", result=result)
+    )
 
     assert "Error: file does not exist" in rendered
+
+
+@pytest.mark.asyncio
+async def test_priority_handler_returning_handled_suppresses_renderer() -> None:
+    registry = Registry()
+    bus = EventBus()
+    render_default.register(_api(registry, bus))
+    handler_calls: list[str] = []
+
+    async def handle(_event: ModelChunk) -> Handled:
+        handler_calls.append("handled")
+        return Handled()
+
+    bus.on(ModelChunk, handle, priority=0)
+    console = _CapturingConsole()
+    ctx = SimpleNamespace(registry=registry, bus=bus, console=console)
+    event = ModelChunk(
+        chunk=AIMessageChunk(content="must not render"),
+        role="main",
+    )
+
+    was_handled = await app._render(ctx, event)
+
+    assert was_handled is True
+    assert handler_calls == ["handled"]
+    assert console.renderables == []
+    assert console.output.getvalue() == ""

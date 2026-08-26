@@ -33,7 +33,7 @@ from orcha_agent.core.events import (
 )
 from orcha_agent.core.loader import PluginRecord, load_plugins
 from orcha_agent.core.models import ModelResolver, strip_foreign_blocks
-from orcha_agent.core.plugin import Resolved
+from orcha_agent.core.plugin import Handled, Resolved
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
 
@@ -82,6 +82,17 @@ def _model_specs(
     if target is None or spec in seen:
         return (spec,)
     return _model_specs(target, aliases, seen | {spec})
+
+
+def _primary_provider_prefix(
+    spec: str | list[str],
+    aliases: Mapping[str, str | list[str]],
+) -> str | None:
+    specs = _model_specs(spec, aliases)
+    if not specs:
+        return None
+    prefix, separator, _ = specs[0].partition(":")
+    return prefix if separator else None
 
 
 def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
@@ -166,7 +177,12 @@ class AppContext:
 
     async def clear(self) -> None:
         old = self.thread_id
-        created = self.session.create(self.cfg.cwd, self.cfg.model)
+        self.persist_plugin_states()
+        created = self.session.create(
+            self.cfg.cwd,
+            self.cfg.model,
+            mode=self.cfg.mode,
+        )
         self.thread_id = created.thread_id
         for state in self.plugin_states.values():
             state.clear()
@@ -193,13 +209,17 @@ class AppContext:
         candidate_cfg = replace(
             self.cfg,
             cwd=Path(saved_session.cwd),
-            model=_stored_model(saved_session.model),
+            model=(
+                self.cfg.model
+                if self.cfg.model_overridden
+                else _stored_model(saved_session.model)
+            ),
+            mode=saved_session.mode,
         )
-        self.cfg = candidate_cfg
         try:
             candidate_agent = await build_agent(
                 self.registry,
-                self.cfg,
+                candidate_cfg,
                 self.session,
                 self.bus,
                 always_allowed=self._always_allowed(),
@@ -214,6 +234,7 @@ class AppContext:
                 state.update(old_states.get(name, {}))
             raise
 
+        self.cfg = candidate_cfg
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
         self.rebuild_requested = False
@@ -221,7 +242,11 @@ class AppContext:
 
     async def switch_model(self, spec: str) -> None:
         old = self.cfg.model if isinstance(self.cfg.model, str) else ",".join(self.cfg.model)
-        candidate_cfg = replace(self.cfg, model=spec)
+        candidate_cfg = replace(
+            self.cfg,
+            model=spec,
+            model_overridden=True,
+        )
         candidate_agent = await build_agent(
             self.registry,
             candidate_cfg,
@@ -230,7 +255,15 @@ class AppContext:
             always_allowed=self._always_allowed(),
         )
         candidate_summarizer = self._resolve_summarizer(candidate_cfg)
-        foreign = _foreign_block_types(self.registry, self.cfg)
+        provider_changed = _primary_provider_prefix(
+            self.cfg.model,
+            self.cfg.models,
+        ) != _primary_provider_prefix(spec, self.cfg.models)
+        foreign = (
+            _foreign_block_types(self.registry, self.cfg)
+            if provider_changed
+            else set()
+        )
         if foreign:
             strip_foreign_blocks(
                 self.agent,
@@ -240,6 +273,7 @@ class AppContext:
         self.cfg = candidate_cfg
         self.summarizer = candidate_summarizer
         self.agent = candidate_agent
+        self.session.set_model(self.thread_id, spec)
         self.rebuild_requested = False
         await self.bus.emit(ModelSwitch(old=old, new=spec))
 
@@ -247,8 +281,20 @@ class AppContext:
         if name not in self.registry.modes:
             self.console.error(f"Unknown mode: {name}")
             return
-        self.cfg = replace(self.cfg, mode=name)
-        await self.rebuild()
+        candidate_cfg = replace(self.cfg, mode=name)
+        candidate_agent = await build_agent(
+            self.registry,
+            candidate_cfg,
+            self.session,
+            self.bus,
+            always_allowed=self._always_allowed(),
+        )
+        candidate_summarizer = self._resolve_summarizer(candidate_cfg)
+        self.session.set_mode(self.thread_id, name)
+        self.cfg = candidate_cfg
+        self.agent = candidate_agent
+        self.summarizer = candidate_summarizer
+        self.rebuild_requested = False
 
     async def compact(self) -> None:
         instruction = (
@@ -259,12 +305,21 @@ class AppContext:
         messages = list(getattr(state, "values", {}).get("messages", ()))
         if self.summarizer is None:
             raise RuntimeError("summarizer model is unavailable")
-        summary = self.summarizer.invoke(
+        summary = await self.summarizer.ainvoke(
             [*messages, HumanMessage(content=instruction)]
+        )
+        summary_text = (
+            summary.content
+            if isinstance(summary.content, str)
+            else str(summary.content)
+        )
+        replacement = HumanMessage(
+            content=f"[Conversation summary]\n{summary_text}"
         )
         self.agent.update_state(
             self.thread_config,
-            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary]},
+            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), replacement]},
+            as_node="model",
         )
         self.console.print("Conversation compacted.")
 
@@ -275,7 +330,9 @@ class AppContext:
 
 async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
     if emit:
-        await ctx.bus.emit(event)
+        handled = await ctx.bus.emit(event)
+        if isinstance(handled, Handled):
+            return True
     for registration in ctx.registry.renderers:
         if not _matches(registration.match, event):
             continue
@@ -428,6 +485,7 @@ async def _message_event(
     data: Any,
     tool_calls: _ToolCallBuffer,
     model_labels: _ModelLabelBuffer,
+    namespace: tuple[str, ...] = (),
 ) -> None:
     if not isinstance(data, tuple) or len(data) != 2:
         return
@@ -440,7 +498,12 @@ async def _message_event(
         for event in tool_calls.add(message):
             await _render(ctx, event)
     node = metadata.get("langgraph_node", "") if isinstance(metadata, Mapping) else ""
-    role = "subagent" if "subagent" in str(node) else "main"
+    agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
+    role = (
+        "subagent"
+        if namespace or agent_type == "subagent" or "subagent" in str(node)
+        else "main"
+    )
     if getattr(message, "content", None):
         await _render(
             ctx,
@@ -458,8 +521,24 @@ async def _updates_event(ctx: AppContext, data: Any, seen_results: set[str]) -> 
     interrupts = data.get("__interrupt__", ())
     if interrupts:
         payload = interrupts[0].value
-        resolution = await ctx.bus.emit(InterruptRaised(payload=payload))
-        return resolution if isinstance(resolution, Resolved) else None
+        warning = "Approval unresolved; rejecting pending actions."
+        try:
+            resolution = await ctx.bus.emit(InterruptRaised(payload=payload))
+        except Exception as exc:
+            warning = (
+                f"Approval handler failed ({type(exc).__name__}); "
+                "rejecting pending actions."
+            )
+            resolution = None
+        if isinstance(resolution, Resolved):
+            return resolution
+        actions = payload.get("action_requests", ())
+        ctx.console.warning(warning)
+        return Resolved(
+            resume_value={
+                "decisions": [{"type": "reject"} for _ in actions],
+            }
+        )
     for message in _messages(data):
         if not isinstance(message, ToolMessage) or message.tool_call_id in seen_results:
             continue
@@ -485,13 +564,25 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     try:
         while True:
             resolution: Resolved | None = None
-            async for mode, data in ctx.agent.astream(
+            async for stream_item in ctx.agent.astream(
                 next_input,
                 config=ctx.thread_config,
                 stream_mode=["messages", "updates"],
+                subgraphs=True,
             ):
+                if len(stream_item) == 3:
+                    namespace, mode, data = stream_item
+                else:
+                    mode, data = stream_item
+                    namespace = ()
                 if mode == "messages":
-                    await _message_event(ctx, data, tool_calls, model_labels)
+                    await _message_event(
+                        ctx,
+                        data,
+                        tool_calls,
+                        model_labels,
+                        namespace,
+                    )
                 elif mode == "updates":
                     candidate = await _updates_event(ctx, data, seen_results)
                     if candidate is not None:
@@ -550,11 +641,20 @@ async def run_app(cfg: Config) -> int:
             cfg = replace(
                 cfg,
                 cwd=Path(saved_session.cwd),
-                model=_stored_model(saved_session.model),
+                model=(
+                    cfg.model
+                    if cfg.model_overridden
+                    else _stored_model(saved_session.model)
+                ),
+                mode=saved_session.mode,
             )
             thread_id = saved_session.thread_id
         else:
-            thread_id = store.create(cfg.cwd, cfg.model).thread_id
+            thread_id = store.create(
+                cfg.cwd,
+                cfg.model,
+                mode=cfg.mode,
+            ).thread_id
 
         registry = Registry()
         from orcha_agent.core.events import EventBus
