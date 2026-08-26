@@ -13,7 +13,8 @@ def main() -> None:
     """Load configuration and run the terminal application."""
 
     cfg = load_config()
-    load_dotenv(cfg.cwd / ".env", override=False)
+    if cfg.trust_cwd:
+        load_dotenv(cfg.cwd / ".env", override=False)
     raise SystemExit(asyncio.run(run_app(cfg)))
 
 
