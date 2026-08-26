@@ -1,4 +1,6 @@
 import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from orcha_agent.core.session import SessionStore
@@ -113,3 +115,130 @@ def test_set_mode_persists_without_changing_model_across_reopen(tmp_path: Path) 
         assert resumed is not None
         assert resumed.model == "fake:model"
         assert resumed.mode == "plan"
+
+
+def test_metadata_and_plugin_writes_wait_for_saver_operation_lock(
+    tmp_path: Path,
+) -> None:
+    with SessionStore(tmp_path / "sessions.db") as store:
+        session = store.create(tmp_path, "fake:model")
+        writer_names = {"metadata-write", "plugin-state-write"}
+        observed_writers: set[str] = set()
+        waiting_writers: set[str] = set()
+        completed_writers: set[str] = set()
+        state_lock = threading.Lock()
+        all_writers_observed = threading.Event()
+        saver_holds_lock = threading.Event()
+        release_saver = threading.Event()
+        errors: list[BaseException] = []
+
+        def observe_writer(name: str, *, waiting: bool = False) -> None:
+            if name not in writer_names:
+                return
+            with state_lock:
+                observed_writers.add(name)
+                if waiting:
+                    waiting_writers.add(name)
+                else:
+                    completed_writers.add(name)
+                if observed_writers == writer_names:
+                    all_writers_observed.set()
+
+        backing_lock = threading.Lock()
+
+        class ObservedLock:
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                if backing_lock.locked():
+                    observe_writer(threading.current_thread().name, waiting=True)
+                return backing_lock.acquire(blocking, timeout)
+
+            def release(self) -> None:
+                backing_lock.release()
+
+            def __enter__(self) -> "ObservedLock":
+                self.acquire()
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                self.release()
+
+        store.saver.lock = ObservedLock()
+        original_setup = store.saver.setup
+
+        def blocking_setup() -> None:
+            saver_holds_lock.set()
+            if not release_saver.wait(2):
+                raise TimeoutError("test did not release the saver operation")
+            original_setup()
+
+        store.saver.setup = blocking_setup
+
+        def run_saver_operation() -> None:
+            try:
+                store.saver.get_tuple(
+                    {
+                        "configurable": {
+                            "thread_id": session.thread_id,
+                            "checkpoint_ns": "",
+                        }
+                    }
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        def run_writer(name: str, write: Callable[[], None]) -> None:
+            try:
+                write()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                observe_writer(name)
+
+        saver_thread = threading.Thread(
+            target=run_saver_operation,
+            name="checkpoint-saver",
+        )
+        writer_threads = [
+            threading.Thread(
+                target=run_writer,
+                args=("metadata-write", lambda: store.set_title(session.thread_id, "Locked")),
+                name="metadata-write",
+            ),
+            threading.Thread(
+                target=run_writer,
+                args=(
+                    "plugin-state-write",
+                    lambda: store.set_plugin_state(
+                        session.thread_id,
+                        "planner",
+                        {"step": "locked"},
+                    ),
+                ),
+                name="plugin-state-write",
+            ),
+        ]
+
+        saver_thread.start()
+        try:
+            assert saver_holds_lock.wait(1)
+            for thread in writer_threads:
+                thread.start()
+
+            assert all_writers_observed.wait(1)
+            with state_lock:
+                assert waiting_writers == writer_names
+                assert completed_writers == set()
+        finally:
+            release_saver.set()
+            saver_thread.join(1)
+            for thread in writer_threads:
+                if thread.ident is not None:
+                    thread.join(1)
+
+        assert not saver_thread.is_alive()
+        assert all(not thread.is_alive() for thread in writer_threads)
+        assert errors == []
+        assert store.get(session.thread_id).title == "Locked"
+        assert store.get_plugin_state(session.thread_id, "planner") == {
+            "step": "locked"
+        }

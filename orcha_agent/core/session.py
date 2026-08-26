@@ -140,6 +140,11 @@ class SessionStore:
     def close(self) -> None:
         self._connection.close()
 
+    def _write(self, sql: str, parameters: Sequence[Any]) -> None:
+        with self.saver.lock:
+            self._connection.execute(sql, parameters)
+            self._connection.commit()
+
     def create(
         self,
         cwd: str | Path,
@@ -154,11 +159,10 @@ class SessionStore:
         model_text = self._encode_model(model)
         stored_model = model if isinstance(model, str) else list(model)
         info = SessionInfo(identifier, str(cwd), stored_model, created, title, mode)
-        self._connection.execute(
+        self._write(
             "INSERT INTO sessions(thread_id, cwd, model, created, title, mode) VALUES (?, ?, ?, ?, ?, ?)",
             (info.thread_id, info.cwd, model_text, info.created, info.title, info.mode),
         )
-        self._connection.commit()
         return info
 
     @staticmethod
@@ -197,24 +201,21 @@ class SessionStore:
         return self.get(thread_id) is not None
 
     def set_title(self, thread_id: str, title: str) -> None:
-        self._connection.execute(
+        self._write(
             "UPDATE sessions SET title = ? WHERE thread_id = ?",
             (title, thread_id),
         )
-        self._connection.commit()
     def set_model(self, thread_id: str, model: str | list[str]) -> None:
-        self._connection.execute(
+        self._write(
             "UPDATE sessions SET model = ? WHERE thread_id = ?",
             (self._encode_model(model), thread_id),
         )
-        self._connection.commit()
 
     def set_mode(self, thread_id: str, mode: str) -> None:
-        self._connection.execute(
+        self._write(
             "UPDATE sessions SET mode = ? WHERE thread_id = ?",
             (mode, thread_id),
         )
-        self._connection.commit()
 
 
     def list(self) -> list[SessionInfo]:
@@ -225,14 +226,13 @@ class SessionStore:
 
     def set_plugin_state(self, thread_id: str, plugin: str, state: dict[str, Any]) -> None:
         payload = json.dumps(state, separators=(",", ":"), sort_keys=True)
-        self._connection.execute(
+        self._write(
             """
             INSERT INTO plugin_state(thread_id, plugin, state) VALUES (?, ?, ?)
             ON CONFLICT(thread_id, plugin) DO UPDATE SET state = excluded.state
             """,
             (thread_id, plugin, payload),
         )
-        self._connection.commit()
 
     def get_plugin_state(self, thread_id: str, plugin: str) -> dict[str, Any]:
         row = self._connection.execute(
