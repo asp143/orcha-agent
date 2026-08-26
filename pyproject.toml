@@ -1,0 +1,11 @@
+[project]
+name = "deepagent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "deepagents>=0.7.9",
+    "langchain-anthropic>=1.6.1",
+    "python-dotenv>=1.2.3",
+]
