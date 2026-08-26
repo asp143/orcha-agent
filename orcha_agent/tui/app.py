@@ -376,7 +376,8 @@ class AppContext:
 
 async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
     if emit:
-        handled = await ctx._bus.emit(event)
+        bus = getattr(ctx, "_bus", ctx.bus)
+        handled = await bus.emit(event)
         if isinstance(handled, Handled):
             return True
     for registration in ctx.registry.renderers:

@@ -317,7 +317,7 @@ async def test_approval_always_writes_then_skips_the_next_interrupt(
         events.append(event)
 
     monkeypatch.setattr(approval_prompt, "_prompt_action", choose_always)
-    ctx.bus.on(Event, record, priority=0)
+    ctx._bus.on(Event, record, priority=0)
 
     try:
         await _run_turn(ctx, "Write the first file.")
@@ -400,8 +400,8 @@ async def test_run_turn_resumes_one_real_graph_interrupt_and_renders_write(
     async def approve(_event: InterruptRaised) -> Resolved:
         return Resolved(resume_value={"decisions": [{"type": "approve"}]})
 
-    ctx.bus.on(Event, record, priority=0)
-    ctx.bus.on(InterruptRaised, approve, plugin="auto-approve", priority=1)
+    ctx._bus.on(Event, record, priority=0)
+    ctx._bus.on(InterruptRaised, approve, plugin="auto-approve", priority=1)
 
     try:
         await _run_turn(ctx, "Write the file.")
