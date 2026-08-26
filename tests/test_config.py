@@ -23,6 +23,30 @@ def _load(
     )
 
 
+def test_cli_parser_accepts_bare_repl(tmp_path: Path) -> None:
+    cfg = _load(
+        tmp_path,
+        argv=("repl",),
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert cfg.command == "repl"
+    assert cfg.login_prefix is None
+    assert cfg.no_browser is False
+
+
+def test_cli_parser_accepts_login_prefix_and_no_browser(tmp_path: Path) -> None:
+    cfg = _load(
+        tmp_path,
+        argv=("login", "codex", "--no-browser"),
+        env={"HOME": str(tmp_path)},
+    )
+
+    assert cfg.command == "login"
+    assert cfg.login_prefix == "codex"
+    assert cfg.no_browser is True
+
+
 def test_model_precedence_walks_all_five_layers_without_skipping_project_config(
     tmp_path: Path,
 ) -> None:

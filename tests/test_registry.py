@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
@@ -16,6 +17,20 @@ def _api(name: str, registry: Registry, bus: EventBus) -> PluginAPI:
         registry=registry,
         bus=bus,
         request_rebuild=lambda: None,
+    )
+
+
+def _auth_flow(label: str) -> AuthFlow:
+    async def login(ctx: Any) -> None:
+        ctx.auth_action = ("login", label)
+
+    async def logout(ctx: Any) -> None:
+        ctx.auth_action = ("logout", label)
+
+    return AuthFlow(
+        login=login,
+        logout=logout,
+        status=lambda: f"logged in as {label}",
     )
 
 
@@ -47,6 +62,8 @@ def _register_named(api: PluginAPI, kind: str, *, replace: bool = False) -> None
             ),
             replace=replace,
         )
+    elif kind == "auth":
+        api.add_auth("shared", _auth_flow(api.name), replace=replace)
     elif kind == "backend":
         api.add_backend("shared", lambda config: (api.name, config), replace=replace)
     elif kind == "middleware":
@@ -89,6 +106,10 @@ def _assert_replacement_is_stored(registry: Registry, kind: str) -> None:
         entry = registry.providers["shared"]
         assert entry.plugin == "beta"
         assert entry.factory("model", {}) == ("beta", "model")
+    elif kind == "auth":
+        entry = registry.auth["shared"]
+        assert entry.plugin == "beta"
+        assert entry.flow.status() == "logged in as beta"
     elif kind == "backend":
         entry = registry.backends["shared"]
         assert entry.plugin == "beta"
@@ -120,6 +141,7 @@ def _assert_replacement_is_stored(registry: Registry, kind: str) -> None:
 @pytest.mark.parametrize(
     "kind",
     [
+        "auth",
         "tool",
         "middleware",
         "command",
@@ -148,6 +170,7 @@ def test_registrations_reject_a_second_plugin_instead_of_silently_overwriting(
 @pytest.mark.parametrize(
     "kind",
     [
+        "auth",
         "tool",
         "middleware",
         "command",

@@ -6,6 +6,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rich.console import Console
 
 from orcha_agent.builtin import commands_core, commands_model, commands_session
+from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
@@ -29,6 +30,28 @@ def _context(*, width: int = 100) -> tuple[SimpleNamespace, StringIO]:
     output = StringIO()
     console = Console(file=output, force_terminal=False, color_system=None, width=width)
     return SimpleNamespace(console=ConsoleOutput(console), agent=None), output
+
+
+def _auth_flow(
+    calls: list[tuple[str, object]],
+    *,
+    status: str = "not logged in",
+) -> AuthFlow:
+    current = {"status": status}
+
+    async def login(ctx: object) -> None:
+        calls.append(("login", ctx))
+        current["status"] = "logged in as test@example.com"
+
+    async def logout(ctx: object) -> None:
+        calls.append(("logout", ctx))
+        current["status"] = "not logged in"
+
+    return AuthFlow(
+        login=login,
+        logout=logout,
+        status=lambda: current["status"],
+    )
 
 
 @pytest.mark.asyncio
@@ -123,6 +146,80 @@ async def test_providers_reports_key_presence_without_printing_secret_value(
     rendered = output.getvalue()
     assert "ORCHA_TEST_API_KEY: yes" in rendered
     assert secret not in rendered
+
+
+@pytest.mark.asyncio
+async def test_login_dispatches_to_named_auth_flow_and_updates_provider_status() -> None:
+    registry = Registry()
+    bus = EventBus()
+    api = _api(registry, bus)
+    calls: list[tuple[str, object]] = []
+    api.add_auth("codex", _auth_flow(calls))
+    api.add_provider(
+        "codex",
+        lambda model_name, provider_config: (model_name, provider_config),
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=False,
+            max_context=None,
+        ),
+    )
+    commands_core.register(api)
+    ctx, output = _context(width=240)
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, "/login codex") is True
+    assert calls == [("login", ctx)]
+    assert await dispatch_command(registry, ctx, "/providers") is True
+    assert "logged in as test@example.com" in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_logout_dispatches_to_named_auth_flow() -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    calls: list[tuple[str, object]] = []
+    api.add_auth(
+        "codex",
+        _auth_flow(calls, status="logged in as test@example.com"),
+    )
+    commands_core.register(api)
+    ctx, _ = _context()
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, "/logout codex") is True
+    assert calls == [("logout", ctx)]
+    assert registry.auth["codex"].flow.status() == "not logged in"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["login", "logout"])
+async def test_auth_command_without_prefix_renders_usage(command: str) -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    commands_core.register(api)
+    ctx, output = _context()
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, f"/{command}") is True
+    assert f"usage: /{command} <prefix>" in output.getvalue().lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["login", "logout"])
+async def test_auth_command_rejects_unknown_prefix(command: str) -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    commands_core.register(api)
+    ctx, output = _context()
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, f"/{command} missing") is True
+    rendered = output.getvalue().lower()
+    assert "unknown auth prefix" in rendered
+    assert "missing" in rendered
 
 
 @pytest.mark.asyncio

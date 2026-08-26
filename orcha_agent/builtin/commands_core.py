@@ -61,23 +61,53 @@ def _capabilities(value: object) -> str:
     )
 
 
+async def _auth_action(ctx: Any, args: str, *, action: str) -> None:
+    parts = args.split()
+    if len(parts) != 1:
+        ctx.console.error(f"Usage: /{action} <prefix>")
+        return
+    prefix = parts[0]
+    registration = ctx.registry.auth.get(prefix)
+    if registration is None:
+        ctx.console.error(f"Unknown auth prefix: {prefix}")
+        return
+    callback = (
+        registration.flow.login
+        if action == "login"
+        else registration.flow.logout
+    )
+    await callback(ctx)
+
+
+async def _login(ctx: Any, args: str) -> None:
+    await _auth_action(ctx, args, action="login")
+
+
+async def _logout(ctx: Any, args: str) -> None:
+    await _auth_action(ctx, args, action="logout")
+
+
 async def _providers(ctx: Any, _args: str) -> None:
     table = Table(title="Providers")
     table.add_column("Prefix", style="cyan")
     table.add_column("Available")
     table.add_column("Environment")
     table.add_column("Capabilities")
+    table.add_column("Authentication")
     for prefix, provider in sorted(ctx.registry.providers.items()):
         unavailable = provider.available()
         availability = "yes" if unavailable is None else f"no ({unavailable})"
         environment = ", ".join(
             f"{key}: {'yes' if key in os.environ else 'no'}" for key in provider.env_keys
         ) or "n/a"
+        auth = ctx.registry.auth.get(prefix)
+        auth_status = auth.flow.status() if auth is not None else "not configured"
         table.add_row(
             prefix,
             availability,
             environment,
             _capabilities(provider.capabilities),
+            auth_status,
         )
     ctx.console.print(table)
 
@@ -88,3 +118,5 @@ def register(api: PluginAPI) -> None:
     api.add_command("exit", _exit, help="Exit orcha-agent")
     api.add_command("plugins", _plugins, help="List loaded plugins")
     api.add_command("providers", _providers, help="List model providers and availability")
+    api.add_command("login", _login, help="Log in to a provider: /login <prefix>")
+    api.add_command("logout", _logout, help="Log out of a provider: /logout <prefix>")

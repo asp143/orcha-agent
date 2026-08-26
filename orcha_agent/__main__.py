@@ -3,10 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from dotenv import load_dotenv
 
+from .core.events import EventBus
+from .core.loader import load_plugins
+from .core.registry import Registry
+from .tui.console import ConsoleOutput
 from .core.config import load_config
 from .tui.app import run_app
+
+
+async def _run_login(cfg: object) -> int:
+    registry = Registry()
+    bus = EventBus()
+    load_plugins(registry, bus, cfg)
+    prefix = getattr(cfg, "login_prefix", None)
+    registration = registry.auth.get(prefix)
+    console = ConsoleOutput()
+    if registration is None:
+        console.error(f"Unknown auth prefix: {prefix}")
+        return 1
+    ctx = SimpleNamespace(
+        cfg=cfg,
+        registry=registry,
+        bus=bus,
+        console=console,
+        no_browser=bool(getattr(cfg, "no_browser", False)),
+    )
+    await registration.flow.login(ctx)
+    return 0
 
 
 def main() -> None:
@@ -15,6 +41,8 @@ def main() -> None:
     cfg = load_config()
     if cfg.trust_cwd:
         load_dotenv(cfg.cwd / ".env", override=False)
+    if cfg.command == "login":
+        raise SystemExit(asyncio.run(_run_login(cfg)))
     raise SystemExit(asyncio.run(run_app(cfg)))
 
 

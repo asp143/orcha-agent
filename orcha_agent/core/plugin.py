@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
+    from .auth import AuthFlow
     from .events import Event, EventBus
     from .registry import Registry, Renderer, RendererMatch
 
@@ -74,6 +75,21 @@ class PluginAPI:
         self._registry = registry
         self._bus = bus
         self._request_rebuild = request_rebuild
+
+    def add_auth(
+        self,
+        prefix: str,
+        flow: AuthFlow,
+        *,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_auth(
+            self.name,
+            prefix,
+            flow,
+            replace=replace,
+        )
+
 
     def add_tool(self, tool: Any, *, replace: bool = False) -> None:
         self._registry._add_tool(self.name, tool, replace=replace)

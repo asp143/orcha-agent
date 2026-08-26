@@ -13,6 +13,12 @@ AvailabilityCheck: TypeAlias = Callable[[], str | None]
 
 
 @dataclass(frozen=True, slots=True)
+class AuthRegistration:
+    plugin: str
+    flow: Any
+
+
+@dataclass(frozen=True, slots=True)
 class CommandRegistration:
     plugin: str
     handler: CommandHandler
@@ -93,6 +99,7 @@ class Registry:
 
     def __init__(self) -> None:
         self.tools: dict[str, Any] = {}
+        self.auth: dict[str, AuthRegistration] = {}
         self.commands: dict[str, CommandRegistration] = {}
         self.providers: dict[str, ProviderRegistration] = {}
         self.backends: dict[str, BackendRegistration] = {}
@@ -104,6 +111,7 @@ class Registry:
         self.prompt_fragments: list[PromptFragment] = []
 
         self._tool_owners: dict[str, str] = {}
+        self._auth_owners: dict[str, str] = {}
         self._command_owners: dict[str, str] = {}
         self._provider_owners: dict[str, str] = {}
         self._backend_owners: dict[str, str] = {}
@@ -141,6 +149,18 @@ class Registry:
         name = _value_name(tool)
         self._claim("tool", name, plugin, self._tool_owners, replace=replace)
         self.tools[name] = tool
+
+    def _add_auth(
+        self,
+        plugin: str,
+        prefix: str,
+        flow: Any,
+        *,
+        replace: bool = False,
+    ) -> None:
+        self._claim("auth", prefix, plugin, self._auth_owners, replace=replace)
+        self.auth[prefix] = AuthRegistration(plugin=plugin, flow=flow)
+
 
     def _add_command(
         self,
@@ -313,6 +333,7 @@ class Registry:
 
 __all__ = [
     "AvailabilityCheck",
+    "AuthRegistration",
     "BackendFactory",
     "BackendRegistration",
     "CommandHandler",

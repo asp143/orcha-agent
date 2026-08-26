@@ -8,6 +8,7 @@ from deepagents.backends import StateBackend
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
 from orcha_agent.core.agent import build_agent
+from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps
@@ -164,3 +165,39 @@ def register(api) -> None:
     ]
     assert len(filesystem) == 1
     assert list(filesystem[0].tools) == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_exposes_registered_auth_flow() -> None:
+    registry = Registry()
+    calls: list[tuple[str, object]] = []
+
+    async def login(ctx: object) -> None:
+        calls.append(("login", ctx))
+
+    async def logout(ctx: object) -> None:
+        calls.append(("logout", ctx))
+
+    flow = AuthFlow(
+        login=login,
+        logout=logout,
+        status=lambda: "logged in as test@example.com",
+    )
+    api = PluginAPI(
+        name="external_auth",
+        config={},
+        state={},
+        registry=registry,
+        bus=EventBus(),
+        request_rebuild=lambda: None,
+    )
+
+    api.add_auth("codex", flow)
+
+    registration = registry.auth["codex"]
+    assert registration.plugin == "external_auth"
+    assert registration.flow.status() == "logged in as test@example.com"
+    context = object()
+    await registration.flow.login(context)
+    await registration.flow.logout(context)
+    assert calls == [("login", context), ("logout", context)]

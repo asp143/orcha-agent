@@ -37,6 +37,9 @@ class Config:
     model_overridden: bool = False
     trusted_dirs: tuple[Path, ...] = ()
     trust_all_cwd: bool = False
+    command: str = "repl"
+    login_prefix: str | None = None
+    no_browser: bool = False
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -57,6 +60,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="trust project config and plugins in the working directory",
     )
+    subcommands = parser.add_subparsers(dest="command")
+    subcommands.add_parser("repl", help="start the interactive terminal agent")
+    login = subcommands.add_parser("login", help="log in to a provider")
+    login.add_argument("prefix")
+    login.add_argument("--no-browser", action="store_true")
     return parser
 
 
@@ -233,6 +241,9 @@ def load_config(
         memory=_memory(core.get("memory", DEFAULT_MEMORY)),
         db_path=db_path,
         cwd=resolved_cwd,
+        command=args.command or "repl",
+        login_prefix=getattr(args, "prefix", None),
+        no_browser=getattr(args, "no_browser", False),
         resume=args.resume,
         list_sessions=args.list_sessions,
         strict_plugins=args.strict_plugins,
