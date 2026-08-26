@@ -143,12 +143,17 @@ async def build_agent(
             tools=sorted(mode.allowed_tools),
         )
         middleware.append(filesystem)
+    tools = [
+        tool
+        for name, tool in registry.tools.items()
+        if mode.allowed_tools is None or name in mode.allowed_tools
+    ]
     middleware.append(create_summarization_middleware(roles["summarizer"], backend))
 
     prompt = "\n\n".join(fragment.text for fragment in registry.prompt_fragments)
     kwargs: dict[str, Any] = {
         "model": roles["main"],
-        "tools": list(registry.tools.values()),
+        "tools": tools,
         "middleware": middleware,
         "subagents": _subagents(
             registry,

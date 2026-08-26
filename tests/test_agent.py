@@ -287,6 +287,29 @@ async def test_plan_mode_omits_unrestrictable_compiled_subagents(
 
     assert all(spec["name"] != "compiled-writer" for spec in captured["subagents"])
 
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_excludes_plugin_tools_outside_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+
+    def mutate_workspace() -> str:
+        return "mutated"
+
+    api.add_tool(mutate_workspace)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    with SessionStore(tmp_path / "sessions.db") as session:
+        await build_agent(registry, _config(tmp_path, "plan"), session, bus)
+
+    assert captured["tools"] == []
 @pytest.mark.asyncio
 async def test_build_agent_uses_configured_model_for_main_summarization(
     tmp_path: Path,
