@@ -194,3 +194,15 @@ def test_provider_keeps_foreign_history_block_types() -> None:
     assert registry.providers["example"].foreign_block_types == frozenset(
         {"thinking", "reasoning"}
     )
+
+
+def test_distinct_callable_renderer_predicates_do_not_conflict() -> None:
+    registry = Registry()
+    bus = EventBus()
+
+    first = lambda event: event == "first"
+    second = lambda event: event == "second"
+    _api("alpha", registry, bus).add_renderer(first, lambda event: str(event))
+    _api("beta", registry, bus).add_renderer(second, lambda event: str(event))
+
+    assert [entry.match for entry in registry.renderers] == [first, second]

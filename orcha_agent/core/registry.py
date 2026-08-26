@@ -109,19 +109,19 @@ class Registry:
         self._backend_owners: dict[str, str] = {}
         self._mode_owners: dict[str, str] = {}
         self._middleware_owners: dict[str, str] = {}
-        self._renderer_owners: dict[str, str] = {}
+        self._renderer_owners: dict[object, str] = {}
         self._subagent_owners: dict[str, str] = {}
 
     @staticmethod
     def _claim(
         kind: str,
-        name: str,
+        name: object,
         plugin: str,
-        owners: dict[str, str],
+        owners: dict[object, str],
         *,
         replace: bool,
     ) -> None:
-        if not name:
+        if isinstance(name, str) and not name:
             raise ValueError(f"{kind} name cannot be empty")
         owner = owners.get(name)
         if owner is not None and not replace:
@@ -238,15 +238,24 @@ class Registry:
         replace: bool = False,
     ) -> None:
         name = _match_name(match)
+        owner_key: object = match if callable(match) else name
         self._claim(
             "renderer",
-            name,
+            owner_key,
             plugin,
             self._renderer_owners,
             replace=replace,
         )
         if replace:
-            self.renderers[:] = [entry for entry in self.renderers if entry.name != name]
+            self.renderers[:] = [
+                entry
+                for entry in self.renderers
+                if not (
+                    entry.match is match
+                    if callable(match)
+                    else entry.name == name
+                )
+            ]
         self.renderers.append(
             RendererRegistration(
                 plugin=plugin,
