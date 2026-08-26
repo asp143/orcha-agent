@@ -156,7 +156,7 @@ def test_resolve_roles_constructs_three_distinct_models(tmp_path: Path) -> None:
     assert len({id(model) for model in roles.values()}) == 3
 
 
-def test_fallback_model_rolls_to_next_fake_on_invoke_error(tmp_path: Path) -> None:
+def test_resolve_chain_returns_primary_and_fallback_chat_models(tmp_path: Path) -> None:
     registry = Registry()
 
     def factory(model_name: str, provider_config: dict[str, object]) -> FakeListChatModel:
@@ -167,9 +167,12 @@ def test_fallback_model_rolls_to_next_fake_on_invoke_error(tmp_path: Path) -> No
     _api(registry).add_provider("fake", factory, capabilities=_caps())
     cfg = _config(tmp_path, model=["fake:primary", "fake:secondary"])
 
-    model = ModelResolver(registry, cfg).resolve(cfg.model, "main")
+    models = ModelResolver(registry, cfg).resolve_chain(cfg.model, "main")
 
-    assert model.invoke("hello").content == "fallback response"
+    assert len(models) == 2
+    with pytest.raises(RuntimeError, match="primary unavailable"):
+        models[0].invoke("hello")
+    assert models[1].invoke("hello").content == "fallback response"
 
 
 def test_strip_foreign_blocks_replaces_history_with_cleaned_messages() -> None:

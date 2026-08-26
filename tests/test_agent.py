@@ -1,12 +1,24 @@
+from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
-from deepagents import GeneralPurposeSubagentProfile, HarnessProfileConfig
-from deepagents.backends import StateBackend
+from deepagents import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfileConfig,
+    create_deep_agent as real_create_deep_agent,
+)
+from deepagents.backends import LocalShellBackend, StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain.agents.middleware import ModelFallbackMiddleware
+from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models.fake_chat_models import (
+    FakeListChatModel,
+    GenericFakeChatModel,
+)
+from langchain_core.messages import AIMessage
 
 from orcha_agent.core.agent import build_agent
 from orcha_agent.core.config import Config
@@ -14,6 +26,19 @@ from orcha_agent.core.events import AgentBuildBefore, EventBus
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
+
+
+class ToolCallingFakeModel(GenericFakeChatModel):
+    disable_streaming: bool = True
+
+    def bind_tools(
+        self,
+        tools: Any,
+        *,
+        tool_choice: Any = None,
+        **kwargs: Any,
+    ) -> "ToolCallingFakeModel":
+        return self
 
 
 MODE_SPECS = {
@@ -95,6 +120,162 @@ def _kernel() -> tuple[Registry, EventBus, PluginAPI]:
     for name, spec in MODE_SPECS.items():
         api.add_mode(name, spec)
     return registry, bus, api
+
+
+def _raising_script() -> Iterator[AIMessage]:
+    raise RuntimeError("primary model unavailable")
+    yield
+
+
+@pytest.mark.asyncio
+async def test_main_model_fallback_is_middleware_and_role_models_remain_chat_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+    created: dict[str, list[ToolCallingFakeModel]] = {
+        "primary": [],
+        "fallback": [],
+    }
+
+    def model_factory(
+        model_name: str,
+        provider_config: dict[str, Any],
+    ) -> ToolCallingFakeModel:
+        del provider_config
+        messages = (
+            _raising_script()
+            if model_name == "primary"
+            else iter([AIMessage(content="fallback succeeded")])
+        )
+        model = ToolCallingFakeModel(messages=messages)
+        created[model_name].append(model)
+        return model
+
+    api.add_provider("fake", model_factory, capabilities=_caps(), replace=True)
+    fallback_chain = ["fake:primary", "fake:fallback"]
+    cfg = replace(
+        _config(tmp_path, "yolo"),
+        model=fallback_chain,
+        subagent_model=list(fallback_chain),
+        summarizer_model=list(fallback_chain),
+    )
+    captured: dict[str, Any] = {}
+
+    def capture_and_create(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return real_create_deep_agent(**kwargs)
+
+    monkeypatch.setattr("orcha_agent.core.agent.create_deep_agent", capture_and_create)
+
+    with SessionStore(cfg.db_path) as session:
+        session.create(cwd=tmp_path, model=cfg.model, thread_id="fallback-thread")
+        graph = await build_agent(registry, cfg, session, bus)
+        result = graph.invoke(
+            {"messages": [{"role": "user", "content": "Answer with the fallback."}]},
+            config={"configurable": {"thread_id": "fallback-thread"}},
+        )
+
+    fallback_middleware = [
+        middleware
+        for middleware in captured["middleware"]
+        if isinstance(middleware, ModelFallbackMiddleware)
+    ]
+    assert len(fallback_middleware) == 1
+    assert isinstance(captured["model"], BaseChatModel)
+    assert captured["model"] is created["primary"][0]
+
+    subagent_models = [spec["model"] for spec in captured["subagents"]]
+    assert subagent_models
+    assert all(isinstance(model, BaseChatModel) for model in subagent_models)
+    assert all(
+        any(model is primary for primary in created["primary"])
+        for model in subagent_models
+    )
+
+    summarizers = [
+        middleware
+        for middleware in captured["middleware"]
+        if isinstance(middleware, SummarizationMiddleware)
+    ]
+    assert len(summarizers) == 1
+    assert isinstance(summarizers[0].model, BaseChatModel)
+    assert any(
+        summarizers[0].model is primary for primary in created["primary"]
+    )
+    assert result["messages"][-1].content == "fallback succeeded"
+
+
+@pytest.mark.asyncio
+async def test_plan_graph_rejects_scripted_write_and_keeps_read_only_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+    model = ToolCallingFakeModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {
+                                "file_path": "/blocked.txt",
+                                "content": "must not be written\n",
+                            },
+                            "id": "blocked-write",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Plan completed without changing files."),
+            ]
+        )
+    )
+    api.add_provider(
+        "fake",
+        lambda model_name, provider_config: model,
+        capabilities=_caps(),
+        replace=True,
+    )
+    api.add_backend(
+        "test",
+        lambda config: LocalShellBackend(root_dir=config.cwd),
+        replace=True,
+    )
+    captured: dict[str, Any] = {}
+
+    def capture_and_create(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return real_create_deep_agent(**kwargs)
+
+    monkeypatch.setattr("orcha_agent.core.agent.create_deep_agent", capture_and_create)
+    cfg = _config(tmp_path, "plan")
+
+    with SessionStore(cfg.db_path) as session:
+        session.create(cwd=tmp_path, model=cfg.model, thread_id="plan-thread")
+        graph = await build_agent(registry, cfg, session, bus)
+        result = graph.invoke(
+            {"messages": [{"role": "user", "content": "Write blocked.txt."}]},
+            config={"configurable": {"thread_id": "plan-thread"}},
+        )
+
+    filesystem = [
+        middleware
+        for middleware in captured["middleware"]
+        if isinstance(middleware, FilesystemMiddleware)
+    ]
+    assert len(filesystem) == 1
+    assert {tool.name for tool in filesystem[0].tools} == {
+        "ls",
+        "read_file",
+        "glob",
+        "grep",
+    }
+    assert "__interrupt__" not in result
+    assert result["messages"][-1].content == "Plan completed without changing files."
+    assert not (tmp_path / "blocked.txt").exists()
 
 
 @pytest.mark.asyncio

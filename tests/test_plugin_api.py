@@ -1,12 +1,18 @@
 import importlib.util
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
+from deepagents.backends import StateBackend
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
+from orcha_agent.core.agent import build_agent
+from orcha_agent.core.config import Config
 from orcha_agent.core.events import EventBus
-from orcha_agent.core.plugin import ModeSpec, PluginAPI
+from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
+from orcha_agent.core.session import SessionStore
 
 
 def _import_module(path: Path) -> ModuleType:
@@ -19,8 +25,9 @@ def _import_module(path: Path) -> ModuleType:
 
 
 @pytest.mark.asyncio
-async def test_external_plugin_contributions_reach_registry_and_build_facing_collections(
+async def test_external_plugin_contributions_reach_registry_and_agent_build(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_path = tmp_path / "external_plugin.py"
     plugin_path.write_text(
@@ -99,11 +106,54 @@ def register(api) -> None:
     assert fragment.priority == 25
     assert fragment.text == "Follow the external plugin instructions."
 
-    build_facing = {
-        "tools": list(registry.tools.values()),
-        "mode": registry.modes["external"],
-        "system_prompt": "\n\n".join(item.text for item in registry.prompt_fragments),
-    }
-    assert module.external_echo in build_facing["tools"]
-    assert build_facing["mode"].allowed_tools == {"external_echo"}
-    assert build_facing["system_prompt"] == "Follow the external plugin instructions."
+    api.add_provider(
+        "fake",
+        lambda model_name, provider_config: FakeListChatModel(
+            responses=[model_name]
+        ),
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=False,
+            structured_output=False,
+            max_context=None,
+        ),
+    )
+    api.add_backend("test", lambda config: StateBackend())
+    cfg = Config(
+        model="fake:main",
+        subagent_model="fake:subagent",
+        summarizer_model="fake:summarizer",
+        mode="external",
+        backend="test",
+        memory=(),
+        db_path=tmp_path / "sessions.db",
+        cwd=tmp_path,
+        resume=None,
+        list_sessions=False,
+        strict_plugins=False,
+        plugin_dirs=(),
+        models={},
+        providers={},
+        plugins={},
+    )
+    captured: dict[str, Any] = {}
+    built_graph = object()
+
+    def fake_create_deep_agent(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return built_graph
+
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        fake_create_deep_agent,
+    )
+
+    with SessionStore(cfg.db_path) as session:
+        session.create(cwd=tmp_path, model=cfg.model, thread_id="external-thread")
+        graph = await build_agent(registry, cfg, session, bus)
+
+    assert graph is built_graph
+    assert captured["tools"] == [module.external_echo]
+    assert captured["interrupt_on"] == {"external_echo": True}
+    assert captured["system_prompt"] == "Follow the external plugin instructions."

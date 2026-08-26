@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
+from langchain.agents.middleware import ModelFallbackMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -18,6 +19,17 @@ from .registry import Registry
 from .session import SessionStore
 
 DEFAULT_SYSTEM_PROMPT = "You are a careful terminal coding agent. Use tools deliberately and report concrete results."
+FILESYSTEM_TOOL_NAMES = {
+    "ls",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "delete",
+    "glob",
+    "grep",
+    "execute",
+}
+
 
 
 def _memory_sources(cfg: Config) -> list[str]:
@@ -130,7 +142,12 @@ async def build_agent(
         raise ValueError(f"unknown backend {cfg.backend!r}; available backends: {available}")
 
     resolver = ModelResolver(registry, cfg)
-    roles = resolver.resolve_roles()
+    main_models = resolver.resolve_chain(cfg.model, "main")
+    roles = {
+        "main": main_models[0],
+        "subagent": resolver.resolve(cfg.subagent_model, "subagent"),
+        "summarizer": resolver.resolve(cfg.summarizer_model, "summarizer"),
+    }
     backend = registry.backends[cfg.backend].factory(cfg)
     mode = registry.modes[cfg.mode]
     allowed = set(always_allowed)
@@ -138,9 +155,11 @@ async def build_agent(
     middleware = [entry.middleware for entry in registry.middleware]
     filesystem: FilesystemMiddleware | None = None
     if mode.allowed_tools is not None:
+        filesystem_tools = set(mode.allowed_tools) & FILESYSTEM_TOOL_NAMES
+        filesystem_tools.add("read_file")
         filesystem = FilesystemMiddleware(
             backend=backend,
-            tools=sorted(mode.allowed_tools),
+            tools=sorted(filesystem_tools),
         )
         middleware.append(filesystem)
     tools = [
@@ -148,6 +167,8 @@ async def build_agent(
         for name, tool in registry.tools.items()
         if mode.allowed_tools is None or name in mode.allowed_tools
     ]
+    if len(main_models) > 1:
+        middleware.append(ModelFallbackMiddleware(*main_models[1:]))
     middleware.append(create_summarization_middleware(roles["summarizer"], backend))
 
     prompt = "\n\n".join(fragment.text for fragment in registry.prompt_fragments)

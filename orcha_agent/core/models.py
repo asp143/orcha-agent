@@ -5,15 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, TypeAlias
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, RemoveMessage
-from langchain_core.runnables import Runnable
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from .config import Config
 from .registry import ProviderRegistration, Registry
 
 ModelSpec: TypeAlias = str | list[str]
-ResolvedModel: TypeAlias = Runnable[Any, Any]
+ResolvedModel: TypeAlias = BaseChatModel
 
 
 class ModelResolver:
@@ -39,15 +39,17 @@ class ModelResolver:
         for prefix, profile in profiles:
             register_harness_profile(prefix, profile)
 
-    def resolve(self, spec: ModelSpec, role: str) -> ResolvedModel:
-        """Resolve one model or an invocation-time fallback chain."""
+    def resolve(self, spec: ModelSpec, role: str) -> BaseChatModel:
+        """Resolve the primary available chat model for a role."""
+        return self.resolve_chain(spec, role)[0]
+
+    def resolve_chain(self, spec: ModelSpec, role: str) -> list[BaseChatModel]:
+        """Resolve available models in fallback order without wrapping them."""
         expanded = self._expand_aliases(spec, role=role)
         if not expanded:
             raise ValueError(f"Model fallback chain for role {role!r} cannot be empty")
-        if len(expanded) == 1:
-            return self._resolve_one(expanded[0], role)
 
-        resolved: list[ResolvedModel] = []
+        resolved: list[BaseChatModel] = []
         unavailable: list[str] = []
         for model_spec in expanded:
             try:
@@ -60,9 +62,7 @@ class ModelResolver:
             raise RuntimeError(
                 f"No model in the fallback chain for role {role!r} is available: {details}"
             )
-        if len(resolved) == 1:
-            return resolved[0]
-        return resolved[0].with_fallbacks(resolved[1:])
+        return resolved
 
     def resolve_roles(self) -> dict[str, ResolvedModel]:
         """Construct independent model objects for each built-in role."""
@@ -98,7 +98,7 @@ class ModelResolver:
             raise ValueError(f"Model alias cycle for role {role!r}: {cycle}")
         return self._expand_aliases(target, role=role, aliases=(*aliases, spec))
 
-    def _resolve_one(self, spec: str, role: str) -> ResolvedModel:
+    def _resolve_one(self, spec: str, role: str) -> BaseChatModel:
         prefix, separator, model_name = spec.partition(":")
         if not separator or not prefix or not model_name:
             raise ValueError(
@@ -125,12 +125,17 @@ class ModelResolver:
             provider_config.pop("thinking", None)
 
         try:
-            return registration.factory(model_name, provider_config)
+            model = registration.factory(model_name, provider_config)
         except Exception as exc:
             raise RuntimeError(
                 f"Could not construct model {spec!r} for role {role!r} "
                 f"with provider {prefix!r}: {exc}"
             ) from exc
+        if not isinstance(model, BaseChatModel):
+            raise RuntimeError(
+                f"Provider {prefix!r} returned {type(model).__name__}, expected BaseChatModel"
+            )
+        return model
 
     @staticmethod
     def _availability_hint(
