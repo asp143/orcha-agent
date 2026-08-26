@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -29,16 +30,24 @@ FILESYSTEM_TOOL_NAMES = {
     "grep",
     "execute",
 }
+logger = logging.getLogger(__name__)
 
 
 
 def _memory_sources(cfg: Config) -> list[str]:
     sources: list[str] = []
+    root = cfg.cwd.resolve()
     for name in cfg.memory:
         path = Path(name)
-        host_path = path if path.is_absolute() else cfg.cwd / path
-        if host_path.is_file():
-            sources.append(name)
+        host_path = (path if path.is_absolute() else root / path).resolve()
+        if not host_path.is_file():
+            continue
+        try:
+            relative = host_path.relative_to(root)
+        except ValueError:
+            logger.warning("Skipping memory source outside workspace: %s", host_path)
+            continue
+        sources.append(f"/{relative.as_posix()}")
     return sources
 
 

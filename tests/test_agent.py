@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -23,6 +24,7 @@ from langchain_core.messages import AIMessage
 from orcha_agent.core.agent import build_agent
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import AgentBuildBefore, EventBus
+from orcha_agent.core.models import ModelResolver
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
@@ -517,3 +519,90 @@ async def test_build_agent_uses_configured_model_for_main_summarization(
     model = summarizers[0].model
     assert isinstance(model, FakeListChatModel)
     assert model.responses == ["summarizer"]
+
+
+@pytest.mark.asyncio
+async def test_build_agent_sanitizes_absolute_memory_sources_for_backend_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    nested_memory = workspace / "docs" / "AGENTS.md"
+    nested_memory.parent.mkdir()
+    nested_memory.write_text("Use repository conventions.")
+    outside_memory = tmp_path / "outside-memory.md"
+    outside_memory.write_text("Do not load this.")
+    cfg = replace(
+        _config(workspace, "yolo"),
+        memory=(str(nested_memory), str(outside_memory)),
+    )
+    registry, bus, _ = _kernel()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+    caplog.set_level(logging.WARNING, logger="orcha_agent.core.agent")
+
+    with SessionStore(cfg.db_path) as session:
+        await build_agent(registry, cfg, session, bus)
+
+    assert captured["memory"] == ["/docs/AGENTS.md"]
+    assert str(outside_memory) in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_harness_profiles_are_registered_once_across_resolvers_and_builds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+    alpha_profile = HarnessProfileConfig(system_prompt_suffix="Alpha profile.")
+    beta_profile = HarnessProfileConfig(system_prompt_suffix="Beta profile.")
+
+    def provider_factory(
+        model_name: str,
+        _provider_config: dict[str, Any],
+    ) -> FakeListChatModel:
+        return FakeListChatModel(responses=[model_name])
+
+    api.add_provider(
+        "testalpha",
+        provider_factory,
+        capabilities=_caps(),
+        harness=alpha_profile,
+    )
+    api.add_provider(
+        "testbeta",
+        provider_factory,
+        capabilities=_caps(),
+        harness=beta_profile,
+    )
+    cfg = replace(
+        _config(tmp_path, "yolo"),
+        model="testalpha:main",
+        subagent_model="testalpha:subagent",
+        summarizer_model="testalpha:summarizer",
+    )
+    registrations: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        "deepagents.register_harness_profile",
+        lambda key, profile: registrations.append((key, profile)),
+    )
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: object(),
+    )
+
+    ModelResolver(registry, cfg)
+    ModelResolver(registry, cfg)
+    with SessionStore(cfg.db_path) as session:
+        await build_agent(registry, cfg, session, bus)
+        await build_agent(registry, cfg, session, bus)
+
+    assert registrations == [
+        ("testalpha", alpha_profile),
+        ("testbeta", beta_profile),
+    ]

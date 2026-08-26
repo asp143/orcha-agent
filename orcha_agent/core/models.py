@@ -15,6 +15,7 @@ from .registry import ProviderRegistration, Registry
 
 ModelSpec: TypeAlias = str | list[str]
 ResolvedModel: TypeAlias = BaseChatModel
+_REGISTERED_HARNESS_PROFILES: set[tuple[str, int]] = set()
 
 
 class ModelResolver:
@@ -36,9 +37,12 @@ class ModelResolver:
             return
 
         from deepagents import register_harness_profile
-
         for prefix, profile in profiles:
+            key = (prefix, id(profile))
+            if key in _REGISTERED_HARNESS_PROFILES:
+                continue
             register_harness_profile(prefix, profile)
+            _REGISTERED_HARNESS_PROFILES.add(key)
 
     def resolve(self, spec: ModelSpec, role: str) -> BaseChatModel:
         """Resolve the primary available chat model for a role."""
