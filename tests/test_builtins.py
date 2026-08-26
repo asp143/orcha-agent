@@ -151,3 +151,36 @@ def test_loading_builtins_registers_expected_plugins_and_features(
     assert set(registry.providers) == EXPECTED_PROVIDERS
     assert set(registry.commands) == EXPECTED_COMMANDS
     assert registry.renderers
+
+
+def test_anthropic_adaptive_thinking_config_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import langchain_anthropic
+
+    from orcha_agent.builtin import provider_anthropic
+
+    monkeypatch.setattr(
+        langchain_anthropic,
+        "ChatAnthropic",
+        lambda **options: options,
+    )
+    registry = Registry()
+    provider_anthropic.register(
+        PluginAPI(
+            name="provider_anthropic",
+            config={},
+            state={},
+            registry=registry,
+            bus=EventBus(),
+            request_rebuild=lambda: None,
+        )
+    )
+
+    model = registry.providers["anthropic"].factory(
+        "claude-opus-5",
+        {"thinking": "adaptive", "max_tokens": 16000},
+    )
+
+    assert model["thinking"] == {"type": "adaptive"}
+    assert model["max_tokens"] == 16000

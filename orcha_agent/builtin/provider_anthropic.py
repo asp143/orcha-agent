@@ -20,6 +20,8 @@ def _factory(model_name: str, config: Mapping[str, Any]) -> Any:
     from langchain_anthropic import ChatAnthropic
 
     options = dict(config)
+    if options.get("thinking") == "adaptive":
+        options["thinking"] = {"type": "adaptive"}
     options["model"] = model_name
     return ChatAnthropic(**options)
 
