@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from deepagents import GeneralPurposeSubagentProfile, HarnessProfileConfig
 from deepagents.backends import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware
@@ -231,6 +232,34 @@ async def test_build_agent_uses_configured_model_for_general_purpose_subagent(
     model = general_purpose[0]["model"]
     assert isinstance(model, FakeListChatModel)
     assert model.responses == ["subagent"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_general_purpose_harness_profile_is_honored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+    api.add_provider(
+        "fake",
+        lambda model_name, provider_config: FakeListChatModel(responses=[model_name]),
+        capabilities=_caps(),
+        harness=HarnessProfileConfig(
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)
+        ),
+        replace=True,
+    )
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    with SessionStore(tmp_path / "sessions.db") as session:
+        await build_agent(registry, _config(tmp_path, "yolo"), session, bus)
+
+    assert all(spec["name"] != "general-purpose" for spec in captured["subagents"])
 
 
 @pytest.mark.asyncio

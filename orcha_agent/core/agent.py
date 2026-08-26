@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -30,11 +30,51 @@ def _memory_sources(cfg: Config) -> list[str]:
     return sources
 
 
+def _configured_model_specs(
+    spec: str | list[str],
+    aliases: Mapping[str, str | list[str]],
+    seen: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    if isinstance(spec, list):
+        return tuple(
+            resolved
+            for item in spec
+            for resolved in _configured_model_specs(item, aliases, seen)
+        )
+    target = aliases.get(spec)
+    if target is None or spec in seen:
+        return (spec,)
+    return _configured_model_specs(target, aliases, seen | {spec})
+
+
+def _general_purpose_enabled(registry: Registry, cfg: Config) -> bool:
+    for spec in _configured_model_specs(cfg.model, cfg.models):
+        prefix, separator, _ = spec.partition(":")
+        if not separator:
+            continue
+        provider = registry.providers.get(prefix)
+        harness = None if provider is None else provider.harness
+        general = (
+            harness.get("general_purpose_subagent")
+            if isinstance(harness, Mapping)
+            else getattr(harness, "general_purpose_subagent", None)
+        )
+        enabled = (
+            general.get("enabled")
+            if isinstance(general, Mapping)
+            else getattr(general, "enabled", None)
+        )
+        if enabled is False:
+            return False
+    return True
+
+
 def _subagents(
     registry: Registry,
     resolver: ModelResolver,
     default_model: Any,
     filesystem: FilesystemMiddleware | None,
+    include_general_purpose: bool,
 ) -> list[Any]:
     configured: list[Any] = []
     for entry in registry.subagents:
@@ -55,7 +95,7 @@ def _subagents(
         else:
             configured.append(spec)
 
-    if not any(
+    if include_general_purpose and not any(
         isinstance(spec, dict) and spec.get("name") == GENERAL_PURPOSE_SUBAGENT["name"]
         for spec in configured
     ):
@@ -109,6 +149,7 @@ async def build_agent(
             resolver,
             roles["subagent"],
             filesystem,
+            _general_purpose_enabled(registry, cfg),
         ),
         "backend": backend,
         "memory": _memory_sources(cfg),
