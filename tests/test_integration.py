@@ -327,7 +327,7 @@ async def test_approval_always_writes_then_skips_the_next_interrupt(
         assert session.get_plugin_state("always-thread", "approval_prompt") == {
             "always_allowed": ["write_file"]
         }
-        rebuild_index = next(
+        rebuild_index = max(
             index for index, event in enumerate(events) if isinstance(event, AgentBuildAfter)
         )
         turn_end_index = next(
