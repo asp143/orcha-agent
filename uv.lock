@@ -876,6 +876,7 @@ source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "langchain-anthropic" },
+    { name = "langchain-openai" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
@@ -883,6 +884,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+codex = [
+    { name = "langchain-openai" },
+]
 google = [
     { name = "langchain-google-genai" },
 ]
@@ -905,13 +909,15 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.6.1" },
     { name = "langchain-google-genai", marker = "extra == 'google'", specifier = ">=4.3.5" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0" },
+    { name = "langchain-openai", specifier = ">=1.6.0" },
+    { name = "langchain-openai", marker = "extra == 'codex'", specifier = ">=1.6.0" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.6.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1" },
     { name = "prompt-toolkit", specifier = ">=3.0.53" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "rich", specifier = ">=15.0.0" },
 ]
-provides-extras = ["openai", "ollama", "google"]
+provides-extras = ["openai", "ollama", "google", "codex"]
 
 [package.metadata.requires-dev]
 dev = [
