@@ -154,3 +154,29 @@ def test_comma_separated_cli_and_env_models_normalize_to_fallback_lists(
         "anthropic:first",
         "openai:second",
     ]
+
+
+def test_trust_is_recomputed_after_environment_changes_cwd(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    trusted = tmp_path / "trusted"
+    untrusted = tmp_path / "untrusted"
+    trusted.mkdir()
+    (untrusted / ".orcha-agent/plugins").mkdir(parents=True)
+    user_config = tmp_path / "user.toml"
+    user_config.write_text(f'[trust]\ndirs = ["{trusted}"]\n')
+
+    cfg = load_config(
+        [],
+        env={
+            "HOME": str(tmp_path),
+            "ORCHA_CWD": str(untrusted),
+        },
+        cwd=trusted,
+        user_config_path=user_config,
+    )
+
+    assert cfg.cwd == untrusted.resolve()
+    assert cfg.trust_cwd is False
+    assert "trust" in capsys.readouterr().err.lower()

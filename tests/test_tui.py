@@ -686,12 +686,64 @@ async def test_cross_provider_model_switch_cleans_history_before_atomic_swap(
         )
     ]
     assert ctx.cfg.model == "new:model"
+    assert ctx.cfg.model_overridden is False
     assert ctx.agent is replacement_graph
     assert ctx.summarizer == "replacement summarizer"
     switches = [event for event in ctx.bus.events if isinstance(event, ModelSwitch)]
     assert [(event.old, event.new) for event in switches] == [
         ("old:model", "new:model")
     ]
+
+
+@pytest.mark.asyncio
+async def test_model_persistence_failure_keeps_live_context_and_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_history = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "private"},
+            {"type": "text", "text": "visible"},
+        ]
+    )
+    old_graph = _HistoryGraph([private_history])
+    current = SessionInfo(
+        thread_id="current",
+        cwd=str(tmp_path),
+        model="old:model",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+        mode="ask",
+    )
+    session = _SessionDouble(records={"current": current})
+    ctx = _context(tmp_path, agent=old_graph, session=session)
+    ctx._registry.providers["old"] = SimpleNamespace(
+        foreign_block_types=frozenset({"thinking"})
+    )
+    old_cfg = ctx.cfg
+
+    async def build_replacement(*_args: Any, **_kwargs: Any) -> object:
+        return object()
+
+    def fail_persistence(_thread_id: str, _model: str | list[str]) -> None:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(app_module, "build_agent", build_replacement)
+    monkeypatch.setattr(
+        AppContext,
+        "_resolve_summarizer",
+        lambda _self, _cfg: object(),
+    )
+    session.set_model = fail_persistence
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await ctx.switch_model("new:model")
+
+    assert ctx.cfg is old_cfg
+    assert ctx.agent is old_graph
+    assert old_graph.messages == [private_history]
+    assert ctx.summarizer is None
+    assert not any(isinstance(event, ModelSwitch) for event in ctx.bus.events)
 
 
 @pytest.mark.asyncio
@@ -817,7 +869,7 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
         session=session,
         plugin_states={"approval": approval_state, "scratch": scratch_state},
     )
-    rebuilt: list[tuple[Path, str | list[str], str]] = []
+    rebuilt: list[tuple[Path, str | list[str], str, set[str]]] = []
     replacement_graph = object()
 
     async def capture_build(
@@ -827,14 +879,18 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
         _bus: Any,
         **_kwargs: Any,
     ) -> Any:
-        rebuilt.append((cfg.cwd, cfg.model, ctx.thread_id))
+        rebuilt.append(
+            (cfg.cwd, cfg.model, ctx.thread_id, set(_kwargs["always_allowed"]))
+        )
         return replacement_graph
 
     monkeypatch.setattr(app_module, "build_agent", capture_build)
 
     await ctx.resume("saved")
 
-    assert rebuilt == [(saved_cwd, "saved:model", "saved")]
+    assert rebuilt == [
+        (saved_cwd, "saved:model", "saved", {"write_file"})
+    ]
     assert ctx.cfg.cwd == saved_cwd
     assert ctx.cfg.model == "saved:model"
     assert ctx.agent is replacement_graph
@@ -861,6 +917,47 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
         ),
         ("all_plugin_state", "saved"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_resume_build_failure_rolls_back_thread_config_agent_and_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = SessionInfo(
+        thread_id="saved",
+        cwd=str(tmp_path / "saved"),
+        model="saved:model",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+        mode="plan",
+    )
+    session = _SessionDouble(
+        records={"saved": saved},
+        plugin_states={"saved": {"approval": {"always_allowed": ["write_file"]}}},
+    )
+    approval_state = {"always_allowed": ["execute"]}
+    old_graph = object()
+    ctx = _context(
+        tmp_path,
+        agent=old_graph,
+        session=session,
+        plugin_states={"approval": approval_state},
+    )
+    old_cfg = ctx.cfg
+
+    async def fail_build(*_args: Any, **_kwargs: Any) -> object:
+        raise RuntimeError("resume build failed")
+
+    monkeypatch.setattr(app_module, "build_agent", fail_build)
+
+    with pytest.raises(RuntimeError, match="resume build failed"):
+        await ctx.resume("saved")
+
+    assert ctx.thread_id == "current"
+    assert ctx.cfg is old_cfg
+    assert ctx.agent is old_graph
+    assert approval_state == {"always_allowed": ["execute"]}
 
 
 @pytest.mark.asyncio
@@ -902,6 +999,42 @@ async def test_resume_keeps_explicit_cli_model_override(
     assert ctx.cfg.model == "cli:model"
     switches = [event for event in ctx.bus.events if isinstance(event, SessionSwitch)]
     assert [(event.old, event.new) for event in switches] == [("current", "saved")]
+
+
+@pytest.mark.asyncio
+async def test_resume_rechecks_trust_for_saved_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = SessionInfo(
+        thread_id="saved",
+        cwd=str(tmp_path / "untrusted"),
+        model="stored:model",
+        created="2026-08-27T00:00:00+00:00",
+        title=None,
+        mode="ask",
+    )
+    session = _SessionDouble(records={"saved": saved})
+    ctx = _context(tmp_path, agent=object(), session=session)
+    ctx.cfg = replace(ctx.cfg, trust_cwd=True)
+    built_trust: list[bool] = []
+
+    async def capture_build(
+        _registry: Registry,
+        cfg: Config,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> object:
+        built_trust.append(cfg.trust_cwd)
+        return object()
+
+    monkeypatch.setattr(app_module, "build_agent", capture_build)
+
+    await ctx.resume("saved")
+
+    assert built_trust == [False]
+    assert ctx.cfg.trust_cwd is False
+    assert ctx.cfg.model == "stored:model"
 
 
 @pytest.mark.asyncio

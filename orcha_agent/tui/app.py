@@ -19,7 +19,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 from orcha_agent.core.agent import build_agent
-from orcha_agent.core.config import Config
+from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import (
     AppExit,
     AppStart,
@@ -261,6 +261,11 @@ class AppContext:
                 else _stored_model(saved_session.model)
             ),
             mode=saved_session.mode,
+            trust_cwd=is_trusted_cwd(
+                saved_session.cwd,
+                self.cfg.trusted_dirs,
+                trust_all=self.cfg.trust_all_cwd,
+            ),
         )
         try:
             candidate_agent = await build_agent(
@@ -287,12 +292,9 @@ class AppContext:
         await self._bus.emit(SessionSwitch(old=old, new=thread_id))
 
     async def switch_model(self, spec: str) -> None:
-        old = self.cfg.model if isinstance(self.cfg.model, str) else ",".join(self.cfg.model)
-        candidate_cfg = replace(
-            self.cfg,
-            model=spec,
-            model_overridden=True,
-        )
+        old_model = self.cfg.model
+        old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
+        candidate_cfg = replace(self.cfg, model=spec)
         candidate_agent = await build_agent(
             self.registry,
             candidate_cfg,
@@ -310,18 +312,22 @@ class AppContext:
             if provider_changed
             else set()
         )
-        if foreign:
-            strip_foreign_blocks(
-                self.agent,
-                self.thread_config,
-                foreign,
-            )
+        self.session.set_model(self.thread_id, spec)
+        try:
+            if foreign:
+                strip_foreign_blocks(
+                    self.agent,
+                    self.thread_config,
+                    foreign,
+                )
+        except Exception:
+            self.session.set_model(self.thread_id, old_model)
+            raise
         self.cfg = candidate_cfg
         self.summarizer = candidate_summarizer
         self.agent = candidate_agent
-        self.session.set_model(self.thread_id, spec)
         self.rebuild_requested = False
-        await self._bus.emit(ModelSwitch(old=old, new=spec))
+        await self._bus.emit(ModelSwitch(old=old_label, new=spec))
 
     async def switch_mode(self, name: str) -> None:
         if name not in self.registry.modes:
@@ -694,6 +700,11 @@ async def run_app(cfg: Config) -> int:
                     else _stored_model(saved_session.model)
                 ),
                 mode=saved_session.mode,
+                trust_cwd=is_trusted_cwd(
+                    saved_session.cwd,
+                    cfg.trusted_dirs,
+                    trust_all=cfg.trust_all_cwd,
+                ),
             )
             thread_id = saved_session.thread_id
         else:

@@ -35,6 +35,8 @@ class Config:
     plugins: dict[str, Any]
     trust_cwd: bool = False
     model_overridden: bool = False
+    trusted_dirs: tuple[Path, ...] = ()
+    trust_all_cwd: bool = False
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -106,26 +108,34 @@ def _model_spec(value: Any, parser: argparse.ArgumentParser) -> str | list[str]:
     parser.error("model must be a prefix:model string or fallback list")
 
 
-def _trusted_cwd(
-    cwd: Path,
+def _trusted_directories(
     user_values: Mapping[str, Any],
-    *,
     home: Path,
-    cli_trust: bool,
-) -> bool:
-    if cli_trust:
-        return True
+) -> tuple[Path, ...]:
     trust = user_values.get("trust", {})
     dirs = trust.get("dirs", ()) if isinstance(trust, Mapping) else ()
     if isinstance(dirs, str):
         dirs = (dirs,)
-    for value in dirs:
-        if not isinstance(value, str):
-            continue
-        trusted = _home_path(value, home).resolve()
-        if cwd == trusted or cwd.is_relative_to(trusted):
-            return True
-    return False
+    return tuple(
+        _home_path(value, home).resolve()
+        for value in dirs
+        if isinstance(value, str)
+    )
+
+
+def is_trusted_cwd(
+    cwd: str | Path,
+    trusted_dirs: Sequence[Path],
+    *,
+    trust_all: bool = False,
+) -> bool:
+    if trust_all:
+        return True
+    resolved = Path(cwd).resolve()
+    return any(
+        resolved == trusted or resolved.is_relative_to(trusted)
+        for trusted in trusted_dirs
+    )
 
 
 def load_config(
@@ -142,21 +152,26 @@ def load_config(
     args = parser.parse_args(argv)
     environ = os.environ if env is None else env
     home = Path(environ.get("HOME", str(Path.home())))
-    working_dir = Path(args.cwd or cwd or Path.cwd()).resolve()
+    launch_dir = Path(args.cwd or cwd or Path.cwd()).resolve()
     user_path = user_config_path or home / ".config/orcha-agent/config.toml"
-    project_path = project_config_path or working_dir / ".orcha-agent/config.toml"
-
     user_values = _read_toml(user_path)
-    trust_cwd = _trusted_cwd(
-        working_dir,
-        user_values,
-        home=home,
-        cli_trust=args.trust_cwd,
+    trusted_dirs = _trusted_directories(user_values, home)
+    user_core = user_values.get("core", {})
+    user_cwd = user_core.get("cwd") if isinstance(user_core, Mapping) else None
+    trust_target = _home_path(
+        args.cwd or environ.get("ORCHA_CWD") or user_cwd or launch_dir,
+        home,
+    ).resolve()
+    project_path = project_config_path or trust_target / ".orcha-agent/config.toml"
+    trust_cwd = is_trusted_cwd(
+        trust_target,
+        trusted_dirs,
+        trust_all=args.trust_cwd,
     )
     project_values: dict[str, Any] = {}
     if trust_cwd:
         project_values = _read_toml(project_path)
-    elif project_path.is_file() or (working_dir / ".orcha-agent/plugins").is_dir():
+    elif project_path.is_file() or (trust_target / ".orcha-agent/plugins").is_dir():
         print(
             "Skipping untrusted project config; use --trust-cwd or add cwd to [trust] dirs.",
             file=sys.stderr,
@@ -187,7 +202,12 @@ def load_config(
     model = _model_spec(core.get("model", DEFAULT_MODEL), parser)
     subagent_model = _model_spec(core.get("subagent_model", model), parser)
     summarizer_model = _model_spec(core.get("summarizer_model", model), parser)
-    resolved_cwd = _home_path(core.get("cwd", working_dir), home).resolve()
+    resolved_cwd = _home_path(core.get("cwd", trust_target), home).resolve()
+    trust_cwd = is_trusted_cwd(
+        resolved_cwd,
+        trusted_dirs,
+        trust_all=args.trust_cwd,
+    )
     db_path = _home_path(core.get("db_path", "~/.local/share/orcha-agent/sessions.db"), home)
 
     models = values.get("models", {})
@@ -215,4 +235,6 @@ def load_config(
         plugins=dict(plugins),
         trust_cwd=trust_cwd,
         model_overridden=args.model is not None,
+        trusted_dirs=trusted_dirs,
+        trust_all_cwd=args.trust_cwd,
     )
