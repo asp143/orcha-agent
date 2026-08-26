@@ -49,6 +49,26 @@ async def test_compact_uses_the_configured_summarizer_model(tmp_path: Path) -> N
     assert seen and seen[0][-1].content.startswith("Summarize the conversation")
     assert [message.content for message in history.messages] == ["compact summary"]
 
+
+@pytest.mark.asyncio
+async def test_requested_rebuild_runs_after_the_current_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _context(tmp_path, agent=_StreamGraph([]))
+    rebuilt: list[bool] = []
+
+    async def rebuild(self: AppContext) -> None:
+        rebuilt.append(True)
+        self.rebuild_requested = False
+
+    monkeypatch.setattr(AppContext, "rebuild", rebuild)
+    ctx.rebuild_requested = True
+
+    await _run_turn(ctx, "continue")
+
+    assert rebuilt == [True]
+
 def test_tool_call_chunks_are_buffered_until_arguments_form_complete_json() -> None:
     buffer = _ToolCallBuffer()
     first = AIMessageChunk(

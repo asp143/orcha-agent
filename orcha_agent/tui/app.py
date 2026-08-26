@@ -505,6 +505,8 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     finally:
         ctx.console.print()
         await ctx.bus.emit(TurnEnd(thread_id=ctx.thread_id))
+        if ctx.rebuild_requested:
+            await ctx.rebuild()
 
 
 async def run_app(cfg: Config) -> int:
@@ -564,6 +566,8 @@ async def run_app(cfg: Config) -> int:
             ctx.console.error(f"{type(exc).__name__}: {exc}")
             return 1
         await bus.emit(AppStart(ctx=ctx))
+        if ctx.rebuild_requested:
+            await ctx.rebuild()
 
         history_path = _history_path()
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -578,6 +582,8 @@ async def run_app(cfg: Config) -> int:
                 if not text:
                     continue
                 if await dispatch_command(registry, ctx, text):
+                    if ctx.rebuild_requested:
+                        await ctx.rebuild()
                     continue
                 await _run_turn(ctx, text)
             except KeyboardInterrupt:
