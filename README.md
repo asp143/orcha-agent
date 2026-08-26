@@ -48,6 +48,26 @@ disabled = []
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
 
+## Trust model
+
+Project config (`./.orcha-agent/config.toml`), project plugins
+(`./.orcha-agent/plugins/*.py`), and the project `.env` are loaded only when
+the working directory is trusted. Trust a directory persistently in the user
+config, or trust the current invocation explicitly:
+
+```toml
+# ~/.config/orcha-agent/config.toml
+[trust]
+dirs = ["/path/to/trusted/project"]
+```
+
+```bash
+uv run orcha --trust-cwd
+```
+
+Project plugins execute Python with the same filesystem and shell access as
+orcha, so do not trust repositories you have not reviewed.
+
 ## Plugins
 
 Plugins are discovered from built-ins, the `orcha_agent.plugins` entry-point
