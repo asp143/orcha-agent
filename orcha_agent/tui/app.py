@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import signal
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -497,8 +499,8 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
             if resolution is None:
                 break
             next_input = Command(resume=resolution.resume_value)
-            if ctx.rebuild_requested:
-                await ctx.rebuild()
+    except asyncio.CancelledError:
+        ctx.console.warning("interrupted")
     except Exception as exc:
         if not await _render(ctx, exc, emit=False):
             ctx.console.error(f"{type(exc).__name__}: {exc}")
@@ -507,6 +509,23 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
         await ctx.bus.emit(TurnEnd(thread_id=ctx.thread_id))
         if ctx.rebuild_requested:
             await ctx.rebuild()
+
+
+async def _run_cancellable_turn(ctx: AppContext, text: str) -> None:
+    task = asyncio.create_task(_run_turn(ctx, text))
+    loop = asyncio.get_running_loop()
+    signal_installed = False
+    try:
+        loop.add_signal_handler(signal.SIGINT, task.cancel)
+        signal_installed = True
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
+    try:
+        await task
+    finally:
+        if signal_installed:
+            loop.remove_signal_handler(signal.SIGINT)
+            signal.signal(signal.SIGINT, signal.default_int_handler)
 
 
 async def run_app(cfg: Config) -> int:
@@ -585,7 +604,7 @@ async def run_app(cfg: Config) -> int:
                     if ctx.rebuild_requested:
                         await ctx.rebuild()
                     continue
-                await _run_turn(ctx, text)
+                await _run_cancellable_turn(ctx, text)
             except KeyboardInterrupt:
                 ctx.console.warning("interrupted")
             except EOFError:

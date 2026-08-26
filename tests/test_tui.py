@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,10 +9,17 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 import orcha_agent.tui.app as app_module
 from orcha_agent.core.config import Config
-from orcha_agent.core.events import ToolCallEnd, TurnEnd, TurnStart
+from orcha_agent.core.events import AppExit, ToolCallEnd, TurnEnd, TurnStart
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionInfo
-from orcha_agent.tui.app import AppContext, _ModelLabelBuffer, _run_turn, _stored_model, _ToolCallBuffer
+from orcha_agent.tui.app import (
+    AppContext,
+    _ModelLabelBuffer,
+    _run_turn,
+    _stored_model,
+    _ToolCallBuffer,
+    run_app,
+)
 
 
 
@@ -117,12 +125,16 @@ class _RecordingConsole:
     def __init__(self) -> None:
         self.output: list[tuple[object, ...]] = []
         self.errors: list[str] = []
+        self.warnings: list[str] = []
 
     def print(self, *objects: object, **_kwargs: Any) -> None:
         self.output.append(objects)
 
     def error(self, message: str) -> None:
         self.errors.append(message)
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
 
 
 class _SessionDouble:
@@ -162,7 +174,7 @@ class _StreamGraph:
         self,
         events: list[tuple[str, Any]],
         *,
-        error: Exception | None = None,
+        error: BaseException | None = None,
     ) -> None:
         self.events = events
         self.error = error
@@ -177,6 +189,21 @@ class _StreamGraph:
             yield event
         if self.error is not None:
             raise self.error
+
+
+def _cancelled_graph() -> _StreamGraph:
+    return _StreamGraph(
+        [
+            (
+                "messages",
+                (
+                    AIMessageChunk(content="partial"),
+                    {"langgraph_node": "agent"},
+                ),
+            )
+        ],
+        error=asyncio.CancelledError(),
+    )
 
 
 class _HistoryGraph:
@@ -265,6 +292,72 @@ async def test_stream_exception_is_rendered_and_still_ends_turn(tmp_path: Path) 
     assert [type(event) for event in ctx.bus.events] == [TurnStart, TurnEnd]
     assert ctx.console.errors == ["RuntimeError: stream disconnected"]
 
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_prints_interrupted_and_still_ends_turn(
+    tmp_path: Path,
+) -> None:
+    ctx = _context(tmp_path, agent=_cancelled_graph())
+
+    await _run_turn(ctx, "Continue")
+
+    assert isinstance(ctx.bus.events[0], TurnStart)
+    assert sum(isinstance(event, TurnEnd) for event in ctx.bus.events) == 1
+    assert isinstance(ctx.bus.events[-1], TurnEnd)
+    assert ctx.console.output == [()]
+    assert ctx.console.warnings == ["interrupted"]
+    assert ctx.console.errors == []
+
+
+@pytest.mark.asyncio
+async def test_run_app_continues_after_cancelled_turn_and_emits_app_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    app_events: list[object] = []
+
+    class _Prompt:
+        calls = 0
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def prompt_async(self, _message: str) -> str:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                return "Cancel this turn"
+            raise EOFError
+
+    async def build_cancelled_graph(*_args: Any, **_kwargs: Any) -> _StreamGraph:
+        return _cancelled_graph()
+
+    def load_test_plugins(
+        _registry: Registry,
+        bus: Any,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        async def record_app_exit(event: AppExit) -> None:
+            app_events.append(event)
+
+        bus.on(AppExit, record_app_exit)
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", _Prompt)
+    monkeypatch.setattr(app_module, "build_agent", build_cancelled_graph)
+    monkeypatch.setattr(app_module, "load_plugins", load_test_plugins)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    result = await run_app(_config(tmp_path))
+
+    assert result == 0
+    assert _Prompt.calls == 2
+    assert [type(event) for event in app_events] == [AppExit]
+    assert console.errors == []
+    assert console.warnings == ["interrupted"]
 
 @pytest.mark.asyncio
 async def test_failed_model_switch_preserves_config_graph_and_history(
