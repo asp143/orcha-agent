@@ -50,6 +50,32 @@ def _plain_terminal(console: Any) -> bool:
     )
 
 
+def _model_availability(ctx: Any, model: Any, *, plain: bool) -> str:
+    if not isinstance(model, str) or ":" not in model:
+        return ""
+    prefix = model.split(":", 1)[0]
+    registry = getattr(ctx, "registry", None)
+    providers = getattr(registry, "providers", {}) if registry is not None else {}
+    provider = providers.get(prefix)
+    if provider is None:
+        return ""
+    unavailable = provider.available()
+    separator = " - " if plain else " — "
+    if unavailable:
+        return f" (not configured{separator}{unavailable}, /login codex, or /model)"
+    missing_keys = [key for key in provider.env_keys if not os.environ.get(key)]
+    if missing_keys:
+        return (
+            f" (not configured{separator}set {', '.join(missing_keys)}, "
+            "/login codex, or /model)"
+        )
+    auth_entries = getattr(registry, "auth", {})
+    auth = auth_entries.get(prefix)
+    if auth is not None and auth.flow.status() == "not logged in":
+        return f" (not configured{separator}/login {prefix}, or /model)"
+    return ""
+
+
 def _render(ctx: Any) -> None:
     cfg = getattr(ctx, "cfg", None)
     output = getattr(ctx, "console", None)
@@ -62,7 +88,9 @@ def _render(ctx: Any) -> None:
     console = output.console
     plain = _plain_terminal(console)
     version = importlib.metadata.version("orcha-agent")
-    model = _model_spec(getattr(cfg, "model", None), plain=plain)
+    configured_model = getattr(cfg, "model", None)
+    model = _model_spec(configured_model, plain=plain)
+    model += _model_availability(ctx, configured_model, plain=plain)
     mode = str(getattr(cfg, "mode", "ask"))
     cwd = _short_cwd(getattr(cfg, "cwd", Path.cwd()))
     if plain:

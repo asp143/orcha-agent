@@ -87,30 +87,69 @@ async def _logout(ctx: Any, args: str) -> None:
     await _auth_action(ctx, args, action="logout")
 
 
-async def _providers(ctx: Any, _args: str) -> None:
-    table = Table(title="Providers")
-    table.add_column("Prefix", style="cyan")
-    table.add_column("Models")
-    table.add_column("Available")
-    table.add_column("Environment")
-    table.add_column("Capabilities")
-    table.add_column("Authentication")
-    for prefix, provider in sorted(ctx.registry.providers.items()):
+def _provider_flags(capabilities: Any) -> str:
+    return " ".join(
+        symbol if enabled else "-"
+        for symbol, enabled in (
+            ("T", capabilities.tool_calling),
+            ("S", capabilities.streaming),
+            ("R", capabilities.thinking),
+            ("O", capabilities.structured_output),
+        )
+    )
+
+
+def _provider_auth_or_keys(ctx: Any, prefix: str, provider: Any) -> str:
+    auth = ctx.registry.auth.get(prefix)
+    if auth is not None:
+        return auth.flow.status()
+    return ", ".join(
+        f"{key}: {'yes' if key in os.environ else 'no'}"
+        for key in provider.env_keys
+    ) or "n/a"
+
+
+async def _providers(ctx: Any, args: str) -> None:
+    selected = args.strip()
+    providers = ctx.registry.providers
+    if selected:
+        provider = providers.get(selected)
+        if provider is None:
+            ctx.console.error(f"Unknown provider prefix: {selected}")
+            return
         unavailable = provider.available()
-        availability = "yes" if unavailable is None else f"no ({unavailable})"
-        environment = ", ".join(
-            f"{key}: {'yes' if key in os.environ else 'no'}" for key in provider.env_keys
-        ) or "n/a"
-        auth = ctx.registry.auth.get(prefix)
-        auth_status = auth.flow.status() if auth is not None else "not configured"
-        models = ", ".join(provider.models) or "provider-defined"
+        detail = Table(title=f"Provider: {selected}")
+        detail.add_column("Field", style="cyan", no_wrap=True)
+        detail.add_column("Value", overflow="fold")
+        detail.add_row("Available", "yes" if unavailable is None else "no")
+        detail.add_row(
+            "Auth / Keys",
+            _provider_auth_or_keys(ctx, selected, provider),
+        )
+        detail.add_row("T/S/R/O", _provider_flags(provider.capabilities))
+        detail.add_row("Status", unavailable or "ready")
+        detail.add_row("Models", ", ".join(provider.models) or "provider-defined")
+        ctx.console.print(detail)
+        return
+
+    width = int(getattr(ctx.console.console, "width", 80))
+    table = Table(title="Providers", padding=(0, 0))
+    table.add_column("Prefix", style="cyan", min_width=20, no_wrap=True)
+    table.add_column("Available", no_wrap=True)
+    table.add_column("Auth / Keys", overflow="fold")
+    table.add_column("T/S/R/O", no_wrap=True)
+    table.add_column("Status", overflow="fold")
+    for prefix, provider in sorted(providers.items()):
+        unavailable = provider.available()
+        status = unavailable or "ready"
+        if width >= 120 and provider.models:
+            status = f"{status}\nmodels: {', '.join(provider.models)}"
         table.add_row(
             prefix,
-            models,
-            availability,
-            environment,
-            _capabilities(provider.capabilities),
-            auth_status,
+            "yes" if unavailable is None else "no",
+            _provider_auth_or_keys(ctx, prefix, provider),
+            _provider_flags(provider.capabilities),
+            status,
         )
     ctx.console.print(table)
 

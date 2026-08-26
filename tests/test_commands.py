@@ -152,6 +152,105 @@ async def test_providers_reports_key_presence_without_printing_secret_value(
 
 
 @pytest.mark.asyncio
+async def test_providers_uses_compact_80_column_summary_without_ellipsis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    secret = "fake-provider-key-that-must-not-be-rendered"
+    monkeypatch.setenv("ORCHA_TEST_API_KEY", secret)
+    factory_calls: list[tuple[str, object]] = []
+
+    def factory(model_name: str, provider_config: object) -> object:
+        factory_calls.append((model_name, provider_config))
+        raise AssertionError("/providers must not construct a model")
+
+    api.add_provider(
+        "anthropic-enterprise",
+        factory,
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=False,
+            structured_output=True,
+            max_context=200_000,
+        ),
+        env_keys=("ORCHA_TEST_API_KEY",),
+        models=("enterprise-chat", "enterprise-reasoner"),
+        available=lambda: "unavailable",
+    )
+    commands_core.register(api)
+    ctx, output = _context(width=80)
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, "/providers") is True
+
+    rendered = output.getvalue()
+    header = next(line for line in rendered.splitlines() if "Prefix" in line)
+    assert "Available" in header
+    assert "Auth / Keys" in header
+    assert "T/S/R/O" in header
+    assert "Status" in header
+    assert "Models" not in header
+    assert "Capabilities" not in rendered
+    assert "Environment" not in rendered
+    assert "Authentication" not in rendered
+    assert "anthropic-enterprise" in rendered
+    assert "unavailable" in rendered
+    assert "ORCHA_TEST_API_KEY" in rendered
+    assert "…" not in rendered
+    assert all(len(line) <= 80 for line in rendered.splitlines())
+    assert secret not in rendered
+    assert factory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_providers_codex_models_move_from_narrow_summary_to_prefix_detail(
+) -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    factory_calls: list[tuple[str, object]] = []
+
+    def factory(model_name: str, provider_config: object) -> object:
+        factory_calls.append((model_name, provider_config))
+        raise AssertionError("/providers must not construct a model")
+
+    models = ("gpt-5.6-codex", "gpt-5.6-codex-mini")
+    api.add_provider(
+        "codex",
+        factory,
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=False,
+            max_context=400_000,
+        ),
+        models=models,
+    )
+    api.add_auth("codex", _auth_flow([], status="logged in"))
+    commands_core.register(api)
+
+    summary_ctx, summary_output = _context(width=80)
+    summary_ctx.registry = registry
+    assert await dispatch_command(registry, summary_ctx, "/providers") is True
+    summary = summary_output.getvalue()
+    assert all(model not in summary for model in models)
+    assert "logged in" in summary
+    assert all(len(line) <= 80 for line in summary.splitlines())
+
+    detail_ctx, detail_output = _context(width=80)
+    detail_ctx.registry = registry
+    assert await dispatch_command(registry, detail_ctx, "/providers codex") is True
+    detail = detail_output.getvalue()
+    assert "codex" in detail
+    assert "Models" in detail
+    assert all(model in detail for model in models)
+    assert all(len(line) <= 80 for line in detail.splitlines())
+    assert factory_calls == []
+
+
+@pytest.mark.asyncio
 async def test_login_dispatches_to_named_auth_flow_and_updates_provider_status() -> None:
     registry = Registry()
     bus = EventBus()
