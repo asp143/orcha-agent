@@ -205,8 +205,50 @@ def test_ollama_provider_does_not_require_an_environment_variable() -> None:
     registry = Registry()
 
     provider_ollama.register(_api(registry))
-
     assert registry.providers["ollama"].env_keys == ()
+
+
+
+def test_availability_hints_skip_fallbacks_and_report_all_failures(
+    tmp_path: Path,
+) -> None:
+    registry = Registry()
+    api = _api(registry)
+    api.add_provider(
+        "missing_one",
+        lambda name, config: FakeListChatModel(responses=[name]),
+        capabilities=_caps(),
+        available=lambda: "pip install missing-one",
+    )
+    api.add_provider(
+        "working",
+        lambda name, config: FakeListChatModel(responses=["working"]),
+        capabilities=_caps(),
+    )
+
+    resolved = ModelResolver(registry, _config(tmp_path)).resolve_chain(
+        ["missing_one:primary", "working:fallback"],
+        "main",
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].invoke("hello").content == "working"
+
+    api.add_provider(
+        "missing_two",
+        lambda name, config: FakeListChatModel(responses=[name]),
+        capabilities=_caps(),
+        available=lambda: "pip install missing-two",
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        ModelResolver(registry, _config(tmp_path)).resolve_chain(
+            ["missing_one:first", "missing_two:second"],
+            "main",
+        )
+
+    message = str(exc_info.value)
+    assert "pip install missing-one" in message
+    assert "pip install missing-two" in message
 
 
 def test_non_thinking_provider_does_not_receive_thinking_config(tmp_path: Path) -> None:

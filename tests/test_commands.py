@@ -5,7 +5,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rich.console import Console
 
-from orcha_agent.builtin import commands_core, commands_session
+from orcha_agent.builtin import commands_core, commands_model, commands_session
 from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
@@ -128,6 +128,23 @@ async def test_providers_reports_key_presence_without_printing_secret_value(
     rendered = output.getvalue()
     assert "ORCHA_TEST_API_KEY: yes" in rendered
     assert secret not in rendered
+
+
+@pytest.mark.asyncio
+async def test_model_command_normalizes_runtime_fallback_chain() -> None:
+    registry = Registry()
+    bus = EventBus()
+    commands_model.register(_api(registry, bus))
+    ctx, _ = _context()
+    switched: list[str | list[str]] = []
+
+    async def switch_model(spec: str | list[str]) -> None:
+        switched.append(spec)
+
+    ctx.switch_model = switch_model
+
+    assert await dispatch_command(registry, ctx, "/model a:x,b:y") is True
+    assert switched == [["a:x", "b:y"]]
 
 
 @pytest.mark.asyncio

@@ -4,15 +4,21 @@ from __future__ import annotations
 
 from typing import Any
 
+from orcha_agent.core.config import normalize_model_spec
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
 PLUGIN = PluginSpec(name="commands_model", version="1.0.0")
 
 
 async def _model(ctx: Any, args: str) -> None:
-    spec = args.strip()
-    if not spec or any(character.isspace() for character in spec):
-        ctx.console.error("Usage: /model <provider:model>")
+    try:
+        spec = normalize_model_spec(args.strip())
+    except ValueError:
+        ctx.console.error("Usage: /model <provider:model>[,<provider:model>...]")
+        return
+    specs = [spec] if isinstance(spec, str) else spec
+    if any(any(character.isspace() for character in item) for item in specs):
+        ctx.console.error("Usage: /model <provider:model>[,<provider:model>...]")
         return
     await ctx.switch_model(spec)
 

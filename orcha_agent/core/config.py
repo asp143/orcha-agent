@@ -95,17 +95,24 @@ def _memory(value: Any) -> tuple[str, ...]:
     return DEFAULT_MEMORY
 
 
-def _model_spec(value: Any, parser: argparse.ArgumentParser) -> str | list[str]:
+def normalize_model_spec(value: Any) -> str | list[str]:
+    """Normalize one model spec or a comma-separated fallback chain."""
     if isinstance(value, str):
         parts = [part.strip() for part in value.split(",") if part.strip()]
-        if not parts:
-            parser.error("model must be a non-empty prefix:model string")
-        return parts[0] if len(parts) == 1 else parts
-    if isinstance(value, list) and value and all(
+        if parts:
+            return parts[0] if len(parts) == 1 else parts
+    elif isinstance(value, list) and value and all(
         isinstance(item, str) and item for item in value
     ):
         return list(value)
-    parser.error("model must be a prefix:model string or fallback list")
+    raise ValueError("model must be a prefix:model string or fallback list")
+
+
+def _model_spec(value: Any, parser: argparse.ArgumentParser) -> str | list[str]:
+    try:
+        return normalize_model_spec(value)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def _trusted_directories(
