@@ -35,7 +35,6 @@ def register(api: PluginAPI) -> None:
             structured_output=True,
             max_context=None,
         ),
-        env_keys=("OLLAMA_HOST",),
         foreign_block_types=(),
         available=_available,
     )

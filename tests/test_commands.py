@@ -2,10 +2,12 @@ from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from rich.console import Console
 
+from orcha_agent.builtin import commands_core
 from orcha_agent.core.events import EventBus
-from orcha_agent.core.plugin import PluginAPI
+from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.app import dispatch_command
 from orcha_agent.tui.console import ConsoleOutput
@@ -22,9 +24,9 @@ def _api(registry: Registry, bus: EventBus) -> PluginAPI:
     )
 
 
-def _context() -> tuple[SimpleNamespace, StringIO]:
+def _context(*, width: int = 100) -> tuple[SimpleNamespace, StringIO]:
     output = StringIO()
-    console = Console(file=output, force_terminal=False, color_system=None, width=100)
+    console = Console(file=output, force_terminal=False, color_system=None, width=width)
 
     class NoModelCalls:
         async def ainvoke(self, *args: object, **kwargs: object) -> object:
@@ -92,3 +94,36 @@ async def test_unknown_slash_command_is_handled_without_calling_model() -> None:
     rendered = output.getvalue().lower()
     assert "unknown command" in rendered
     assert "/missing" in rendered
+
+
+@pytest.mark.asyncio
+async def test_providers_reports_key_presence_without_printing_secret_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = Registry()
+    bus = EventBus()
+    secret = "s17-secret-value-must-not-be-rendered"
+    monkeypatch.setenv("ORCHA_TEST_API_KEY", secret)
+
+    api = _api(registry, bus)
+    api.add_provider(
+        "fake",
+        lambda model_name, provider_config: FakeListChatModel(responses=[model_name]),
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=False,
+            structured_output=False,
+            max_context=None,
+        ),
+        env_keys=("ORCHA_TEST_API_KEY",),
+    )
+    commands_core.register(api)
+    ctx, output = _context(width=240)
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, "/providers") is True
+
+    rendered = output.getvalue()
+    assert "ORCHA_TEST_API_KEY: yes" in rendered
+    assert secret not in rendered

@@ -1,6 +1,7 @@
 """Model specification resolution and provider-safe message history cleanup."""
 
 from __future__ import annotations
+import os
 
 from collections.abc import Mapping
 from typing import Any, TypeAlias
@@ -119,6 +120,13 @@ class ModelResolver:
             raise RuntimeError(
                 f"Model provider {prefix!r} is unavailable for role {role!r}. {hint}"
             )
+        if registration.env_keys and not any(
+            os.environ.get(key) for key in registration.env_keys
+        ):
+            accepted = ", ".join(registration.env_keys)
+            raise RuntimeError(
+                f"Model provider {prefix!r} requires one of: {accepted}"
+            )
 
         provider_config = dict(self._config.providers.get(prefix, {}))
         if not registration.capabilities.thinking:
@@ -180,9 +188,31 @@ def strip_foreign_blocks(
                     and block.get("type") in private_types
                 )
             ]
-        replacement.append(message.model_copy(update={"content": content}))
+        additional_kwargs = {
+            key: value
+            for key, value in message.additional_kwargs.items()
+            if key not in private_types
+        }
+        response_metadata = {
+            key: value
+            for key, value in message.response_metadata.items()
+            if key not in private_types
+        }
+        replacement.append(
+            message.model_copy(
+                update={
+                    "content": content,
+                    "additional_kwargs": additional_kwargs,
+                    "response_metadata": response_metadata,
+                }
+            )
+        )
 
-    graph.update_state(thread_config, {"messages": replacement})
+    graph.update_state(
+        thread_config,
+        {"messages": replacement},
+        as_node="model",
+    )
 
 
 __all__ = ["ModelResolver", "ModelSpec", "ResolvedModel", "strip_foreign_blocks"]
