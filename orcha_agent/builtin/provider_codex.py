@@ -17,6 +17,7 @@ import httpx
 from langchain_openai import ChatOpenAI
 
 from orcha_agent.core.auth import (
+    BrowserOpenError,
     AuthFlow,
     CredentialStore,
     LoginMode,
@@ -269,6 +270,7 @@ def register(api: PluginAPI) -> None:
         try:
             result = await asyncio.shield(worker)
         except asyncio.CancelledError:
+            ctx.console.print("cancelling...")
             cancel_event.set()
             await asyncio.shield(worker)
             raise
@@ -290,9 +292,7 @@ def register(api: PluginAPI) -> None:
                         no_browser=False,
                     )
                     selected = "browser"
-                except RuntimeError as exc:
-                    if str(exc) != "browser did not open":
-                        raise
+                except BrowserOpenError:
                     selected = "device"
             else:
                 selected = "device"

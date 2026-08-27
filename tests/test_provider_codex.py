@@ -16,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from rich.console import Console
 
 from orcha_agent.builtin import commands_core, provider_codex
-from orcha_agent.core.auth import AuthFlow
+from orcha_agent.core.auth import AuthFlow, BrowserOpenError
 from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import PluginAPI
 from orcha_agent.core.registry import Registry
@@ -116,7 +116,10 @@ def codex_login_harness(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     browser_options: list[dict[str, Any]] = []
     device_outputs: list[object] = []
     saved_credentials: list[tuple[str, dict[str, Any]]] = []
-    behavior: dict[str, BaseException | None] = {"device_error": None}
+    behavior: dict[str, BaseException | None] = {
+        "browser_error": None,
+        "device_error": None,
+    }
 
     class FakeCredentialStore:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -142,10 +145,13 @@ def codex_login_harness(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
             label = "paste" if no_browser else "browser"
             login_paths.append(label)
             browser_options.append({"no_browser": no_browser})
+            browser_error = behavior["browser_error"]
+            if not no_browser and browser_error is not None:
+                raise browser_error
             if not no_browser and not webbrowser.open(
                 "https://auth.openai.test/oauth/authorize"
             ):
-                raise RuntimeError("browser did not open")
+                raise BrowserOpenError("browser did not open")
             return dict(responses[label])
 
         def refresh(self, _refresh_token: str) -> dict[str, Any]:
@@ -670,6 +676,34 @@ async def test_auto_login_selects_browser_only_for_usable_local_display(
         f"acct_fake_{expected}"
     )
 
+@pytest.mark.asyncio
+async def test_auto_login_falls_back_for_non_magic_browser_open_error(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_login_harness: SimpleNamespace,
+) -> None:
+    monkeypatch.setenv("DISPLAY", "fake-display")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
+    codex_login_harness.behavior["browser_error"] = BrowserOpenError(
+        "desktop portal rejected the launch request"
+    )
+
+    await codex_login_harness.registry.auth["codex"].flow.login(
+        codex_login_harness.ctx,
+        "auto",
+    )
+
+    assert codex_login_harness.login_paths == ["browser", "device"]
+    assert codex_login_harness.browser_options == [{"no_browser": False}]
+    assert codex_login_harness.device_outputs == [
+        codex_login_harness.ctx.console.print
+    ]
+    saved_account_ids = [
+        credential["account_id"]
+        for _, credential in codex_login_harness.saved_credentials
+    ]
+    assert saved_account_ids == ["acct_fake_device"]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["browser", "device", "paste"])
@@ -750,7 +784,12 @@ async def test_cancelling_device_login_stops_worker_before_return(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entered = threading.Event()
+    cancel_received = threading.Event()
+    release_worker = threading.Event()
+    worker_done = threading.Event()
+    worker_cancel_events: list[threading.Event] = []
     exited = threading.Event()
+    printed: list[str] = []
     saved: list[dict[str, Any]] = []
 
     class FakeStore:
@@ -783,27 +822,48 @@ async def test_cancelling_device_login_stops_worker_before_return(
             output: Any,
             cancel_event: threading.Event,
         ) -> dict[str, Any]:
+            worker_cancel_events.append(cancel_event)
             entered.set()
-            assert cancel_event.wait(timeout=2)
-            exited.set()
-            return {"access_token": "fake-access"}
+            try:
+                assert cancel_event.wait(timeout=2)
+                cancel_received.set()
+                assert release_worker.wait(timeout=2)
+                exited.set()
+                return {"access_token": "fake-access"}
+            finally:
+                worker_done.set()
 
     monkeypatch.setattr(provider_codex, "CredentialStore", FakeStore)
     monkeypatch.setattr(provider_codex, "OAuthPKCEFlow", FakePKCE)
     monkeypatch.setattr(provider_codex, "OAuthDeviceFlow", BlockingDevice)
     registry = Registry()
     provider_codex.register(_api(registry))
-    ctx = SimpleNamespace(console=SimpleNamespace(print=lambda _value: None))
+    ctx = SimpleNamespace(console=SimpleNamespace(print=printed.append))
 
     task = asyncio.create_task(registry.auth["codex"].flow.login(ctx, "device"))
-    assert await asyncio.to_thread(entered.wait, 2)
-    task.cancel()
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        assert await asyncio.to_thread(cancel_received.wait, 2)
+        assert printed == ["cancelling..."]
+        assert not exited.is_set()
+        assert not task.done()
 
-    assert exited.is_set()
-    assert saved == []
+        release_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert exited.is_set()
+        assert saved == []
+    finally:
+        release_worker.set()
+        for cancel_event in worker_cancel_events:
+            cancel_event.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(worker_done.wait, 2)
 
 
 @pytest.mark.asyncio
