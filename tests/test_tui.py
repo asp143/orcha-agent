@@ -3335,3 +3335,507 @@ async def test_capture_storage_error_names_session_and_thread_and_remains_retrya
             isinstance(entry, CustomEntry) and entry.custom_type == "turn_state"
             for entry in path
         )
+
+
+def _put_checkpoint(
+    store: SessionStore,
+    thread_id: str,
+    *,
+    messages: list[Any] | None = None,
+) -> dict[str, Any]:
+    checkpoint = empty_checkpoint()
+    if messages is not None:
+        checkpoint["channel_values"] = {"messages": messages}
+    return store.saver.put(
+        {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+        checkpoint,
+        {},
+        {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_cross_provider_missing_checkpoint_reseed_strips_only_source_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_private = {"type": "source_private", "value": "remove"}
+    target_native = {"type": "target_native", "value": "preserve"}
+    visible = {"type": "text", "text": "visible"}
+    stored_message = AIMessage(
+        content=[source_private, target_native, visible],
+        additional_kwargs={"keep": "additional"},
+        response_metadata={"keep": "metadata"},
+    )
+    candidate = _HistoryGraph([])
+    with SessionStore(tmp_path / "cross-provider-reseed.sqlite") as store:
+        ctx = _real_context(tmp_path, store, _HistoryGraph([]), session_id="current")
+        target = store.create(tmp_path, "source:stored", thread_id="target")
+        Ledger(store).append(
+            target.thread_id,
+            MessageEntry(message=message_to_dict(stored_message)),
+        )
+        ctx.cfg = replace(ctx.cfg, model="target:cli", model_overridden=True)
+        ctx._registry.providers["source"] = SimpleNamespace(
+            foreign_block_types=frozenset({"source_private"})
+        )
+        ctx._registry.providers["target"] = SimpleNamespace(
+            foreign_block_types=frozenset({"target_native"})
+        )
+
+        async def build_candidate(*_args: Any, **_kwargs: Any) -> _HistoryGraph:
+            return candidate
+
+        monkeypatch.setattr(app_module, "build_agent", build_candidate)
+        monkeypatch.setattr(
+            AppContext, "_resolve_summarizer", lambda _self, _cfg: object()
+        )
+
+        await ctx.resume("target")
+
+        expected = stored_message.model_copy(
+            update={"content": [target_native, visible]}
+        )
+        assert candidate.seed_calls == [
+            (
+                ctx.thread_config,
+                {"messages": [expected], "todos": [], "files": {}},
+            )
+        ]
+        assert expected.additional_kwargs == {"keep": "additional"}
+        assert expected.response_metadata == {"keep": "metadata"}
+
+
+@pytest.mark.asyncio
+async def test_lazy_resume_reseed_exposes_target_thread_before_agent_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    build_calls: list[str] = []
+    with SessionStore(tmp_path / "lazy-resume-reseed.sqlite") as store:
+        ctx = _real_context(tmp_path, store, None, session_id="current")
+        source_thread = ctx.thread_id
+        store.create(tmp_path, "old:model", thread_id="target")
+
+        async def build_target(*_args: Any, **_kwargs: Any) -> _HistoryGraph:
+            build_calls.append(ctx.thread_id)
+            return graph
+
+        monkeypatch.setattr(app_module, "build_agent", build_target)
+
+        await ctx.resume("target")
+
+        pending_thread = ctx.thread_id
+        assert ctx.session_id == "target"
+        assert pending_thread != source_thread
+        assert pending_thread.startswith("target.")
+        assert build_calls == []
+        assert graph.seed_calls == []
+        assert _thread_switches(ctx) == []
+
+        assert await ctx.ensure_agent() is True
+
+        assert build_calls == [pending_thread]
+        assert graph.seed_calls[-1][0] == ctx.thread_config
+        switch = _thread_switches(ctx)
+        assert len(switch) == 1
+        assert switch[0].session_id == "target"
+        assert switch[0].new == ctx.thread_id
+        assert switch[0].reason == "reseed"
+
+
+@pytest.mark.asyncio
+async def test_slash_resume_recovers_uncaptured_checkpoint_messages_before_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    human = HumanMessage(content="run tool")
+    assistant = AIMessage(
+        content="",
+        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+    )
+    checkpoint_graph = _HistoryGraph([human, assistant])
+    with SessionStore(tmp_path / "slash-resume-recovery.sqlite") as store:
+        ctx = _real_context(tmp_path, store, _HistoryGraph([]), session_id="current")
+        target = store.create(tmp_path, "old:model", thread_id="target")
+        Ledger(store).capture(
+            target.thread_id,
+            target.current_thread,
+            [MessageEntry(message=message_to_dict(human))],
+            message_count=1,
+        )
+        _put_checkpoint(
+            store, target.current_thread, messages=[human, assistant]
+        )
+
+        async def build_checkpoint_graph(
+            *_args: Any, **_kwargs: Any
+        ) -> _HistoryGraph:
+            return checkpoint_graph
+
+        monkeypatch.setattr(app_module, "build_agent", build_checkpoint_graph)
+
+        await ctx.resume("target")
+
+        thread = store.get_thread(target.current_thread)
+        path = Ledger(store).path(target.thread_id)
+        assert thread.captured == 2
+        assert [
+            type(entry)
+            for entry in path
+        ] == [MessageEntry, MessageEntry, CustomEntry]
+        assert path[-1].custom_type == "turn_state"
+        assert ctx.console.warnings == [
+            "Previous turn was interrupted; 1 pending tool call(s) dropped."
+        ]
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_recovers_checkpoint_before_warning_and_normal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    human = HumanMessage(content="run tool")
+    assistant = AIMessage(
+        content="",
+        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+    )
+    checkpoint_graph = _HistoryGraph([human, assistant])
+    with SessionStore(cfg.db_path) as store:
+        target = store.create(tmp_path, "old:model", thread_id="startup-target")
+        Ledger(store).capture(
+            target.thread_id,
+            target.current_thread,
+            [MessageEntry(message=message_to_dict(human))],
+            message_count=1,
+        )
+        _put_checkpoint(
+            store, target.current_thread, messages=[human, assistant]
+        )
+    console = _RecordingConsole()
+    prompt = _PromptScript()
+
+    def load_runtime(
+        _registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        async def attach_checkpoint_graph(event: AppStart) -> None:
+            event.ctx.agent = checkpoint_graph
+
+        bus.on(AppStart, attach_checkpoint_graph)
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(replace(cfg, resume="startup-target"))
+
+    assert status == 0
+    assert console.warnings == [
+        "Previous turn was interrupted; 1 pending tool call(s) dropped."
+    ]
+    with SessionStore(cfg.db_path) as store:
+        thread = store.get_thread(target.current_thread)
+        path = Ledger(store).path(target.thread_id)
+        assert thread.captured == 2
+        assert isinstance(path[-2], CustomEntry)
+        assert path[-2].custom_type == "turn_state"
+        assert isinstance(path[-1], CustomEntry)
+        assert path[-1].custom_type == "session_exit"
+        assert path[-1].data["kind"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_signal_exit_with_live_checkpoint_forces_sanitized_reseed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    human = HumanMessage(content="run tool")
+    dangling = AIMessage(
+        content="",
+        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+    )
+    candidate = _HistoryGraph([])
+    with SessionStore(tmp_path / "signal-live-reseed.sqlite") as store:
+        ctx = _real_context(tmp_path, store, _HistoryGraph([]), session_id="current")
+        target = store.create(tmp_path, "old:model", thread_id="target")
+        Ledger(store).capture(
+            target.thread_id,
+            target.current_thread,
+            [
+                MessageEntry(message=message_to_dict(human)),
+                MessageEntry(message=message_to_dict(dangling)),
+            ],
+            message_count=2,
+        )
+        Ledger(store).append(
+            target.thread_id,
+            CustomEntry(
+                custom_type="session_exit",
+                data={
+                    "kind": "signal",
+                    "pending_tool_calls": [{"id": "call-1", "name": "execute"}],
+                },
+            ),
+        )
+        _put_checkpoint(store, target.current_thread, messages=[human, dangling])
+
+        async def build_candidate(*_args: Any, **_kwargs: Any) -> _HistoryGraph:
+            return candidate
+
+        monkeypatch.setattr(app_module, "build_agent", build_candidate)
+
+        await ctx.resume("target")
+
+        assert ctx.thread_id != target.current_thread
+        assert candidate.seed_calls[-1] == (
+            ctx.thread_config,
+            {"messages": [human], "todos": [], "files": {}},
+        )
+        assert _thread_switches(ctx)[-1].reason == "reseed"
+
+
+@pytest.mark.asyncio
+async def test_live_checkpoint_with_pending_approval_remains_reusable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    human = HumanMessage(content="run tool")
+    pending = AIMessage(
+        content="",
+        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+    )
+    checkpoint_graph = _HistoryGraph([human, pending])
+    with SessionStore(tmp_path / "approval-live-resume.sqlite") as store:
+        ctx = _real_context(tmp_path, store, _HistoryGraph([]), session_id="current")
+        target = store.create(tmp_path, "old:model", thread_id="target")
+        Ledger(store).capture(
+            target.thread_id,
+            target.current_thread,
+            [
+                MessageEntry(message=message_to_dict(human)),
+                MessageEntry(message=message_to_dict(pending)),
+            ],
+            message_count=2,
+        )
+        checkpoint_config = _put_checkpoint(
+            store, target.current_thread, messages=[human, pending]
+        )
+        store.saver.put_writes(
+            checkpoint_config,
+            [
+                (
+                    "__interrupt__",
+                    {
+                        "action_requests": [
+                            {"name": "execute", "args": {"command": "true"}}
+                        ]
+                    },
+                )
+            ],
+            "approval-task",
+        )
+
+        async def build_checkpoint_graph(
+            *_args: Any, **_kwargs: Any
+        ) -> _HistoryGraph:
+            return checkpoint_graph
+
+        monkeypatch.setattr(app_module, "build_agent", build_checkpoint_graph)
+
+        await ctx.resume("target")
+
+        assert ctx.thread_id == target.current_thread
+        assert checkpoint_graph.seed_calls == []
+        assert _thread_switches(ctx) == []
+        assert ctx.console.warnings == []
+
+
+class _InspectingFailingSeedGraph(_HistoryGraph):
+    def __init__(self, store: SessionStore, session_id: str) -> None:
+        super().__init__([])
+        self.store = store
+        self.session_id = session_id
+        self.observed_current_threads: list[str | None] = []
+
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> None:
+        self.observed_current_threads.append(
+            self.store.get(self.session_id).current_thread
+        )
+        raise RuntimeError("seed inspection failed")
+
+
+@pytest.mark.parametrize("operation", ["branch", "clear", "compact"])
+@pytest.mark.asyncio
+async def test_seed_marks_session_reseed_required_during_async_crash_window(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    with SessionStore(tmp_path / f"{operation}-crash-window.sqlite") as store:
+        session_id = f"{operation}-source"
+        ctx = _real_context(tmp_path, store, None, session_id=session_id)
+        graph = _InspectingFailingSeedGraph(store, session_id)
+        ctx.agent = graph
+        ledger = Ledger(store)
+        root = ledger.append(
+            session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="root"))),
+        )
+        prior_leaf = ledger.append(
+            session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="reply"))),
+        ).id
+        prior_thread = ctx.thread_id
+        if operation == "compact":
+            class Summarizer:
+                async def ainvoke(self, _messages: list[Any]) -> AIMessage:
+                    return AIMessage(content="summary")
+
+            ctx.summarizer = Summarizer()
+
+        with pytest.raises(RuntimeError, match="seed inspection failed"):
+            if operation == "branch":
+                await ctx.branch(root.id)
+            elif operation == "clear":
+                await ctx.clear()
+            else:
+                await ctx.compact()
+
+        assert graph.observed_current_threads == [None]
+        assert ctx.thread_id == prior_thread
+        assert store.get(session_id).current_thread == prior_thread
+        assert ledger.leaf(session_id) == prior_leaf
+        assert _thread_switches(ctx) == []
+
+
+class _OrphanCheckpointInspectingGraph(_HistoryGraph):
+    def __init__(self, store: SessionStore) -> None:
+        super().__init__([])
+        self.store = store
+        self.checkpoint_exists_during_update: list[bool] = []
+
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> None:
+        thread_id = config["configurable"]["thread_id"]
+        self.checkpoint_exists_during_update.append(
+            self.store.checkpoint_exists(thread_id)
+        )
+        await super().aupdate_state(config, values)
+
+
+@pytest.mark.asyncio
+async def test_restart_reseed_deletes_orphan_checkpoint_before_state_update(
+    tmp_path: Path,
+) -> None:
+    with SessionStore(tmp_path / "restart-orphan-reseed.sqlite") as store:
+        session_id = "restart-target"
+        ctx = _real_context(tmp_path, store, None, session_id=session_id)
+        ledger = Ledger(store)
+        ledger.append(
+            session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="old history"))),
+        )
+        ledger.append(
+            session_id,
+            CompactionEntry(summary="rebuilt once", first_kept_id=None),
+        )
+        pending_thread = store.next_thread_id(session_id)
+        store._write(
+            "UPDATE sessions SET current_thread = NULL WHERE thread_id = ?",
+            (session_id,),
+        )
+        _put_checkpoint(
+            store,
+            pending_thread,
+            messages=[
+                HumanMessage(content="[Conversation summary]\nobsolete checkpoint copy")
+            ],
+        )
+        assert store.get_thread(pending_thread) is None
+        assert store.checkpoint_exists(pending_thread) is True
+        assert store.get(session_id).current_thread is None
+        graph = _OrphanCheckpointInspectingGraph(store)
+        ctx.agent = graph
+        ctx.thread_id = pending_thread
+        ctx._pending_reseed = True
+
+        assert await ctx.ensure_agent() is True
+
+        assert graph.checkpoint_exists_during_update == [False]
+        assert graph.seed_calls == [
+            (
+                ctx.thread_config,
+                {
+                    "messages": [
+                        HumanMessage(
+                            content="[Conversation summary]\nrebuilt once"
+                        )
+                    ],
+                    "todos": [],
+                    "files": {},
+                },
+            )
+        ]
+        assert store.get(session_id).current_thread == ctx.thread_id
+        assert store.get_thread(ctx.thread_id).session_id == session_id
+
+
+@pytest.mark.parametrize("operation", ["branch", "clear", "compact"])
+@pytest.mark.asyncio
+async def test_lazy_pending_reseed_failure_keeps_persisted_thread_null(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    with SessionStore(tmp_path / f"{operation}-lazy-pending-failure.sqlite") as store:
+        session_id = f"{operation}-target"
+        ctx = _real_context(tmp_path, store, None, session_id=session_id)
+        ledger = Ledger(store)
+        root = ledger.append(
+            session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="root"))),
+        )
+        prior_leaf = ledger.append(
+            session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="reply"))),
+        ).id
+        pending_thread = store.next_thread_id(session_id)
+        store._write(
+            "UPDATE sessions SET current_thread = NULL WHERE thread_id = ?",
+            (session_id,),
+        )
+        ctx.thread_id = pending_thread
+        ctx._pending_reseed = True
+        ctx.agent = _FailingSeedGraph([])
+        if operation == "compact":
+            class Summarizer:
+                async def ainvoke(self, _messages: list[Any]) -> AIMessage:
+                    return AIMessage(content="summary")
+
+            ctx.summarizer = Summarizer()
+
+        with pytest.raises(RuntimeError, match="seed failed"):
+            if operation == "branch":
+                await ctx.branch(root.id)
+            elif operation == "clear":
+                await ctx.clear()
+            else:
+                await ctx.compact()
+
+        assert ctx.thread_id == pending_thread
+        assert store.get(session_id).current_thread is None
+        assert store.get_thread(pending_thread) is None
+        assert ledger.leaf(session_id) == prior_leaf
+        assert _thread_switches(ctx) == []

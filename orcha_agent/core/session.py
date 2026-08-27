@@ -586,6 +586,26 @@ class SessionStore:
         ).fetchone()
         return row is not None
 
+    def checkpoint_values(self, thread_id: str) -> Mapping[str, Any] | None:
+        checkpoint = self.saver.get_tuple(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        )
+        if checkpoint is None:
+            return None
+        values = checkpoint.checkpoint.get("channel_values", {})
+        return values if isinstance(values, Mapping) else {}
+
+    def checkpoint_has_pending_interrupt(self, thread_id: str) -> bool:
+        checkpoint = self.saver.get_tuple(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        )
+        if checkpoint is None:
+            return False
+        return any(
+            len(write) >= 2 and write[1] == "__interrupt__"
+            for write in checkpoint.pending_writes or ()
+        )
+
     def set_title(self, thread_id: str, title: str) -> None:
         self._write(
             "UPDATE sessions SET title = ? WHERE thread_id = ?",

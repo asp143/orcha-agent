@@ -294,6 +294,73 @@ class Ledger:
                 raise
         return appended
 
+    def append_for_reseed(self, session_id: str, entry: Entry) -> Entry:
+        """Append an entry and mark its session as awaiting a seeded thread."""
+        with self.store.saver.lock:
+            connection = self.store._connection
+            connection.execute("BEGIN")
+            try:
+                appended = self._append_in_transaction(session_id, [entry])
+                connection.execute(
+                    "UPDATE sessions SET current_thread = NULL WHERE thread_id = ?",
+                    (session_id,),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return appended[0]
+
+    def branch_for_reseed(self, session_id: str, entry_id: str) -> None:
+        """Move the leaf and mark its session as awaiting a seeded thread."""
+        with self.store.saver.lock:
+            connection = self.store._connection
+            connection.execute("BEGIN")
+            try:
+                exists = connection.execute(
+                    "SELECT 1 FROM entries WHERE session_id = ? AND id = ?",
+                    (session_id, entry_id),
+                ).fetchone()
+                if exists is None:
+                    raise EntryNotFound(entry_id)
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET leaf_id = ?, current_thread = NULL
+                    WHERE thread_id = ?
+                    """,
+                    (entry_id, session_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def restore_position(
+        self,
+        session_id: str,
+        *,
+        leaf_id: str | None,
+        thread_id: str | None,
+    ) -> None:
+        """Atomically restore a session leaf and active graph thread."""
+        with self.store.saver.lock:
+            connection = self.store._connection
+            connection.execute("BEGIN")
+            try:
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET leaf_id = ?, current_thread = ?
+                    WHERE thread_id = ?
+                    """,
+                    (leaf_id, thread_id, session_id),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
     def capture(
         self,
         session_id: str,
