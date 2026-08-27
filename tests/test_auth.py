@@ -17,7 +17,12 @@ from urllib.request import urlopen
 import httpx
 import pytest
 
-from orcha_agent.core.auth import CredentialStore, OAuthPKCEFlow, TokenSource
+from orcha_agent.core.auth import (
+    CredentialStore,
+    OAuthDeviceFlow,
+    OAuthPKCEFlow,
+    TokenSource,
+)
 
 
 FAKE_NOW_MS = 1_800_000_000_000
@@ -40,6 +45,35 @@ def _flow(
         extra_authorize_params={"audience": "fake-audience"},
         http_client=http_client,
         input_fn=input_fn,
+    )
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _device_flow(
+    http_client: httpx.Client,
+    clock: _FakeClock,
+) -> OAuthDeviceFlow:
+    return OAuthDeviceFlow(
+        client_id="fake-client-id",
+        user_code_url="https://auth.invalid/device/usercode",
+        device_token_url="https://auth.invalid/device/token",
+        token_url="https://auth.invalid/oauth/token",
+        verification_url="https://auth.openai.com/codex/device",
+        http_client=http_client,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
     )
 
 
@@ -96,6 +130,195 @@ def _token_server() -> Iterator[tuple[str, list[dict[str, list[str]]]]]:
         server.server_close()
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+def test_device_flow_posts_json_prints_urls_polls_and_exchanges() -> None:
+    clock = _FakeClock()
+    requests: list[httpx.Request] = []
+    printed: list[str] = []
+    poll_responses = iter(
+        [
+            httpx.Response(403),
+            httpx.Response(404),
+            httpx.Response(400, json={"error": "slow_down"}),
+            httpx.Response(
+                200,
+                json={
+                    "authorization_code": "fake-authorization-code",
+                    "code_verifier": "fake-server-code-verifier",
+                },
+            ),
+        ]
+    )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 1,
+                    "verification_uri_complete": (
+                        "https://auth.openai.com/codex/device"
+                        "?user_code=FAKE-CODE"
+                    ),
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            return next(poll_responses)
+        if str(request.url) == "https://auth.invalid/oauth/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "fake-access-token",
+                    "refresh_token": "fake-refresh-token",
+                    "expires_in": 3600,
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        credential = _device_flow(client, clock).authorize(output=printed.append)
+
+    assert credential == {
+        "access_token": "fake-access-token",
+        "refresh_token": "fake-refresh-token",
+        "expires_in": 3600,
+    }
+    assert [str(request.url) for request in requests] == [
+        "https://auth.invalid/device/usercode",
+        "https://auth.invalid/device/token",
+        "https://auth.invalid/device/token",
+        "https://auth.invalid/device/token",
+        "https://auth.invalid/device/token",
+        "https://auth.invalid/oauth/token",
+    ]
+    user_code_request = requests[0]
+    assert user_code_request.method == "POST"
+    assert user_code_request.headers["content-type"].startswith("application/json")
+    assert json.loads(user_code_request.content) == {"client_id": "fake-client-id"}
+
+    for poll_request in requests[1:5]:
+        assert poll_request.method == "POST"
+        assert poll_request.headers["content-type"].startswith("application/json")
+        assert json.loads(poll_request.content) == {
+            "device_auth_id": "fake-device-auth-id",
+            "user_code": "FAKE-CODE",
+        }
+
+    assert clock.sleeps == [2, 2, 2, 7]
+    rendered_output = "\n".join(printed)
+    primary = (
+        "Open https://auth.openai.com/codex/device "
+        "and enter code: FAKE-CODE"
+    )
+    complete = "https://auth.openai.com/codex/device?user_code=FAKE-CODE"
+    assert primary in rendered_output
+    assert complete in rendered_output
+    assert rendered_output.index(primary) < rendered_output.index(complete)
+
+    exchange_request = requests[-1]
+    assert exchange_request.method == "POST"
+    assert exchange_request.headers["content-type"].startswith(
+        "application/x-www-form-urlencoded"
+    )
+    assert parse_qs(exchange_request.content.decode()) == {
+        "grant_type": ["authorization_code"],
+        "client_id": ["fake-client-id"],
+        "code": ["fake-authorization-code"],
+        "code_verifier": ["fake-server-code-verifier"],
+        "redirect_uri": ["https://auth.openai.com/deviceauth/callback"],
+    }
+
+
+def test_device_flow_times_out_after_900_seconds_without_real_waits() -> None:
+    clock = _FakeClock()
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 300,
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            return httpx.Response(403)
+        if str(request.url) == "https://auth.invalid/oauth/token":
+            pytest.fail("Token exchange must not run after device-flow timeout")
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        printed: list[str] = []
+        with pytest.raises(TimeoutError):
+            _device_flow(client, clock).authorize(output=printed.append)
+    rendered_output = "\n".join(printed)
+    assert (
+        "Open https://auth.openai.com/codex/device "
+        "and enter code: FAKE-CODE"
+    ) in rendered_output
+    assert "?user_code=" not in rendered_output
+
+    assert clock.now == 900
+    assert clock.sleeps == [300, 300, 300]
+    assert requests[0].url == httpx.URL("https://auth.invalid/device/usercode")
+    assert all(
+        request.url == httpx.URL("https://auth.invalid/device/token")
+        for request in requests[1:]
+    )
+
+
+def test_device_flow_propagates_keyboard_interrupt_without_exchanging() -> None:
+    clock = _FakeClock()
+    requests: list[httpx.Request] = []
+
+    def interrupting_sleep(seconds: float) -> None:
+        clock.sleeps.append(seconds)
+        raise KeyboardInterrupt
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 1,
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            return httpx.Response(403)
+        if str(request.url) == "https://auth.invalid/oauth/token":
+            pytest.fail("Token exchange must not run after KeyboardInterrupt")
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        flow = OAuthDeviceFlow(
+            client_id="fake-client-id",
+            user_code_url="https://auth.invalid/device/usercode",
+            device_token_url="https://auth.invalid/device/token",
+            token_url="https://auth.invalid/oauth/token",
+            verification_url="https://auth.openai.com/codex/device",
+            http_client=client,
+            sleep=interrupting_sleep,
+            monotonic=clock.monotonic,
+            timeout=900,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            flow.authorize(output=lambda _: None)
+
+    assert clock.sleeps == [2]
+    assert all(
+        request.url != httpx.URL("https://auth.invalid/oauth/token")
+        for request in requests
+    )
 
 
 def test_credential_store_writes_atomically_with_private_permissions(

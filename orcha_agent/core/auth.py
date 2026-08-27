@@ -16,13 +16,14 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, Literal, TypeAlias
 from contextlib import contextmanager
-from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
 Credential = dict[str, Any]
+LoginMode: TypeAlias = Literal["auto", "browser", "device", "paste"]
 
 _PATH_LOCKS: dict[Path, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
@@ -44,7 +45,7 @@ def _token_lock(path: Path, prefix: str) -> threading.Lock:
 
 @dataclass(frozen=True, slots=True)
 class AuthFlow:
-    login: Callable[[Any], Awaitable[None]]
+    login: Callable[[Any, LoginMode], Awaitable[None]]
     logout: Callable[[Any], Awaitable[None]]
     status: Callable[[], str]
 
@@ -282,7 +283,8 @@ class OAuthPKCEFlow:
 
         try:
             deadline = time.monotonic() + 120
-            webbrowser.open(authorization_url)
+            if not webbrowser.open(authorization_url):
+                raise RuntimeError("browser did not open")
             while not callback_done.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -329,6 +331,108 @@ class OAuthPKCEFlow:
                 "refresh_token": refresh_token,
             }
         )
+
+
+class OAuthDeviceFlow:
+    """OAuth device authorization flow with polling and code exchange."""
+
+    def __init__(
+        self,
+        client_id: str,
+        user_code_url: str,
+        device_token_url: str,
+        token_url: str,
+        verification_url: str,
+        *,
+        http_client: httpx.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        timeout: float = 900,
+    ) -> None:
+        self.client_id = client_id
+        self.user_code_url = user_code_url
+        self.device_token_url = device_token_url
+        self.token_url = token_url
+        self.verification_url = verification_url
+        self.http_client = http_client
+        self.sleep = sleep
+        self.monotonic = monotonic
+        self.timeout = timeout
+
+    def _post(self, url: str, **kwargs: Any) -> httpx.Response:
+        if self.http_client is not None:
+            return self.http_client.post(url, **kwargs)
+        return httpx.post(url, timeout=30, **kwargs)
+
+    def authorize(
+        self,
+        *,
+        output: Callable[[str], None] = print,
+    ) -> dict[str, Any]:
+        response = self._post(
+            self.user_code_url,
+            json={"client_id": self.client_id},
+        )
+        response.raise_for_status()
+        challenge = response.json()
+        device_auth_id = challenge["device_auth_id"]
+        user_code = challenge["user_code"]
+        interval = max(2.0, float(challenge.get("interval", 2)))
+        output(f"Open {self.verification_url} and enter code: {user_code}")
+        complete_url = challenge.get("verification_uri_complete")
+        if isinstance(complete_url, str) and complete_url:
+            output(complete_url)
+
+        deadline = self.monotonic() + self.timeout
+        authorization_code: str | None = None
+        code_verifier: str | None = None
+        while self.monotonic() < deadline:
+            remaining = deadline - self.monotonic()
+            self.sleep(min(interval, remaining))
+            if self.monotonic() >= deadline:
+                break
+            poll = self._post(
+                self.device_token_url,
+                json={
+                    "device_auth_id": device_auth_id,
+                    "user_code": user_code,
+                },
+            )
+            if poll.status_code == 200:
+                payload = poll.json()
+                authorization_code = payload["authorization_code"]
+                code_verifier = payload["code_verifier"]
+                break
+            error: Any = None
+            try:
+                payload = poll.json()
+                error = payload.get("error") if isinstance(payload, Mapping) else None
+            except (ValueError, json.JSONDecodeError):
+                pass
+            if error == "slow_down":
+                interval += 5
+                continue
+            if poll.status_code in {403, 404}:
+                continue
+            poll.raise_for_status()
+
+        if authorization_code is None or code_verifier is None:
+            raise TimeoutError("OAuth device authorization timed out")
+        exchange = self._post(
+            self.token_url,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": self.client_id,
+                "code": authorization_code,
+                "code_verifier": code_verifier,
+                "redirect_uri": "https://auth.openai.com/deviceauth/callback",
+            },
+        )
+        exchange.raise_for_status()
+        payload = exchange.json()
+        if not isinstance(payload, Mapping):
+            raise ValueError("OAuth token endpoint returned invalid JSON")
+        return dict(payload)
 
 
 def _definitive_refresh_error(exc: httpx.HTTPStatusError) -> bool:
