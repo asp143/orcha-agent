@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import asyncio
 import base64
@@ -14,7 +15,14 @@ from urllib.parse import urlparse
 import httpx
 from langchain_openai import ChatOpenAI
 
-from orcha_agent.core.auth import AuthFlow, CredentialStore, OAuthPKCEFlow, TokenSource
+from orcha_agent.core.auth import (
+    AuthFlow,
+    CredentialStore,
+    LoginMode,
+    OAuthDeviceFlow,
+    OAuthPKCEFlow,
+    TokenSource,
+)
 from orcha_agent.core.plugin import PluginAPI, PluginSpec, ProviderCaps
 
 PLUGIN = PluginSpec(name="provider_codex", version="1.0.0")
@@ -34,6 +42,9 @@ TOKEN_URL = "https://auth.openai.com/oauth/token"
 SCOPES = "openid profile email offline_access"
 REDIRECT_PORT = 1455
 REDIRECT_PATH = "/auth/callback"
+DEVICE_USER_CODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode"
+DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token"
+DEVICE_VERIFICATION_URL = "https://auth.openai.com/codex/device"
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_HOST = urlparse(CODEX_BASE_URL).hostname
 ORIGINATOR_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -232,13 +243,53 @@ def register(api: PluginAPI) -> None:
             "originator": originator,
         },
     )
+    device = OAuthDeviceFlow(
+        client_id=CLIENT_ID,
+        user_code_url=DEVICE_USER_CODE_URL,
+        device_token_url=DEVICE_TOKEN_URL,
+        token_url=TOKEN_URL,
+        verification_url=DEVICE_VERIFICATION_URL,
+    )
     token_source = TokenSource(store, "codex", oauth)
 
-    async def login(ctx: Any) -> None:
-        response = await asyncio.to_thread(
-            oauth.authorize,
-            no_browser=bool(getattr(ctx, "no_browser", False)),
-        )
+    async def login(ctx: Any, mode: LoginMode) -> None:
+        selected = mode
+        response: dict[str, Any] | None = None
+        if selected == "auto":
+            has_display = bool(
+                os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+            )
+            if has_display and not os.environ.get("SSH_TTY"):
+                try:
+                    response = await asyncio.to_thread(
+                        oauth.authorize,
+                        no_browser=False,
+                    )
+                    selected = "browser"
+                except RuntimeError as exc:
+                    if str(exc) != "browser did not open":
+                        raise
+                    selected = "device"
+            else:
+                selected = "device"
+        if response is None:
+            if selected == "browser":
+                response = await asyncio.to_thread(
+                    oauth.authorize,
+                    no_browser=False,
+                )
+            elif selected == "paste":
+                response = await asyncio.to_thread(
+                    oauth.authorize,
+                    no_browser=True,
+                )
+            elif selected == "device":
+                response = await asyncio.to_thread(
+                    device.authorize,
+                    output=ctx.console.print,
+                )
+            else:
+                raise ValueError(f"Unsupported Codex login mode: {selected}")
         access = response.get("access_token")
         if not isinstance(access, str) or not access:
             raise RuntimeError("Codex OAuth response omitted access_token")

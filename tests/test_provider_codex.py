@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import webbrowser
 from collections.abc import AsyncIterator, Iterator, Mapping
 from io import StringIO
 from types import SimpleNamespace
@@ -89,6 +90,103 @@ def _api(registry: Registry, *, config: Mapping[str, Any] | None = None) -> Plug
         registry=registry,
         bus=EventBus(),
         request_rebuild=lambda: None,
+    )
+
+
+@pytest.fixture
+def codex_login_harness(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    responses = {
+        label: {
+            "access_token": _fake_jwt(
+                {
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": f"acct_fake_{label}",
+                    }
+                }
+            ),
+            "refresh_token": f"fake-{label}-refresh-token",
+            "id_token": _fake_jwt({"email": f"{label}@example.test"}),
+            "expires_in": 90,
+        }
+        for label in ("browser", "device", "paste")
+    }
+    login_paths: list[str] = []
+    browser_options: list[dict[str, Any]] = []
+    device_outputs: list[object] = []
+    saved_credentials: list[tuple[str, dict[str, Any]]] = []
+    behavior: dict[str, BaseException | None] = {"device_error": None}
+
+    class FakeCredentialStore:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def get(self, prefix: str) -> dict[str, Any] | None:
+            assert prefix == "codex"
+            if not saved_credentials:
+                return None
+            return dict(saved_credentials[-1][1])
+
+        def set(self, prefix: str, value: Mapping[str, Any]) -> None:
+            saved_credentials.append((prefix, dict(value)))
+
+        def delete(self, prefix: str) -> None:
+            assert prefix == "codex"
+
+    class FakeOAuthPKCEFlow:
+        def __init__(self, **_options: Any) -> None:
+            pass
+
+        def authorize(self, *, no_browser: bool = False) -> dict[str, Any]:
+            label = "paste" if no_browser else "browser"
+            login_paths.append(label)
+            browser_options.append({"no_browser": no_browser})
+            if not no_browser and not webbrowser.open(
+                "https://auth.openai.test/oauth/authorize"
+            ):
+                raise RuntimeError("browser did not open")
+            return dict(responses[label])
+
+        def refresh(self, _refresh_token: str) -> dict[str, Any]:
+            raise AssertionError("login must not refresh a new credential")
+
+    class FakeOAuthDeviceFlow:
+        def __init__(self, **_options: Any) -> None:
+            pass
+
+        def authorize(self, *, output: object) -> dict[str, Any]:
+            login_paths.append("device")
+            device_outputs.append(output)
+            error = behavior["device_error"]
+            if error is not None:
+                raise error
+            return dict(responses["device"])
+
+    def unexpected_browser_open(_url: str) -> bool:
+        raise AssertionError("login mode must not open a real browser")
+
+    monkeypatch.setattr(provider_codex, "CredentialStore", FakeCredentialStore)
+    monkeypatch.setattr(provider_codex, "OAuthPKCEFlow", FakeOAuthPKCEFlow)
+    monkeypatch.setattr(
+        provider_codex,
+        "OAuthDeviceFlow",
+        FakeOAuthDeviceFlow,
+        raising=False,
+    )
+    monkeypatch.setattr(webbrowser, "open", unexpected_browser_open)
+    registry = Registry()
+    provider_codex.register(_api(registry))
+    printed: list[str] = []
+    ctx = SimpleNamespace(console=SimpleNamespace(print=printed.append))
+    return SimpleNamespace(
+        behavior=behavior,
+        browser_options=browser_options,
+        ctx=ctx,
+        device_outputs=device_outputs,
+        login_paths=login_paths,
+        printed=printed,
+        registry=registry,
+        responses=responses,
+        saved_credentials=saved_credentials,
     )
 
 
@@ -510,66 +608,151 @@ async def test_register_exposes_models_and_safe_auth_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("display", "ssh", "browser_opens", "expected"),
+    [
+        ("DISPLAY", False, True, "browser"),
+        ("WAYLAND_DISPLAY", False, True, "browser"),
+        (None, False, True, "device"),
+        ("DISPLAY", True, True, "device"),
+        ("DISPLAY", False, False, "device"),
+    ],
+    ids=[
+        "x11-browser",
+        "wayland-browser",
+        "headless-device",
+        "ssh-device",
+        "browser-open-failure-device",
+    ],
+)
+async def test_auto_login_selects_browser_only_for_usable_local_display(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_login_harness: SimpleNamespace,
+    display: str | None,
+    ssh: bool,
+    browser_opens: bool,
+    expected: str,
+) -> None:
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "SSH_TTY"):
+        monkeypatch.delenv(name, raising=False)
+    if display is not None:
+        monkeypatch.setenv(display, "fake-display")
+    if ssh:
+        monkeypatch.setenv("SSH_TTY", "/dev/pts/fake")
+    opened_urls: list[str] = []
+    monkeypatch.setattr(
+        webbrowser,
+        "open",
+        lambda url: opened_urls.append(url) or browser_opens,
+    )
+
+    await codex_login_harness.registry.auth["codex"].flow.login(
+        codex_login_harness.ctx,
+        "auto",
+    )
+
+    attempted_browser = display is not None and not ssh
+    expected_paths = (
+        ["browser", "device"]
+        if attempted_browser and not browser_opens
+        else [expected]
+    )
+    assert codex_login_harness.login_paths == expected_paths
+    assert bool(opened_urls) is attempted_browser
+    assert codex_login_harness.saved_credentials[-1][1]["account_id"] == (
+        f"acct_fake_{expected}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["browser", "device", "paste"])
+async def test_explicit_login_modes_route_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_login_harness: SimpleNamespace,
+    mode: str,
+) -> None:
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("SSH_TTY", "/dev/pts/fake")
+    opened_urls: list[str] = []
+    monkeypatch.setattr(
+        webbrowser,
+        "open",
+        lambda url: opened_urls.append(url) or True,
+    )
+
+    await codex_login_harness.registry.auth["codex"].flow.login(
+        codex_login_harness.ctx,
+        mode,
+    )
+
+    assert codex_login_harness.login_paths == [mode]
+    assert codex_login_harness.saved_credentials[-1][1]["account_id"] == (
+        f"acct_fake_{mode}"
+    )
+    if mode == "browser":
+        assert codex_login_harness.browser_options == [{"no_browser": False}]
+        assert opened_urls
+    elif mode == "paste":
+        assert codex_login_harness.browser_options == [{"no_browser": True}]
+        assert opened_urls == []
+    else:
+        assert codex_login_harness.browser_options == []
+        assert opened_urls == []
+        assert codex_login_harness.device_outputs == [
+            codex_login_harness.ctx.console.print
+        ]
+
+@pytest.mark.asyncio
+async def test_explicit_browser_does_not_fall_back_to_device(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_login_harness: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(webbrowser, "open", lambda _url: False)
+
+    with pytest.raises(RuntimeError, match="browser did not open"):
+        await codex_login_harness.registry.auth["codex"].flow.login(
+            codex_login_harness.ctx,
+            "browser",
+        )
+
+    assert codex_login_harness.login_paths == ["browser"]
+    assert codex_login_harness.device_outputs == []
+    assert codex_login_harness.saved_credentials == []
+
+
+@pytest.mark.asyncio
+async def test_device_login_keyboard_interrupt_does_not_persist_credential(
+    codex_login_harness: SimpleNamespace,
+) -> None:
+    codex_login_harness.behavior["device_error"] = KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        await codex_login_harness.registry.auth["codex"].flow.login(
+            codex_login_harness.ctx,
+            "device",
+        )
+
+    assert codex_login_harness.login_paths == ["device"]
+    assert codex_login_harness.saved_credentials == []
+    assert codex_login_harness.printed == []
+
+
+@pytest.mark.asyncio
 async def test_login_persists_only_refreshable_credential_fields(
     monkeypatch: pytest.MonkeyPatch,
+    codex_login_harness: SimpleNamespace,
 ) -> None:
-    access_token = _fake_jwt(
-        {
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acct_fake_login",
-            }
-        }
-    )
-    id_token = _fake_jwt({"email": "login@example.test"})
-    saved_credentials: list[tuple[str, dict[str, Any]]] = []
-
-    class FakeCredentialStore:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def get(self, prefix: str) -> dict[str, Any] | None:
-            assert prefix == "codex"
-            if not saved_credentials:
-                return None
-            return dict(saved_credentials[-1][1])
-
-        def set(self, prefix: str, value: Mapping[str, Any]) -> None:
-            saved_credentials.append((prefix, dict(value)))
-
-        def delete(self, prefix: str) -> None:
-            assert prefix == "codex"
-
-    class FakeOAuthPKCEFlow:
-        def __init__(self, **_options: Any) -> None:
-            pass
-
-        def authorize(self, **options: Any) -> dict[str, Any]:
-            assert options == {"no_browser": True}
-            return {
-                "access_token": access_token,
-                "refresh_token": "fake-refresh-token",
-                "id_token": id_token,
-                "expires_in": 90,
-            }
-
-        def refresh(self, _refresh_token: str) -> dict[str, Any]:
-            raise AssertionError("login must not refresh a new credential")
-
-    monkeypatch.setattr(provider_codex, "CredentialStore", FakeCredentialStore)
-    monkeypatch.setattr(provider_codex, "OAuthPKCEFlow", FakeOAuthPKCEFlow)
     monkeypatch.setattr(provider_codex.time, "time", lambda: 1_700_000_000.0)
-    registry = Registry()
-    provider_codex.register(_api(registry))
-    printed: list[str] = []
-    ctx = SimpleNamespace(
-        no_browser=True,
-        console=SimpleNamespace(print=printed.append),
+
+    await codex_login_harness.registry.auth["codex"].flow.login(
+        codex_login_harness.ctx,
+        "paste",
     )
 
-    await registry.auth["codex"].flow.login(ctx)
-
-    assert len(saved_credentials) == 1
-    prefix, credential = saved_credentials[0]
+    assert len(codex_login_harness.saved_credentials) == 1
+    prefix, credential = codex_login_harness.saved_credentials[0]
+    response = codex_login_harness.responses["paste"]
     assert prefix == "codex"
     assert set(credential) == {
         "type",
@@ -581,10 +764,10 @@ async def test_login_persists_only_refreshable_credential_fields(
     }
     assert credential == {
         "type": "oauth",
-        "access": access_token,
-        "refresh": "fake-refresh-token",
+        "access": response["access_token"],
+        "refresh": "fake-paste-refresh-token",
         "expires": 1_700_000_090_000,
-        "account_id": "acct_fake_login",
-        "email": "login@example.test",
+        "account_id": "acct_fake_paste",
+        "email": "paste@example.test",
     }
     assert "id_token" not in credential
