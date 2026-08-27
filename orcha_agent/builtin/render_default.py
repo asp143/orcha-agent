@@ -54,6 +54,8 @@ class _StreamRenderer:
         self._seen_blocks: set[tuple[str, object, str, object]] = set()
         self._pending_model_prefix: dict[str, str] = {}
         self._needs_answer_gap: set[str] = set()
+        self._output_open = False
+        self._last_source_id: str | None = None
 
     def _thinking_mode(self) -> str:
         return str(self._api.state.get("thinking", self._configured_thinking))
@@ -80,6 +82,8 @@ class _StreamRenderer:
         self._seen_blocks.clear()
         self._pending_model_prefix.clear()
         self._needs_answer_gap.clear()
+        self._output_open = False
+        self._last_source_id = None
 
     def model_chunk(self, event: ModelChunk) -> Text | None:
         source_id = self._source_id(event)
@@ -96,7 +100,7 @@ class _StreamRenderer:
                     continue
                 key = self._block_key(event, part)
                 if key not in self._seen_blocks:
-                    if source_id in self._needs_answer_gap:
+                    if self._output_open:
                         rendered.append("\n", style="dim italic")
                     prefix = self._pending_model_prefix.pop(source_id, "")
                     header = "󰟶 thinking" if self._icons else "[thinking]"
@@ -104,26 +108,38 @@ class _StreamRenderer:
                     self._seen_blocks.add(key)
                 rendered.append(content, style="dim italic")
                 self._needs_answer_gap.add(source_id)
+                self._output_open = not content.endswith("\n")
+                self._last_source_id = source_id
                 continue
 
             content = _text(part)
             if not content:
                 continue
             if source_id in self._needs_answer_gap:
-                rendered.append("\n\n")
+                rendered.append("\n\n" if self._output_open else "\n")
                 self._needs_answer_gap.remove(source_id)
+            elif self._output_open and self._last_source_id != source_id:
+                rendered.append("\n")
             rendered.append(self._pending_model_prefix.pop(source_id, ""))
             rendered.append(content, style="dim" if _is_subagent(event.role) else "")
+            self._output_open = not content.endswith("\n")
+            self._last_source_id = source_id
 
         return rendered if rendered.plain else None
 
     def tool_start(self, event: ToolCallStart) -> Panel | Group:
         panel = _render_tool_start(event)
         source_id = event.source_id or "main"
-        if source_id not in self._needs_answer_gap:
+        if source_id in self._needs_answer_gap:
+            separator = "\n\n" if self._output_open else "\n"
+            self._needs_answer_gap.remove(source_id)
+        elif self._output_open:
+            separator = "\n"
+        else:
             return panel
-        self._needs_answer_gap.remove(source_id)
-        return Group(Text("\n\n"), panel)
+        self._output_open = False
+        self._last_source_id = source_id
+        return Group(Text(separator[:-1]), panel)
 
 
 def _limited_arguments(args: Mapping[str, Any]) -> Text:
