@@ -130,6 +130,28 @@ cache_read = 0.5
 ```
 
 
+## Thinking display
+
+Model reasoning streams before the answer in dim italic text. Main-agent reasoning
+is shown by default; subagent reasoning is opt-in:
+
+```toml
+[ui]
+thinking = "summary"  # default; main agent only
+# thinking = "off"    # hide all reasoning
+# thinking = "all"    # include subagent reasoning
+```
+
+Each reasoning block starts with `󰟶 thinking`, or `[thinking]` when
+`[ui] icons=false`. `/thinking off` hides reasoning for the current session;
+`/thinking on` restores main-agent summaries. The toggle is saved with the
+session and restored by `/resume`.
+
+Codex requests automatic reasoning summaries at the configured
+`[providers.codex] reasoning_effort` or `medium`. OpenAI requests automatic
+summaries when `[providers.openai] reasoning_effort` is set. Anthropic
+requests adaptive summarized thinking while display is on.
+
 ## Plugins
 
 Plugins are discovered from built-ins, the `orcha_agent.plugins` entry-point
@@ -147,4 +169,4 @@ See `examples/plugins/hello.py` for a complete external plugin.
 
 `/help`, `/clear`, `/exit`, `/plugins`, `/providers`, `/login <prefix>`,
 `/logout <prefix>`, `/sessions`, `/resume <id>`, `/compact`,
-`/model <spec>`, and `/mode <name>`.
+`/model <spec>`, `/mode <name>`, and `/thinking on|off`.
