@@ -7,10 +7,11 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
-from orcha_agent.core.events import ModelChunk, ToolCallEnd, ToolCallStart
+from orcha_agent.core.events import ModelChunk, ToolCallEnd, ToolCallStart, TurnStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
 PLUGIN = PluginSpec(name="render_default", version="1.0.0")
@@ -33,13 +34,86 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _render_model_chunk(event: ModelChunk) -> Text | None:
-    content = _text(getattr(event.chunk, "content", event.chunk))
-    if not content:
-        return None
-    subagent = event.role == "subagent" or event.role.startswith("subagent:")
-    prefix = f"[{event.model_name}] " if event.model_name else ""
-    return Text(f"{prefix}{content}", style="dim" if subagent else "")
+def _is_subagent(role: str) -> bool:
+    return role == "subagent" or role.startswith("subagent:")
+
+
+def _thinking_text(block: Mapping[str, Any]) -> str:
+    if block.get("type") == "reasoning":
+        return _text(block.get("summary"))
+    if block.get("type") == "thinking":
+        return _text(block.get("thinking"))
+    return ""
+
+
+class _StreamRenderer:
+    def __init__(self, api: PluginAPI) -> None:
+        self._api = api
+        self._configured_thinking = str(api.config.get("thinking", "summary"))
+        self._icons = bool(api.config.get("icons", True))
+        self._seen_blocks: set[tuple[str, object, str, object]] = set()
+        self._pending_model_prefix: dict[str, str] = {}
+        self._needs_answer_gap = False
+
+    def _thinking_mode(self) -> str:
+        return str(self._api.state.get("thinking", self._configured_thinking))
+
+    def _show_thinking(self, role: str) -> bool:
+        mode = self._thinking_mode()
+        return mode != "off" and (not _is_subagent(role) or mode == "all")
+
+    @staticmethod
+    def _block_key(event: ModelChunk, block: Mapping[str, Any]) -> tuple[str, object, str, object]:
+        chunk_id = getattr(event.chunk, "id", None)
+        index = block.get("index", block.get("id"))
+        return (event.role, chunk_id, str(block.get("type")), index)
+
+    async def reset(self, _event: TurnStart) -> None:
+        self._seen_blocks.clear()
+        self._pending_model_prefix.clear()
+        self._needs_answer_gap = False
+
+    def model_chunk(self, event: ModelChunk) -> Text | None:
+        if event.model_name:
+            self._pending_model_prefix[event.role] = f"[{event.model_name}] "
+
+        value = getattr(event.chunk, "content", event.chunk)
+        parts = value if isinstance(value, (list, tuple)) else (value,)
+        rendered = Text()
+        for part in parts:
+            if isinstance(part, Mapping) and part.get("type") in {"reasoning", "thinking"}:
+                content = _thinking_text(part)
+                if not content or not self._show_thinking(event.role):
+                    continue
+                key = self._block_key(event, part)
+                if key not in self._seen_blocks:
+                    if self._needs_answer_gap:
+                        rendered.append("\n", style="dim italic")
+                    prefix = self._pending_model_prefix.pop(event.role, "")
+                    header = "󰟶 thinking" if self._icons else "[thinking]"
+                    rendered.append(f"{prefix}{header}\n", style="dim italic")
+                    self._seen_blocks.add(key)
+                rendered.append(content, style="dim italic")
+                self._needs_answer_gap = True
+                continue
+
+            content = _text(part)
+            if not content:
+                continue
+            if self._needs_answer_gap:
+                rendered.append("\n\n")
+                self._needs_answer_gap = False
+            rendered.append(self._pending_model_prefix.pop(event.role, ""))
+            rendered.append(content, style="dim" if _is_subagent(event.role) else "")
+
+        return rendered if rendered.plain else None
+
+    def tool_start(self, event: ToolCallStart) -> Panel | Group:
+        panel = _render_tool_start(event)
+        if not self._needs_answer_gap:
+            return panel
+        self._needs_answer_gap = False
+        return Group(Text("\n\n"), panel)
 
 
 def _limited_arguments(args: Mapping[str, Any]) -> Text:
@@ -189,12 +263,14 @@ async def _thinking_command(api: PluginAPI, ctx: Any, args: str) -> None:
 
 
 def register(api: PluginAPI) -> None:
+    stream = _StreamRenderer(api)
     api.add_command(
         "thinking",
         lambda ctx, args: _thinking_command(api, ctx, args),
         help="Toggle thinking display: /thinking on|off",
     )
-    api.add_renderer("ModelChunk", _render_model_chunk)
-    api.add_renderer("ToolCallStart", _render_tool_start)
+    api.on(TurnStart, stream.reset)
+    api.add_renderer("ModelChunk", stream.model_chunk)
+    api.add_renderer("ToolCallStart", stream.tool_start)
     api.add_renderer("ToolCallEnd", _render_tool_end)
     api.add_renderer(_is_error, _render_error)

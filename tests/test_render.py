@@ -1,6 +1,7 @@
 from io import StringIO
 from types import SimpleNamespace
 from typing import Any
+from rich.text import Text
 
 import pytest
 
@@ -55,13 +56,24 @@ class _CapturingConsole:
 
 
 async def _render(event: object) -> tuple[list[object], str]:
+    return await _render_events(event)
+
+
+async def _render_events(
+    *events: object,
+    config: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
+) -> tuple[list[object], str]:
     registry = Registry()
     bus = EventBus()
-    render_default.register(_api(registry, bus))
+    render_default.register(
+        _api(registry, bus, config=config, state=state)
+    )
     console = _CapturingConsole()
     ctx = SimpleNamespace(registry=registry, bus=bus, console=console)
 
-    await app._render(ctx, event)
+    for event in events:
+        await app._render(ctx, event)
 
     return console.renderables, console.output.getvalue()
 
@@ -119,6 +131,166 @@ async def test_thinking_command_persists_session_toggle() -> None:
         },
     ]
     assert rebuilds == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_streams_once_then_separates_answer() -> None:
+    renderables, rendered = await _render_events(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="response-1",
+                content=[
+                    {
+                        "id": "rs-1",
+                        "type": "reasoning",
+                        "index": 0,
+                        "summary": [
+                            {
+                                "type": "summary_text",
+                                "index": 0,
+                                "text": "Check ",
+                            }
+                        ],
+                    }
+                ],
+            ),
+            role="main",
+        ),
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="response-1",
+                content=[
+                    {
+                        "type": "reasoning",
+                        "index": 0,
+                        "summary": [
+                            {
+                                "type": "summary_text",
+                                "index": 0,
+                                "text": "constraints.",
+                            }
+                        ],
+                    }
+                ],
+            ),
+            role="main",
+        ),
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="response-1",
+                content=[{"type": "text", "text": "Final answer"}],
+            ),
+            role="main",
+        ),
+        config={"thinking": "summary", "icons": False},
+    )
+
+    assert rendered == "[thinking]\nCheck constraints.\n\nFinal answer"
+    assert rendered.count("[thinking]") == 1
+    thinking_text = [value for value in renderables[:2] if isinstance(value, Text)]
+    assert thinking_text
+    assert all(
+        value.style == "dim italic"
+        or any(span.style == "dim italic" for span in value.spans)
+        for value in thinking_text
+    )
+
+
+@pytest.mark.asyncio
+async def test_anthropic_thinking_stream_uses_icon_header() -> None:
+    _, rendered = await _render_events(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="message-1",
+                content=[
+                    {
+                        "type": "thinking",
+                        "index": 0,
+                        "thinking": "Plan the answer.",
+                    }
+                ],
+            ),
+            role="main",
+        ),
+        config={"thinking": "summary", "icons": True},
+    )
+
+    assert rendered == "󰟶 thinking\nPlan the answer."
+
+
+@pytest.mark.asyncio
+async def test_thinking_off_renders_no_reasoning_content() -> None:
+    renderables, rendered = await _render_events(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="response-1",
+                content=[
+                    {
+                        "type": "reasoning",
+                        "index": 0,
+                        "summary": [
+                            {"type": "summary_text", "index": 0, "text": "secret"}
+                        ],
+                    }
+                ],
+            ),
+            role="main",
+        ),
+        config={"thinking": "off", "icons": False},
+    )
+
+    assert renderables == []
+    assert rendered == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [("summary", ""), ("all", "[thinking]\nSubagent plan")],
+)
+async def test_subagent_reasoning_requires_all_mode(mode: str, expected: str) -> None:
+    _, rendered = await _render_events(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="subagent-1",
+                content=[
+                    {
+                        "type": "thinking",
+                        "index": 0,
+                        "thinking": "Subagent plan",
+                    }
+                ],
+            ),
+            role="subagent",
+        ),
+        config={"thinking": mode, "icons": False},
+    )
+
+    assert rendered == expected
+
+
+@pytest.mark.asyncio
+async def test_thinking_stream_separates_following_tool_call() -> None:
+    _, rendered = await _render_events(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="response-1",
+                content=[
+                    {
+                        "type": "thinking",
+                        "index": 0,
+                        "thinking": "Inspect first.",
+                    }
+                ],
+            ),
+            role="main",
+        ),
+        ToolCallStart(name="read_file", args={"path": "README.md"}, id="call-1"),
+        config={"thinking": "summary", "icons": False},
+    )
+
+    assert "Inspect first.\n\n" in rendered
+    assert "read_file" in rendered
 
 
 @pytest.mark.asyncio
