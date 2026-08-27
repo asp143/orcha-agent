@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,7 +16,9 @@ from langchain_core.messages import (
     HumanMessage,
     RemoveMessage,
     ToolMessage,
+    message_to_dict,
 )
+from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from prompt_toolkit.formatted_text import to_formatted_text
@@ -32,10 +35,21 @@ from orcha_agent.core.events import (
     ModelChunk,
     ModelSwitch,
     SessionSwitch,
+    ThreadSwitch,
     ToolCallEnd,
     ToolCallStart,
     TurnEnd,
     TurnStart,
+)
+from orcha_agent.core.ledger import (
+    CompactionEntry,
+    CustomEntry,
+    Ledger,
+    MessageEntry,
+    ModeChangeEntry,
+    ModelChangeEntry,
+    ResetBoundaryEntry,
+    build_context,
 )
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps, Resolved
 from orcha_agent.core.registry import Registry
@@ -97,6 +111,11 @@ def test_model_label_is_emitted_once_per_streamed_response() -> None:
 async def test_compact_uses_the_configured_summarizer_model(tmp_path: Path) -> None:
     history = _HistoryGraph([AIMessage(content="prior answer")])
     ctx = _context(tmp_path, agent=history)
+    ledger = Ledger(ctx.session)
+    ledger.append(
+        ctx.session_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="prior answer"))),
+    )
     seen: list[list[Any]] = []
 
     class Summarizer:
@@ -105,19 +124,35 @@ async def test_compact_uses_the_configured_summarizer_model(tmp_path: Path) -> N
             return AIMessage(content="compact summary")
 
     ctx.summarizer = Summarizer()
+    old_thread = ctx.thread_id
 
     await ctx.compact()
 
     assert seen and seen[0][-1].content.startswith("Summarize the conversation")
-    assert len(history.update_calls) == 1
-    replacement, as_node = history.update_calls[0]
-    assert isinstance(replacement[0], RemoveMessage)
-    assert replacement[0].id == REMOVE_ALL_MESSAGES
-    assert replacement[1:] == [
-        HumanMessage(content="[Conversation summary]\ncompact summary")
-    ]
-    assert as_node == "model"
-    assert history.messages == replacement[1:]
+    compaction = Ledger(ctx.session).path(ctx.session_id)[-1]
+    assert isinstance(compaction, CompactionEntry)
+    assert compaction.summary == "compact summary"
+    assert compaction.first_kept_id is None
+    assert history.update_calls == []
+    assert history.seed_calls[-1] == (
+        ctx.thread_config,
+        {
+            "messages": [
+                HumanMessage(content="[Conversation summary]\ncompact summary")
+            ],
+            "todos": [],
+            "files": {},
+        },
+    )
+    switch = _thread_switches(ctx)
+    assert len(switch) == 1
+    assert (switch[0].session_id, switch[0].old, switch[0].new, switch[0].reason) == (
+        ctx.session_id,
+        old_thread,
+        ctx.thread_id,
+        "compact",
+    )
+    assert _session_switches(ctx) == []
 
 
 @pytest.mark.asyncio
@@ -149,6 +184,10 @@ async def test_compact_excludes_provider_thinking_from_summary_input(
         ]
     )
     ctx = _context(tmp_path, agent=history)
+    Ledger(ctx.session).append(
+        ctx.session_id,
+        MessageEntry(message=message_to_dict(history.messages[0])),
+    )
     seen: list[list[Any]] = []
 
     class Summarizer:
@@ -175,6 +214,9 @@ async def test_requested_rebuild_runs_after_the_current_stream_finishes(
     order: list[str] = []
 
     class OrderedStreamGraph:
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
+
         async def astream(
             self, *_args: Any, **_kwargs: Any
         ) -> AsyncIterator[tuple[str, Any]]:
@@ -313,93 +355,90 @@ def _register_lazy_runtime(
     return api
 
 
-class _SessionDouble:
+class _SessionDouble(SessionStore):
     def __init__(
         self,
         records: dict[str, SessionInfo] | None = None,
         plugin_states: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> None:
-        self.records = records if records is not None else {}
-        self.plugin_states = plugin_states if plugin_states is not None else {}
+        self._temporary_directory = TemporaryDirectory()
+        super().__init__(Path(self._temporary_directory.name) / "sessions.sqlite")
         self.operations: list[tuple[Any, ...]] = []
+        for record in (records or {}).values():
+            created = super().create(
+                record.cwd,
+                record.model,
+                mode=record.mode,
+                title=record.title,
+                thread_id=record.thread_id,
+            )
+            requested_thread = record.current_thread or created.current_thread
+            if requested_thread != created.current_thread:
+                self.create_thread(record.thread_id, thread_id=requested_thread)
+                self.set_current_thread(record.thread_id, requested_thread)
+            self._put_live_checkpoint(requested_thread)
+        for session_id, states in (plugin_states or {}).items():
+            for plugin, state in states.items():
+                super().set_plugin_state(session_id, plugin, state)
 
-    def get(self, thread_id: str) -> SessionInfo | None:
-        return self.records.get(thread_id)
+    @property
+    def records(self) -> dict[str, SessionInfo]:
+        return {record.thread_id: record for record in self.list()}
 
-    def exists(self, thread_id: str) -> bool:
-        return thread_id in self.records
+    @property
+    def plugin_states(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return {
+            record.thread_id: SessionStore.all_plugin_state(self, record.thread_id)
+            for record in self.list()
+        }
+
+    def _put_live_checkpoint(self, thread_id: str) -> None:
+        self.saver.put(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}},
+            empty_checkpoint(),
+            {},
+            {},
+        )
 
     def create(
         self,
         cwd: Path,
         model: str | list[str],
-        *,
         mode: str = "ask",
+        *,
+        title: str | None = None,
+        thread_id: str | None = None,
     ) -> SessionInfo:
-        thread_id = "new-thread"
-        stored_model = model if isinstance(model, str) else list(model)
-        record = SessionInfo(
-            thread_id=thread_id,
-            cwd=str(cwd),
-            model=stored_model,
-            created="2026-08-27T00:00:00+00:00",
-            title=None,
+        identifier = thread_id or "new-thread"
+        record = super().create(
+            cwd,
+            model,
             mode=mode,
+            title=title,
+            thread_id=identifier,
         )
-        self.operations.append(("create", thread_id))
-        self.records[thread_id] = record
+        self.operations.append(("create", identifier))
         return record
 
+    def set_title(self, session_id: str, title: str) -> None:
+        super().set_title(session_id, title)
 
-    def set_title(self, thread_id: str, title: str) -> None:
-        record = self.records[thread_id]
-        self.records[thread_id] = SessionInfo(
-            record.thread_id,
-            record.cwd,
-            record.model,
-            record.created,
-            title,
-            record.mode,
-        )
+    def set_model(self, session_id: str, model: str | list[str]) -> None:
+        super().set_model(session_id, model)
+        self.operations.append(("set_model", session_id, model))
 
-    def set_model(self, thread_id: str, model: str | list[str]) -> None:
-        if thread_id not in self.records:
-            self.operations.append(("set_model", thread_id, model))
-            return
-        record = self.records[thread_id]
-        self.records[thread_id] = SessionInfo(
-            record.thread_id,
-            record.cwd,
-            model,
-            record.created,
-            record.title,
-            record.mode,
-        )
-        self.operations.append(("set_model", thread_id, model))
+    def set_mode(self, session_id: str, mode: str) -> None:
+        super().set_mode(session_id, mode)
+        self.operations.append(("set_mode", session_id, mode))
 
-    def set_mode(self, thread_id: str, mode: str) -> None:
-        if thread_id not in self.records:
-            self.operations.append(("set_mode", thread_id, mode))
-            return
-        record = self.records[thread_id]
-        self.records[thread_id] = SessionInfo(
-            record.thread_id,
-            record.cwd,
-            record.model,
-            record.created,
-            record.title,
-            mode,
-        )
-        self.operations.append(("set_mode", thread_id, mode))
-
-    def set_plugin_state(self, thread_id: str, plugin: str, state: dict[str, Any]) -> None:
+    def set_plugin_state(self, session_id: str, plugin: str, state: dict[str, Any]) -> None:
         snapshot = dict(state)
-        self.operations.append(("set_plugin_state", thread_id, plugin, snapshot))
-        self.plugin_states.setdefault(thread_id, {})[plugin] = snapshot
+        super().set_plugin_state(session_id, plugin, snapshot)
+        self.operations.append(("set_plugin_state", session_id, plugin, snapshot))
 
-    def all_plugin_state(self, thread_id: str) -> dict[str, dict[str, Any]]:
-        self.operations.append(("all_plugin_state", thread_id))
-        return self.plugin_states.get(thread_id, {})
+    def all_plugin_state(self, session_id: str) -> dict[str, dict[str, Any]]:
+        self.operations.append(("all_plugin_state", session_id))
+        return super().all_plugin_state(session_id)
 
 
 class _SessionStoreDouble(_SessionDouble):
@@ -416,9 +455,33 @@ class _StreamGraph:
         events: list[tuple[str, Any]],
         *,
         error: BaseException | None = None,
+        values: dict[str, Any] | None = None,
     ) -> None:
         self.events = events
         self.error = error
+        self.values = {
+            "messages": [],
+            "todos": [],
+            "files": {},
+            **(values or {}),
+        }
+        self.seed_calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    def get_state(self, _config: Any) -> SimpleNamespace:
+        return SimpleNamespace(values=self.values)
+
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> None:
+        snapshot = {
+            "messages": list(values.get("messages", [])),
+            "todos": list(values.get("todos", [])),
+            "files": dict(values.get("files", {})),
+        }
+        self.seed_calls.append((config, snapshot))
+        self.values.update(snapshot)
 
     def stream(self, *_args: Any, **_kwargs: Any) -> Iterator[tuple[str, Any]]:
         yield from self.events
@@ -430,6 +493,10 @@ class _StreamGraph:
             yield event
         if self.error is not None:
             raise self.error
+
+
+def _empty_graph_state() -> SimpleNamespace:
+    return SimpleNamespace(values={"messages": [], "todos": [], "files": {}})
 
 
 def _cancelled_graph() -> _StreamGraph:
@@ -450,10 +517,34 @@ def _cancelled_graph() -> _StreamGraph:
 class _HistoryGraph:
     def __init__(self, messages: list[Any]) -> None:
         self.messages = messages
+        self.todos: list[Any] = []
+        self.files: dict[str, Any] = {}
         self.update_calls: list[tuple[list[Any], str | None]] = []
+        self.seed_calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
     def get_state(self, _config: Any) -> SimpleNamespace:
-        return SimpleNamespace(values={"messages": self.messages})
+        return SimpleNamespace(
+            values={
+                "messages": self.messages,
+                "todos": self.todos,
+                "files": self.files,
+            }
+        )
+
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> None:
+        snapshot = {
+            "messages": list(values.get("messages", [])),
+            "todos": list(values.get("todos", [])),
+            "files": dict(values.get("files", {})),
+        }
+        self.seed_calls.append((config, snapshot))
+        self.messages = snapshot["messages"]
+        self.todos = snapshot["todos"]
+        self.files = snapshot["files"]
 
     def update_state(
         self,
@@ -514,15 +605,26 @@ def _context(
     session: _SessionDouble | None = None,
     plugin_states: dict[str, dict[str, Any]] | None = None,
 ) -> AppContext:
+    active_session = session or _SessionDouble()
+    current = active_session.get("current")
+    if current is None:
+        current = active_session.create(
+            tmp_path,
+            "old:model",
+            mode="ask",
+            thread_id="current",
+        )
+        active_session.operations.clear()
     return AppContext(
         cfg=_config(tmp_path),
         registry=Registry(),
         bus=_RecordingBus(),
-        session=session or _SessionDouble(),
+        session=active_session,
         plugins=[],
         plugin_states=plugin_states or {},
         console=_RecordingConsole(),
-        thread_id="current",
+        session_id=current.thread_id,
+        thread_id=current.current_thread,
         agent=agent,
     )
 
@@ -650,6 +752,9 @@ async def test_unhandled_interrupt_rejects_every_action_and_resumes_turn(
         def __init__(self) -> None:
             self.inputs: list[Any] = []
 
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
+
         async def astream(
             self, next_input: Any, **_kwargs: Any
         ) -> AsyncIterator[tuple[str, Any]]:
@@ -698,6 +803,9 @@ async def test_non_dict_interrupt_payload_is_rejected_without_error(
         def __init__(self) -> None:
             self.inputs: list[Any] = []
 
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
+
         async def astream(
             self,
             next_input: Any,
@@ -736,6 +844,9 @@ async def test_duplicate_interrupt_id_is_approved_once(
     )
 
     class DuplicateInterruptGraph:
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
+
         async def astream(
             self,
             next_input: Any,
@@ -776,6 +887,9 @@ async def test_subgraph_stream_namespace_marks_model_chunk_as_subagent(
     class SubgraphStream:
         def __init__(self) -> None:
             self.stream_kwargs: dict[str, Any] = {}
+
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
 
         async def astream(
             self, *_args: Any, **kwargs: Any
@@ -982,6 +1096,9 @@ async def test_run_app_hints_for_registered_commands_missing_a_slash(
         def __init__(self) -> None:
             self.inputs: list[Any] = []
 
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
+
         async def astream(
             self,
             next_input: Any,
@@ -1050,6 +1167,9 @@ async def test_run_app_sends_a_non_command_first_word_to_the_model(
     class RecordingGraph:
         def __init__(self) -> None:
             self.inputs: list[Any] = []
+
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
 
         async def astream(
             self,
@@ -1227,6 +1347,9 @@ async def test_run_app_model_switch_builds_before_the_following_turn(
     order: list[str] = []
 
     class FakeGraph:
+        def get_state(self, _config: Any) -> SimpleNamespace:
+            return _empty_graph_state()
+
         async def astream(
             self,
             *_args: Any,
@@ -1400,7 +1523,6 @@ async def test_model_switch_retargets_unset_role_models_to_selected_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = _SessionDouble()
-    setattr(session, "saver", object())
     ctx = _context(tmp_path, session=session)
     ctx.cfg = replace(
         ctx.cfg,
@@ -1796,8 +1918,10 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
     await ctx.resume("saved")
 
     assert rebuilt == [
-        (saved_cwd, "saved:model", "saved", {"write_file"})
+        (saved_cwd, "saved:model", "saved.0", {"write_file"})
     ]
+    assert ctx.session_id == "saved"
+    assert ctx.thread_id == "saved.0"
     assert ctx.cfg.cwd == saved_cwd
     assert ctx.cfg.model == "saved:model"
     assert ctx.agent is replacement_graph
@@ -1861,7 +1985,8 @@ async def test_resume_build_failure_rolls_back_thread_config_agent_and_states(
     with pytest.raises(RuntimeError, match="resume build failed"):
         await ctx.resume("saved")
 
-    assert ctx.thread_id == "current"
+    assert ctx.session_id == "current"
+    assert ctx.thread_id == "current.0"
     assert ctx.cfg is old_cfg
     assert ctx.agent is old_graph
     assert approval_state == {"always_allowed": ["execute"]}
@@ -2059,52 +2184,48 @@ async def test_resume_rechecks_trust_for_saved_working_directory(
 
 
 @pytest.mark.asyncio
-async def test_clear_persists_current_plugin_state_before_clearing_in_place(
+async def test_clear_keeps_session_and_plugin_state_while_seeding_empty_thread(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _SessionDouble()
+    graph = _HistoryGraph([HumanMessage(content="stale graph state")])
     approval_state = {"always_allowed": ["execute"]}
-    old_graph = object()
-    replacement_graph = object()
     ctx = _context(
         tmp_path,
-        agent=old_graph,
-        session=session,
+        agent=graph,
         plugin_states={"approval": approval_state},
     )
-    build_allowed: list[set[str]] = []
-
-    async def build_replacement(*_args: Any, **kwargs: Any) -> object:
-        build_allowed.append(set(kwargs["always_allowed"]))
-        return replacement_graph
-
-    monkeypatch.setattr(app_module, "build_agent", build_replacement)
+    ledger = Ledger(ctx.session)
+    ledger.append(
+        ctx.session_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content="prior"))),
+    )
+    old_session = ctx.session_id
+    old_thread = ctx.thread_id
 
     await ctx.clear()
 
-    assert session.plugin_states.get("current") == {
-        "approval": {"always_allowed": ["execute"]}
-    }
-    assert session.operations[:2] == [
-        (
-            "set_plugin_state",
-            "current",
-            "approval",
-            {"always_allowed": ["execute"]},
-        ),
-        ("create", "new-thread"),
-    ]
-    assert ctx.thread_id == "new-thread"
+    assert ctx.session_id == old_session
+    assert ctx.thread_id != old_thread
     assert ctx.plugin_states["approval"] is approval_state
-    assert approval_state == {}
-    assert build_allowed == [set()]
-    assert ctx.agent is replacement_graph
+    assert approval_state == {"always_allowed": ["execute"]}
+    assert isinstance(ledger.path(ctx.session_id)[-1], ResetBoundaryEntry)
+    assert graph.seed_calls[-1] == (
+        ctx.thread_config,
+        {"messages": [], "todos": [], "files": {}},
+    )
     assert ctx.console.clear_calls == 1
-    switches = [event for event in ctx.bus.events if isinstance(event, SessionSwitch)]
-    assert [(event.old, event.new) for event in switches] == [
-        ("current", "new-thread")
+    thread_switches = [
+        event for event in ctx.bus.events if isinstance(event, ThreadSwitch)
     ]
+    assert thread_switches == [
+        ThreadSwitch(
+            session_id=old_session,
+            old=old_thread,
+            new=ctx.thread_id,
+            reason="clear",
+        )
+    ]
+    assert not any(isinstance(event, SessionSwitch) for event in ctx.bus.events)
 
 
 @pytest.mark.asyncio
@@ -2121,7 +2242,8 @@ async def test_app_context_exposes_live_read_only_registry_and_bus_views(
         plugins=[],
         plugin_states={},
         console=_RecordingConsole(),
-        thread_id="current",
+        session_id="current",
+        thread_id="current.0",
         agent=None,
     )
     api = PluginAPI(
@@ -2311,3 +2433,905 @@ async def test_run_app_unopenable_database_returns_one_and_names_path(
     assert len(console.errors) == 1
     assert "cannot open session database" in console.errors[0].lower()
     assert str(database_path) in console.errors[0]
+
+
+def _real_context(
+    tmp_path: Path,
+    store: SessionStore,
+    graph: Any,
+    *,
+    session_id: str = "runtime-session",
+    plugin_states: dict[str, dict[str, Any]] | None = None,
+) -> AppContext:
+    info = store.get(session_id)
+    if info is None:
+        info = store.create(
+            tmp_path,
+            "old:model",
+            mode="ask",
+            thread_id=session_id,
+        )
+    assert info.current_thread is not None
+    return AppContext(
+        cfg=_config(tmp_path),
+        registry=Registry(),
+        bus=_RecordingBus(),
+        session=store,
+        plugins=[],
+        plugin_states=plugin_states or {},
+        console=_RecordingConsole(),
+        session_id=info.thread_id,
+        thread_id=info.current_thread,
+        agent=graph,
+    )
+
+
+def _thread_switches(ctx: AppContext) -> list[ThreadSwitch]:
+    return [event for event in ctx.bus.events if isinstance(event, ThreadSwitch)]
+
+
+def _session_switches(ctx: AppContext) -> list[SessionSwitch]:
+    return [event for event in ctx.bus.events if isinstance(event, SessionSwitch)]
+
+
+def test_app_context_keys_persistent_state_by_session_and_graph_state_by_thread(
+    tmp_path: Path,
+) -> None:
+    with SessionStore(tmp_path / "identity.sqlite") as store:
+        state = {"enabled": True}
+        ctx = _real_context(
+            tmp_path,
+            store,
+            _StreamGraph([]),
+            session_id="identity",
+            plugin_states={"example": state},
+        )
+
+        ctx.persist_plugin_states()
+
+        assert ctx.session_id == "identity"
+        assert ctx.thread_id == "identity.0"
+        assert ctx.thread_config == {
+            "configurable": {"thread_id": "identity.0"}
+        }
+        assert store.get_plugin_state("identity", "example") == state
+        assert store.get_plugin_state("identity.0", "example") == {}
+
+
+@pytest.mark.parametrize("outcome", ["success", "exception", "cancel"])
+@pytest.mark.asyncio
+async def test_turn_capture_runs_in_finally_and_snapshots_non_message_state(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    messages = [
+        HumanMessage(content="question"),
+        AIMessage(content="answer"),
+    ]
+    error: BaseException | None = None
+    if outcome == "exception":
+        error = RuntimeError("stream failed")
+    elif outcome == "cancel":
+        error = asyncio.CancelledError()
+    graph = _StreamGraph(
+        [],
+        error=error,
+        values={
+            "messages": messages,
+            "todos": [{"content": "ship tests", "status": "pending"}],
+            "files": {"notes.txt": "draft"},
+        },
+    )
+    with SessionStore(tmp_path / f"capture-{outcome}.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+
+        await _run_turn(ctx, "question")
+
+        path = Ledger(store).path(ctx.session_id)
+        captured_messages = [entry for entry in path if isinstance(entry, MessageEntry)]
+        turn_state = next(
+            entry
+            for entry in path
+            if isinstance(entry, CustomEntry) and entry.custom_type == "turn_state"
+        )
+        assert build_context(path).messages == messages
+        assert len(captured_messages) == 2
+        assert turn_state.data == {
+            "todos": [{"content": "ship tests", "status": "pending"}],
+            "files": {"notes.txt": "draft"},
+        }
+        assert store.get_thread(ctx.thread_id).captured == 2
+
+
+@pytest.mark.asyncio
+async def test_capture_counter_advances_only_after_ledger_append_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = [HumanMessage(content="retry me"), AIMessage(content="done")]
+    graph = _StreamGraph([], values={"messages": messages})
+    with SessionStore(tmp_path / "capture-retry.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+        original_capture = Ledger.capture
+        failed = False
+
+        def fail_once(
+            ledger: Ledger,
+            session_id: str,
+            thread_id: str,
+            entries: Any,
+            *,
+            message_count: int,
+        ) -> Any:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise RuntimeError("ledger unavailable")
+            return original_capture(
+                ledger,
+                session_id,
+                thread_id,
+                entries,
+                message_count=message_count,
+            )
+
+        monkeypatch.setattr(Ledger, "capture", fail_once)
+
+        with pytest.raises(RuntimeError, match="ledger unavailable"):
+            await _run_turn(ctx, "retry me")
+
+        assert store.get_thread(ctx.thread_id).captured == 0
+        assert Ledger(store).path(ctx.session_id) == []
+
+        await _run_turn(ctx, "retry me")
+
+        assert store.get_thread(ctx.thread_id).captured == 2
+        path = Ledger(store).path(ctx.session_id)
+        assert len([entry for entry in path if isinstance(entry, MessageEntry)]) == 2
+        assert len(
+            [
+                entry
+                for entry in path
+                if isinstance(entry, CustomEntry)
+                and entry.custom_type == "turn_state"
+            ]
+        ) == 1
+
+
+@pytest.mark.asyncio
+async def test_branch_seeds_context_and_emits_only_branch_thread_switch(
+    tmp_path: Path,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "branch.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="branching")
+        ledger = Ledger(store)
+        root = ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="root"))),
+        )
+        ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="old reply"))),
+        )
+        old_thread = ctx.thread_id
+
+        await ctx.branch(root.id)
+
+        assert ledger.leaf(ctx.session_id) == root.id
+        assert ctx.thread_id != old_thread
+        assert graph.seed_calls == [
+            (
+                ctx.thread_config,
+                {
+                    "messages": [HumanMessage(content="root")],
+                    "todos": [],
+                    "files": {},
+                },
+            )
+        ]
+        thread = store.get_thread(ctx.thread_id)
+        assert thread.session_id == ctx.session_id
+        assert thread.seeded_from == root.id
+        assert thread.captured == 1
+        switch = _thread_switches(ctx)
+        assert len(switch) == 1
+        assert (switch[0].session_id, switch[0].old, switch[0].new, switch[0].reason) == (
+            ctx.session_id,
+            old_thread,
+            ctx.thread_id,
+            "branch",
+        )
+        assert _session_switches(ctx) == []
+
+
+@pytest.mark.asyncio
+async def test_fork_copies_current_path_seeds_it_and_switches_session(
+    tmp_path: Path,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "fork.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="source")
+        source_ledger = Ledger(store)
+        source_ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="copy me"))),
+        )
+        source_ledger.append(
+            ctx.session_id,
+            CustomEntry(
+                custom_type="turn_state",
+                data={"todos": ["one"], "files": {"a.txt": "A"}},
+            ),
+        )
+        old_session = ctx.session_id
+        old_thread = ctx.thread_id
+        source_path = source_ledger.path(old_session)
+
+        await ctx.fork()
+
+        assert ctx.session_id != old_session
+        forked = store.get(ctx.session_id)
+        assert forked.parent_session == old_session
+        forked_path = Ledger(store).path(ctx.session_id)
+        assert forked_path == source_path
+        assert graph.seed_calls[-1] == (
+            ctx.thread_config,
+            {
+                "messages": [HumanMessage(content="copy me")],
+                "todos": ["one"],
+                "files": {"a.txt": "A"},
+            },
+        )
+        session_switch = _session_switches(ctx)
+        assert [(event.old, event.new) for event in session_switch] == [
+            (old_session, ctx.session_id)
+        ]
+        thread_switch = _thread_switches(ctx)
+        assert len(thread_switch) == 1
+        assert (
+            thread_switch[0].session_id,
+            thread_switch[0].old,
+            thread_switch[0].new,
+            thread_switch[0].reason,
+        ) == (ctx.session_id, old_thread, ctx.thread_id, "reseed")
+
+
+@pytest.mark.asyncio
+async def test_new_session_clears_live_plugin_state_but_clear_does_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    approval = {"always_allowed": ["execute"]}
+    with SessionStore(tmp_path / "new-session.sqlite") as store:
+        ctx = _real_context(
+            tmp_path,
+            store,
+            graph,
+            session_id="old-session",
+            plugin_states={"approval": approval},
+        )
+        old_session = ctx.session_id
+        monkeypatch.setattr(
+            app_module,
+            "build_agent",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+        )
+
+        await ctx.new_session()
+
+        assert ctx.session_id != old_session
+        assert approval == {}
+        assert store.get_plugin_state(old_session, "approval") == {
+            "always_allowed": ["execute"]
+        }
+        assert store.get_plugin_state(ctx.session_id, "approval") == {}
+        assert [(event.old, event.new) for event in _session_switches(ctx)] == [
+            (old_session, ctx.session_id)
+        ]
+        assert _thread_switches(ctx) == []
+        assert graph.seed_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_without_checkpoint_reseeds_ledger_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "resume-reseed.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="current")
+        target = store.create(tmp_path, "old:model", thread_id="target")
+        Ledger(store).append(
+            target.thread_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="saved"))),
+        )
+        old_thread = ctx.thread_id
+        monkeypatch.setattr(
+            app_module,
+            "build_agent",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+        )
+
+        await ctx.resume("target")
+
+        assert ctx.session_id == "target"
+        assert ctx.thread_id != target.current_thread
+        assert graph.seed_calls[-1] == (
+            ctx.thread_config,
+            {
+                "messages": [HumanMessage(content="saved")],
+                "todos": [],
+                "files": {},
+            },
+        )
+        assert [(event.old, event.new) for event in _session_switches(ctx)] == [
+            ("current", "target")
+        ]
+        thread_switch = _thread_switches(ctx)
+        assert len(thread_switch) == 1
+        assert (thread_switch[0].session_id, thread_switch[0].old, thread_switch[0].reason) == (
+            "target",
+            old_thread,
+            "reseed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_plain_resume_reuses_a_live_checkpoint_without_seeding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "resume-live.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="current")
+        target = store.create(tmp_path, "old:model", thread_id="target")
+        store.saver.put(
+            {
+                "configurable": {
+                    "thread_id": target.current_thread,
+                    "checkpoint_ns": "",
+                }
+            },
+            empty_checkpoint(),
+            {},
+            {},
+        )
+        monkeypatch.setattr(
+            app_module,
+            "build_agent",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+        )
+
+        await ctx.resume("target")
+
+        assert ctx.session_id == "target"
+        assert ctx.thread_id == target.current_thread
+        assert graph.seed_calls == []
+        assert _thread_switches(ctx) == []
+        assert [(event.old, event.new) for event in _session_switches(ctx)] == [
+            ("current", "target")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_model_switch_appends_model_change_audit_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "model-audit.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+        monkeypatch.setattr(
+            app_module,
+            "build_agent",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+        )
+        monkeypatch.setattr(
+            AppContext, "_resolve_summarizer", lambda _self, _cfg: object()
+        )
+
+        await ctx.switch_model(["new:primary", "new:fallback"])
+
+        audit = Ledger(store).path(ctx.session_id)[-1]
+        assert isinstance(audit, ModelChangeEntry)
+        assert audit.model == ["new:primary", "new:fallback"]
+        assert store.get(ctx.session_id).model == ["new:primary", "new:fallback"]
+
+
+@pytest.mark.asyncio
+async def test_mode_switch_appends_mode_change_audit_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "mode-audit.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+        ctx._registry.modes["plan"] = ModeSpec(
+            description="Plan", interrupt_on={}, allowed_tools=None
+        )
+        monkeypatch.setattr(
+            app_module,
+            "build_agent",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+        )
+        monkeypatch.setattr(
+            AppContext, "_resolve_summarizer", lambda _self, _cfg: object()
+        )
+
+        await ctx.switch_mode("plan")
+
+        audit = Ledger(store).path(ctx.session_id)[-1]
+        assert isinstance(audit, ModeChangeEntry)
+        assert audit.mode == "plan"
+        assert store.get(ctx.session_id).mode == "plan"
+
+
+def test_normal_exit_diagnostic_requires_an_assistant_message(tmp_path: Path) -> None:
+    with SessionStore(tmp_path / "normal-exit.sqlite") as store:
+        ctx = _real_context(tmp_path, store, _StreamGraph([]))
+        ledger = Ledger(store)
+
+        ctx.record_exit("normal")
+        assert ledger.path(ctx.session_id) == []
+
+        ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="hello"))),
+        )
+        ctx.record_exit("normal")
+        assert not any(
+            isinstance(entry, CustomEntry) and entry.custom_type == "session_exit"
+            for entry in ledger.path(ctx.session_id)
+        )
+
+        ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="goodbye"))),
+        )
+        ctx.record_exit("normal")
+
+        exit_entry = ledger.path(ctx.session_id)[-1]
+        assert isinstance(exit_entry, CustomEntry)
+        assert exit_entry.custom_type == "session_exit"
+        assert exit_entry.data == {"kind": "normal", "pending_tool_calls": []}
+
+
+@pytest.mark.asyncio
+async def test_run_app_app_exit_records_normal_session_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _StreamGraph(
+        [],
+        values={
+            "messages": [
+                HumanMessage(content="hello"),
+                AIMessage(content="goodbye"),
+            ]
+        },
+    )
+    console = _RecordingConsole()
+    prompt = _PromptScript("hello")
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(
+        app_module,
+        "build_agent",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+    )
+    monkeypatch.setattr(app_module, "load_plugins", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path))
+
+    assert status == 0
+    with SessionStore(tmp_path / "sessions.sqlite") as store:
+        session = store.list()[0]
+        exit_entry = Ledger(store).path(session.thread_id)[-1]
+        assert isinstance(exit_entry, CustomEntry)
+        assert exit_entry.custom_type == "session_exit"
+        assert exit_entry.data == {"kind": "normal", "pending_tool_calls": []}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_records_signal_exit_with_pending_tool_calls(
+    tmp_path: Path,
+) -> None:
+    messages = [
+        HumanMessage(content="write it"),
+        AIMessage(
+            content="calling tool",
+            tool_calls=[{"id": "call-1", "name": "write_file", "args": {}}],
+        ),
+    ]
+    graph = _StreamGraph(
+        [], error=asyncio.CancelledError(), values={"messages": messages}
+    )
+    with SessionStore(tmp_path / "signal-exit.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+
+        await _run_turn(ctx, "write it")
+
+        path = Ledger(store).path(ctx.session_id)
+        exit_entry = path[-1]
+        assert isinstance(path[-2], CustomEntry)
+        assert path[-2].custom_type == "turn_state"
+        assert isinstance(exit_entry, CustomEntry)
+        assert exit_entry.custom_type == "session_exit"
+        assert exit_entry.data == {
+            "kind": "signal",
+            "pending_tool_calls": [{"id": "call-1", "name": "write_file"}],
+        }
+
+
+@pytest.mark.asyncio
+async def test_resume_warns_exactly_once_for_interrupted_final_assistant_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "interrupted-resume.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="current")
+        target = store.create(tmp_path, "old:model", thread_id="interrupted")
+        ledger = Ledger(store)
+        ledger.append(
+            target.thread_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="run both"))),
+        )
+        ledger.append(
+            target.thread_id,
+            MessageEntry(
+                message=message_to_dict(
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"id": "one", "name": "read_file", "args": {}},
+                            {"id": "two", "name": "execute", "args": {}},
+                        ],
+                    )
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            app_module,
+            "build_agent",
+            lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+        )
+
+        await ctx.resume("interrupted")
+
+        assert ctx.console.warnings == [
+            "Previous turn was interrupted; 2 pending tool call(s) dropped."
+        ]
+
+
+@pytest.mark.asyncio
+async def test_run_app_resume_accepts_unique_session_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    with SessionStore(cfg.db_path) as store:
+        selected = store.create(tmp_path, "old:model", thread_id="alpha-1234")
+        store.create(tmp_path, "old:model", thread_id="beta-1234")
+        store.saver.put(
+            {
+                "configurable": {
+                    "thread_id": selected.current_thread,
+                    "checkpoint_ns": "",
+                }
+            },
+            empty_checkpoint(),
+            {},
+            {},
+        )
+    console = _RecordingConsole()
+    prompt = _PromptScript()
+    started: list[tuple[str, str]] = []
+
+    def load_runtime(
+        _registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        async def record_start(event: AppStart) -> None:
+            started.append((event.ctx.session_id, event.ctx.thread_id))
+
+        bus.on(AppStart, record_start)
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(replace(cfg, resume="alpha"))
+
+    assert status == 0
+    assert console.errors == []
+    assert started == [("alpha-1234", selected.current_thread)]
+
+
+@pytest.mark.asyncio
+async def test_run_app_resume_rejects_ambiguous_session_prefix_without_prompting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    with SessionStore(cfg.db_path) as store:
+        store.create(tmp_path, "old:model", thread_id="team-b")
+        store.create(tmp_path, "old:model", thread_id="team-a")
+    console = _RecordingConsole()
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+
+    status = await run_app(replace(cfg, resume="team-"))
+
+    assert status == 1
+    assert console.errors == [
+        "Ambiguous session prefix team-: team-a, team-b"
+    ]
+
+
+class _FailingSeedGraph(_HistoryGraph):
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+    ) -> None:
+        raise RuntimeError("seed failed")
+
+
+@pytest.mark.asyncio
+async def test_branch_seed_failure_restores_prior_leaf_and_thread_identity(
+    tmp_path: Path,
+) -> None:
+    graph = _FailingSeedGraph([])
+    with SessionStore(tmp_path / "branch-seed-failure.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="branch-source")
+        ledger = Ledger(store)
+        root = ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="root"))),
+        )
+        prior_leaf = ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="reply"))),
+        ).id
+        prior_thread = ctx.thread_id
+
+        with pytest.raises(RuntimeError, match="seed failed"):
+            await ctx.branch(root.id)
+
+        assert ctx.session_id == "branch-source"
+        assert ctx.thread_id == prior_thread
+        assert ledger.leaf(ctx.session_id) == prior_leaf
+        assert ledger.path(ctx.session_id)[-1].id == prior_leaf
+        assert store.get(ctx.session_id).current_thread == prior_thread
+        assert _thread_switches(ctx) == []
+        assert _session_switches(ctx) == []
+
+
+@pytest.mark.parametrize(
+    ("operation", "unreachable_type"),
+    [("clear", ResetBoundaryEntry), ("compact", CompactionEntry)],
+)
+@pytest.mark.asyncio
+async def test_reset_seed_failure_restores_leaf_and_leaves_new_entry_unreachable(
+    tmp_path: Path,
+    operation: str,
+    unreachable_type: type[ResetBoundaryEntry] | type[CompactionEntry],
+) -> None:
+    graph = _FailingSeedGraph([])
+    with SessionStore(tmp_path / f"{operation}-seed-failure.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id=f"{operation}-source")
+        ledger = Ledger(store)
+        prior_leaf = ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="prior"))),
+        ).id
+        prior_thread = ctx.thread_id
+
+        if operation == "compact":
+            class Summarizer:
+                async def ainvoke(self, _messages: list[Any]) -> AIMessage:
+                    return AIMessage(content="summary")
+
+            ctx.summarizer = Summarizer()
+
+        with pytest.raises(RuntimeError, match="seed failed"):
+            if operation == "clear":
+                await ctx.clear()
+            else:
+                await ctx.compact()
+
+        assert ctx.thread_id == prior_thread
+        assert ledger.leaf(ctx.session_id) == prior_leaf
+        assert ledger.path(ctx.session_id)[-1].id == prior_leaf
+        unreachable = [
+            entry for entry in ledger.all(ctx.session_id) if isinstance(entry, unreachable_type)
+        ]
+        assert len(unreachable) == 1
+        assert unreachable[0].id not in {entry.id for entry in ledger.path(ctx.session_id)}
+        assert store.get(ctx.session_id).current_thread == prior_thread
+        assert _thread_switches(ctx) == []
+        assert _session_switches(ctx) == []
+
+
+@pytest.mark.asyncio
+async def test_fork_seed_failure_restores_source_and_removes_failed_child_session(
+    tmp_path: Path,
+) -> None:
+    graph = _FailingSeedGraph([])
+    with SessionStore(tmp_path / "fork-seed-failure.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="fork-source")
+        Ledger(store).append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="copy"))),
+        )
+        prior_thread = ctx.thread_id
+        prior_sessions = [session.thread_id for session in store.list()]
+
+        with pytest.raises(RuntimeError, match="seed failed"):
+            await ctx.fork()
+
+        assert ctx.session_id == "fork-source"
+        assert ctx.thread_id == prior_thread
+        assert [session.thread_id for session in store.list()] == prior_sessions
+        assert store.get("fork-source").current_thread == prior_thread
+        assert _thread_switches(ctx) == []
+        assert _session_switches(ctx) == []
+
+
+@pytest.mark.asyncio
+async def test_new_session_clears_console_after_success(tmp_path: Path) -> None:
+    with SessionStore(tmp_path / "new-session-console.sqlite") as store:
+        ctx = _real_context(tmp_path, store, None, session_id="old-session")
+        old_session = ctx.session_id
+
+        await ctx.new_session()
+
+        assert ctx.session_id != old_session
+        assert ctx.console.clear_calls == 1
+        assert [(event.old, event.new) for event in _session_switches(ctx)] == [
+            (old_session, ctx.session_id)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_new_session_build_failure_removes_fresh_row_and_does_not_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    approval = {"always_allowed": ["execute"]}
+    with SessionStore(tmp_path / "new-session-failure.sqlite") as store:
+        ctx = _real_context(
+            tmp_path,
+            store,
+            graph,
+            session_id="old-session",
+            plugin_states={"approval": approval},
+        )
+        prior_thread = ctx.thread_id
+        prior_sessions = [session.thread_id for session in store.list()]
+
+        async def fail_build(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("build failed")
+
+        monkeypatch.setattr(app_module, "build_agent", fail_build)
+
+        with pytest.raises(RuntimeError, match="build failed"):
+            await ctx.new_session()
+
+        assert ctx.session_id == "old-session"
+        assert ctx.thread_id == prior_thread
+        assert ctx.agent is graph
+        assert approval == {"always_allowed": ["execute"]}
+        assert [session.thread_id for session in store.list()] == prior_sessions
+        assert _session_switches(ctx) == []
+        assert _thread_switches(ctx) == []
+        assert ctx.console.clear_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_model_audit_failure_restores_pre_strip_history_and_old_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_history = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "provider-private"},
+            {"type": "text", "text": "visible"},
+        ],
+        additional_kwargs={"keep": "additional"},
+        response_metadata={"keep": "metadata"},
+    )
+    old_graph = _HistoryGraph([private_history])
+    candidate_graph = _HistoryGraph([])
+    with SessionStore(tmp_path / "model-audit-failure.sqlite") as store:
+        ctx = _real_context(tmp_path, store, old_graph)
+        ctx._registry.providers["old"] = SimpleNamespace(
+            foreign_block_types=frozenset({"reasoning"})
+        )
+        old_cfg = ctx.cfg
+        original_append = Ledger.append
+
+        async def build_candidate(*_args: Any, **_kwargs: Any) -> _HistoryGraph:
+            return candidate_graph
+
+        def fail_model_audit(
+            ledger: Ledger,
+            session_id: str,
+            entry: Any,
+        ) -> Any:
+            if isinstance(entry, ModelChangeEntry):
+                raise RuntimeError("audit failed")
+            return original_append(ledger, session_id, entry)
+
+        monkeypatch.setattr(app_module, "build_agent", build_candidate)
+        monkeypatch.setattr(
+            AppContext, "_resolve_summarizer", lambda _self, _cfg: object()
+        )
+        monkeypatch.setattr(Ledger, "append", fail_model_audit)
+
+        with pytest.raises(RuntimeError, match="audit failed"):
+            await ctx.switch_model("new:model")
+
+        assert ctx.cfg is old_cfg
+        assert ctx.cfg.model == "old:model"
+        assert ctx.agent is old_graph
+        assert old_graph.messages == [private_history]
+        assert store.get(ctx.session_id).model == "old:model"
+        assert Ledger(store).path(ctx.session_id) == []
+        assert not any(isinstance(event, ModelSwitch) for event in ctx.bus.events)
+
+
+@pytest.mark.asyncio
+async def test_capture_storage_error_names_session_and_thread_and_remains_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages = [HumanMessage(content="question"), AIMessage(content="answer")]
+    graph = _StreamGraph([], values={"messages": messages})
+    with SessionStore(tmp_path / "capture-context-error.sqlite") as store:
+        ctx = _real_context(
+            tmp_path, store, graph, session_id="capture-context-session"
+        )
+        original_capture = Ledger.capture
+
+        def fail_capture(
+            _ledger: Ledger,
+            _session_id: str,
+            _thread_id: str,
+            _entries: Any,
+            *,
+            message_count: int,
+        ) -> Any:
+            raise RuntimeError("storage offline")
+
+        monkeypatch.setattr(Ledger, "capture", fail_capture)
+
+        with pytest.raises(RuntimeError) as raised:
+            await _run_turn(ctx, "question")
+
+        error_text = str(raised.value)
+        assert ctx.session_id in error_text
+        assert ctx.thread_id in error_text
+        assert "storage offline" in error_text
+        assert store.get_thread(ctx.thread_id).captured == 0
+        assert Ledger(store).path(ctx.session_id) == []
+
+        monkeypatch.setattr(Ledger, "capture", original_capture)
+        await _run_turn(ctx, "question")
+
+        assert store.get_thread(ctx.thread_id).captured == 2
+        path = Ledger(store).path(ctx.session_id)
+        assert len([entry for entry in path if isinstance(entry, MessageEntry)]) == 2
+        assert any(
+            isinstance(entry, CustomEntry) and entry.custom_type == "turn_state"
+            for entry in path
+        )

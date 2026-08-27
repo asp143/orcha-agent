@@ -392,6 +392,39 @@ class SessionStore:
                 raise
         return info
 
+    def delete_session(self, session_id: str) -> None:
+        """Delete a session and all graph/checkpoint state owned by it."""
+        with self.saver.lock:
+            rows = self._connection.execute(
+                "SELECT thread_id FROM threads WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+        for row in rows:
+            self.saver.delete_thread(row["thread_id"])
+        with self.saver.lock:
+            try:
+                self._connection.execute("BEGIN")
+                self._connection.execute(
+                    "DELETE FROM entries WHERE session_id = ?",
+                    (session_id,),
+                )
+                self._connection.execute(
+                    "DELETE FROM threads WHERE session_id = ?",
+                    (session_id,),
+                )
+                self._connection.execute(
+                    "DELETE FROM plugin_state WHERE thread_id = ?",
+                    (session_id,),
+                )
+                self._connection.execute(
+                    "DELETE FROM sessions WHERE thread_id = ?",
+                    (session_id,),
+                )
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+
     @staticmethod
     def _encode_model(value: str | list[str]) -> str:
         return value if isinstance(value, str) else json.dumps(value)
