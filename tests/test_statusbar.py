@@ -492,6 +492,11 @@ async def test_status_command_prints_the_eight_segments_one_per_line(
         "cost",
     ]
     assert all(" · " not in line for line in lines)
+    assert all(
+        "<style" not in str(value)
+        for call in ctx.console.output
+        for value in call
+    )
 
 
 def test_disabled_statusbar_registers_nothing_and_toolbar_is_empty(tmp_path: Path) -> None:

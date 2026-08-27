@@ -6,6 +6,7 @@ import html
 import subprocess
 from pathlib import Path
 from time import monotonic
+from prompt_toolkit.formatted_text import HTML, to_formatted_text
 from typing import Any, Mapping
 
 from orcha_agent.core.events import ModelChunk
@@ -251,6 +252,10 @@ SEGMENTS = (
 )
 
 
+def _plain_markup(value: str) -> str:
+    return "".join(text for _style, text in to_formatted_text(HTML(value)))
+
+
 def register(api: PluginAPI) -> None:
     if not bool(api.config.get("statusbar", True)):
         return
@@ -267,7 +272,7 @@ def register(api: PluginAPI) -> None:
             except Exception:
                 value = f"!{name}"
             if value:
-                ctx.console.print(value)
+                ctx.console.print(_plain_markup(value))
 
     api.on(ModelChunk, track, priority=10)
     api.add_command("status", show, help="Show status bar segments")
