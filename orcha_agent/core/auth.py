@@ -147,6 +147,10 @@ class CredentialStore:
             return True
 
 
+class BrowserOpenError(RuntimeError):
+    pass
+
+
 class OAuthPKCEFlow:
     """Generic synchronous OAuth authorization-code flow with S256 PKCE."""
 
@@ -223,7 +227,7 @@ class OAuthPKCEFlow:
         open_browser: bool = True,
     ) -> str:
         if open_browser and not webbrowser.open(authorization_url):
-            raise RuntimeError("browser did not open")
+            raise BrowserOpenError("browser did not open")
         pasted = self.input_fn(
             f"Open this URL to authenticate:\n{authorization_url}\n"
             "Paste the redirect URL or authorization code: "
@@ -284,7 +288,7 @@ class OAuthPKCEFlow:
         try:
             deadline = time.monotonic() + 120
             if not webbrowser.open(authorization_url):
-                raise RuntimeError("browser did not open")
+                raise BrowserOpenError("browser did not open")
             while not callback_done.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -364,9 +368,10 @@ class OAuthDeviceFlow:
         self.timeout = timeout
 
     def _post(self, url: str, **kwargs: Any) -> httpx.Response:
+        timeout = kwargs.pop("timeout", 30)
         if self.http_client is not None:
-            return self.http_client.post(url, **kwargs)
-        return httpx.post(url, timeout=30, **kwargs)
+            return self.http_client.post(url, timeout=timeout, **kwargs)
+        return httpx.post(url, timeout=timeout, **kwargs)
 
     def authorize(
         self,
@@ -380,13 +385,21 @@ class OAuthDeviceFlow:
         )
         response.raise_for_status()
         challenge = response.json()
-        device_auth_id = challenge["device_auth_id"]
-        user_code = challenge["user_code"]
+        try:
+            device_auth_id = challenge["device_auth_id"]
+            user_code = challenge["user_code"]
+        except KeyError as exc:
+            raise ValueError(
+                f"device authorization response missing {exc.args[0]}"
+            ) from exc
         interval = max(2.0, float(challenge.get("interval", 2)))
         output(f"Open {self.verification_url} and enter code: {user_code}")
         complete_url = challenge.get("verification_uri_complete")
         if isinstance(complete_url, str) and complete_url:
-            output(complete_url)
+            complete = urlparse(complete_url)
+            primary = urlparse(self.verification_url)
+            if complete.scheme == "https" and complete.hostname == primary.hostname:
+                output(complete_url)
 
         deadline = self.monotonic() + self.timeout
         authorization_code: str | None = None
@@ -403,13 +416,18 @@ class OAuthDeviceFlow:
                 self.sleep(delay)
             if self.monotonic() >= deadline:
                 break
-            poll = self._post(
-                self.device_token_url,
-                json={
-                    "device_auth_id": device_auth_id,
-                    "user_code": user_code,
-                },
-            )
+            try:
+                poll = self._post(
+                    self.device_token_url,
+                    timeout=10,
+                    json={
+                        "device_auth_id": device_auth_id,
+                        "user_code": user_code,
+                    },
+                )
+            except httpx.TransportError:
+                interval += 5
+                continue
             if poll.status_code == 200:
                 payload = poll.json()
                 authorization_code = payload["authorization_code"]
@@ -426,6 +444,13 @@ class OAuthDeviceFlow:
                 continue
             if poll.status_code in {403, 404}:
                 continue
+            if poll.status_code >= 500 or poll.status_code == 429:
+                interval += 5
+                continue
+            if 200 <= poll.status_code < 400:
+                raise RuntimeError(
+                    f"unexpected device authorization response: {poll.status_code}"
+                )
             poll.raise_for_status()
 
         if authorization_code is None or code_verifier is None:

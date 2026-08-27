@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from orcha_agent.core.auth import (
+    BrowserOpenError,
     CredentialStore,
     OAuthDeviceFlow,
     OAuthPKCEFlow,
@@ -274,6 +275,212 @@ def test_device_flow_times_out_after_900_seconds_without_real_waits() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["http_503", "connect_error"],
+    ids=["503-then-200", "connect-error-then-200"],
+)
+def test_device_flow_retries_transient_poll_failure_with_longer_interval(
+    failure_kind: str,
+) -> None:
+    clock = _FakeClock()
+    poll_attempts = 0
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        nonlocal poll_attempts
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 2,
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            poll_attempts += 1
+            if poll_attempts == 1:
+                if failure_kind == "connect_error":
+                    raise httpx.ConnectError(
+                        "fake connection failure",
+                        request=request,
+                    )
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json={
+                    "authorization_code": "fake-authorization-code",
+                    "code_verifier": "fake-code-verifier",
+                },
+            )
+        if str(request.url) == "https://auth.invalid/oauth/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "fake-access-token",
+                    "refresh_token": "fake-refresh-token",
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        credential = _device_flow(client, clock).authorize(output=lambda _: None)
+
+    assert credential == {
+        "access_token": "fake-access-token",
+        "refresh_token": "fake-refresh-token",
+    }
+    assert poll_attempts == 2
+    assert clock.sleeps == [2, 7]
+
+
+def test_device_flow_raises_immediately_for_unexpected_poll_success_status() -> None:
+    clock = _FakeClock()
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 2,
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            return httpx.Response(204)
+        pytest.fail("Token exchange must not run after an unexpected poll response")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        with pytest.raises(RuntimeError, match=r"(?i)unexpected.*204"):
+            _device_flow(client, clock).authorize(output=lambda _: None)
+
+    assert [str(request.url) for request in requests] == [
+        "https://auth.invalid/device/usercode",
+        "https://auth.invalid/device/token",
+    ]
+    assert clock.sleeps == [2]
+
+
+def test_device_flow_sets_ten_second_timeout_on_poll_post() -> None:
+    clock = _FakeClock()
+    poll_request: httpx.Request | None = None
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        nonlocal poll_request
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 2,
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            poll_request = request
+            return httpx.Response(
+                200,
+                json={
+                    "authorization_code": "fake-authorization-code",
+                    "code_verifier": "fake-code-verifier",
+                },
+            )
+        if str(request.url) == "https://auth.invalid/oauth/token":
+            return httpx.Response(200, json={"access_token": "fake-access-token"})
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        _device_flow(client, clock).authorize(output=lambda _: None)
+
+    assert poll_request is not None
+    assert poll_request.extensions["timeout"] == {
+        "connect": 10,
+        "read": 10,
+        "write": 10,
+        "pool": 10,
+    }
+
+
+@pytest.mark.parametrize(
+    ("complete_url", "should_print"),
+    [
+        (
+            "https://auth.openai.com/codex/device?user_code=FAKE-CODE",
+            True,
+        ),
+        (
+            "http://auth.openai.com/codex/device?user_code=FAKE-CODE",
+            False,
+        ),
+        (
+            "https://auth.openai.com.evil.invalid/device?user_code=FAKE-CODE",
+            False,
+        ),
+    ],
+    ids=["matching-https-host", "insecure-scheme", "different-host"],
+)
+def test_device_flow_prints_complete_url_only_for_matching_https_host(
+    complete_url: str,
+    should_print: bool,
+) -> None:
+    clock = _FakeClock()
+    printed: list[str] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "device_auth_id": "fake-device-auth-id",
+                    "user_code": "FAKE-CODE",
+                    "interval": 2,
+                    "verification_uri_complete": complete_url,
+                },
+            )
+        if str(request.url) == "https://auth.invalid/device/token":
+            return httpx.Response(
+                200,
+                json={
+                    "authorization_code": "fake-authorization-code",
+                    "code_verifier": "fake-code-verifier",
+                },
+            )
+        if str(request.url) == "https://auth.invalid/oauth/token":
+            return httpx.Response(200, json={"access_token": "fake-access-token"})
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        _device_flow(client, clock).authorize(output=printed.append)
+
+    assert printed[0] == (
+        "Open https://auth.openai.com/codex/device "
+        "and enter code: FAKE-CODE"
+    )
+    assert any(complete_url in line for line in printed) is should_print
+
+
+def test_device_flow_reports_missing_device_auth_id_as_value_error() -> None:
+    clock = _FakeClock()
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://auth.invalid/device/usercode":
+            return httpx.Response(
+                200,
+                json={
+                    "user_code": "FAKE-CODE",
+                    "interval": 2,
+                },
+            )
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as client:
+        with pytest.raises(ValueError, match="device_auth_id"):
+            _device_flow(client, clock).authorize(output=lambda _: None)
+
+
 def test_device_flow_propagates_keyboard_interrupt_without_exchanging() -> None:
     clock = _FakeClock()
     requests: list[httpx.Request] = []
@@ -342,7 +549,7 @@ def test_loopback_bind_fallback_raises_when_browser_does_not_open(
             lambda _url: False,
         )
 
-        with pytest.raises(RuntimeError, match="browser did not open"):
+        with pytest.raises(BrowserOpenError, match="browser did not open"):
             flow.authorize()
 
 
