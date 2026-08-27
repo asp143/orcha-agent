@@ -18,6 +18,7 @@ from langchain_core.messages import (
 )
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
+from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.keys import Keys
 
 import orcha_agent.tui.app as app_module
@@ -477,6 +478,66 @@ def _context(
         thread_id="current",
         agent=agent,
     )
+
+
+def test_bottom_toolbar_joins_nonempty_segments_and_isolates_failures(
+    tmp_path: Path,
+) -> None:
+    ctx = _context(tmp_path)
+    api = PluginAPI(
+        name="toolbar-test",
+        config={},
+        state={},
+        registry=ctx._registry,
+        bus=ctx._bus,
+        request_rebuild=ctx.request_rebuild,
+    )
+
+    def fail(_ctx: AppContext) -> str:
+        raise RuntimeError("segment failed")
+
+    api.add_status_segment(
+        "model",
+        lambda _ctx: '<style fg="ansicyan">model</style>',
+        priority=10,
+    )
+    api.add_status_segment("broken", fail, priority=20)
+    api.add_status_segment("empty", lambda _ctx: "", priority=30)
+    api.add_status_segment("missing", lambda _ctx: None, priority=35)
+    api.add_status_segment("mode", lambda _ctx: "ask", priority=40)
+
+    fragments = to_formatted_text(app_module._bottom_toolbar(ctx))
+
+    assert "".join(text for _style, text in fragments) == (
+        "model · !broken · ask"
+    )
+    model_styles = [style for style, text in fragments if text == "model"]
+    assert len(model_styles) == 1
+    assert "ansicyan" in model_styles[0]
+
+
+@pytest.mark.asyncio
+async def test_run_app_configures_live_bottom_toolbar_without_building_a_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    prompt = _PromptScript()
+
+    def prompt_session(**kwargs: Any) -> _PromptScript:
+        captured.update(kwargs)
+        return prompt
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", _RecordingConsole)
+    monkeypatch.setattr(app_module, "PromptSession", prompt_session)
+    monkeypatch.setattr(app_module, "load_plugins", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path))
+
+    assert status == 0
+    assert callable(captured["bottom_toolbar"])
+    assert captured["refresh_interval"] == 0.5
 
 
 @pytest.mark.asyncio

@@ -92,6 +92,12 @@ def _register_named(api: PluginAPI, kind: str, *, replace: bool = False) -> None
             ModeSpec(description=api.name, interrupt_on={}, allowed_tools=None),
             replace=replace,
         )
+    elif kind == "status_segment":
+        api.add_status_segment(
+            "shared",
+            lambda _ctx: api.name,
+            replace=replace,
+        )
     else:  # pragma: no cover - protects the test helper itself
         raise AssertionError(f"unknown registry kind: {kind}")
 
@@ -134,6 +140,15 @@ def _assert_replacement_is_stored(registry: Registry, kind: str) -> None:
         assert entries[0].spec["description"] == "beta"
     elif kind == "mode":
         assert registry.modes["shared"].description == "beta"
+    elif kind == "status_segment":
+        entries = [
+            entry
+            for entry in registry.status_segments
+            if entry.name == "shared"
+        ]
+        assert len(entries) == 1
+        assert entries[0].plugin == "beta"
+        assert entries[0].render(object()) == "beta"
     else:  # pragma: no cover - protects the test helper itself
         raise AssertionError(f"unknown registry kind: {kind}")
 
@@ -150,6 +165,7 @@ def _assert_replacement_is_stored(registry: Registry, kind: str) -> None:
         "backend",
         "subagent",
         "mode",
+        "status_segment",
     ],
 )
 def test_registrations_reject_a_second_plugin_instead_of_silently_overwriting(
@@ -179,6 +195,7 @@ def test_registrations_reject_a_second_plugin_instead_of_silently_overwriting(
         "backend",
         "subagent",
         "mode",
+        "status_segment",
     ],
 )
 def test_replace_transfers_duplicate_ownership_to_the_replacing_plugin(kind: str) -> None:
@@ -187,11 +204,17 @@ def test_replace_transfers_duplicate_ownership_to_the_replacing_plugin(kind: str
     _register_named(_api("alpha", registry, bus), kind)
     _register_named(_api("beta", registry, bus), kind, replace=True)
     _assert_replacement_is_stored(registry, kind)
-    if kind in {"middleware", "renderer", "subagent"}:
+    if kind in {
+        "middleware",
+        "renderer",
+        "subagent",
+        "status_segment",
+    }:
         collection_name = {
             "middleware": "middleware",
             "renderer": "renderers",
             "subagent": "subagents",
+            "status_segment": "status_segments",
         }[kind]
         registrations = getattr(registry, collection_name)
         assert [
@@ -207,6 +230,45 @@ def test_replace_transfers_duplicate_ownership_to_the_replacing_plugin(kind: str
     assert "beta" in message
     assert "gamma" in message
     assert "alpha" not in message
+
+
+def test_status_segments_are_ordered_by_priority_then_name() -> None:
+    registry = Registry()
+    bus = EventBus()
+
+    _api("aaa-plugin", registry, bus).add_status_segment(
+        "zeta",
+        lambda _ctx: "zeta",
+        priority=50,
+    )
+    _api("late-plugin", registry, bus).add_status_segment(
+        "late",
+        lambda _ctx: "late",
+        priority=100,
+    )
+    _api("zzz-plugin", registry, bus).add_status_segment(
+        "alpha",
+        lambda _ctx: "alpha",
+        priority=50,
+    )
+    _api("early-plugin", registry, bus).add_status_segment(
+        "early",
+        lambda _ctx: "early",
+        priority=10,
+    )
+
+    assert [entry.name for entry in registry.status_segments] == [
+        "early",
+        "alpha",
+        "zeta",
+        "late",
+    ]
+    assert [entry.priority for entry in registry.status_segments] == [
+        10,
+        50,
+        50,
+        100,
+    ]
 
 
 def test_renderer_priority_order_is_deterministic_even_when_registration_order_differs() -> None:

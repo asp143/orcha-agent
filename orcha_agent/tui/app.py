@@ -16,6 +16,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
 from orcha_agent.core.agent import build_agent
@@ -111,6 +112,20 @@ def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
         if provider is not None:
             foreign.update(provider.foreign_block_types)
     return foreign
+
+
+def _bottom_toolbar(ctx: Any) -> Any:
+    if not bool(getattr(ctx.cfg, "statusbar", True)):
+        return ""
+    values: list[str] = []
+    for segment in ctx.registry.status_segments:
+        try:
+            value = segment.render(ctx)
+        except Exception:
+            value = f"!{segment.name}"
+        if value:
+            values.append(value)
+    return HTML(" · ".join(values)) if values else ""
 
 
 async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
@@ -647,7 +662,7 @@ async def _message_event(
         if namespace or agent_type == "subagent" or "subagent" in str(node)
         else "main"
     )
-    if getattr(message, "content", None):
+    if getattr(message, "content", None) or getattr(message, "usage_metadata", None):
         await _render(
             ctx,
             ModelChunk(
@@ -863,6 +878,8 @@ async def run_app(cfg: Config) -> int:
         prompt: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_path)),
             multiline=True,
+            bottom_toolbar=lambda: _bottom_toolbar(ctx),
+            refresh_interval=0.5,
             key_bindings=_bindings(),
         )
         while not ctx.exit_requested:

@@ -298,3 +298,33 @@ def test_core_config_can_disable_banner(tmp_path: Path) -> None:
     cfg = _load(tmp_path, user_config_path=user_config)
 
     assert cfg.banner is False
+
+
+def test_ui_flags_and_per_model_pricing_survive_toml_loading(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text(
+        """
+[ui]
+statusbar = false
+icons = false
+
+[pricing."codex:gpt-5.6-sol"]
+input = 5
+output = 30
+cache_read = 0.5
+
+[pricing."anthropic:claude-opus-4-1"]
+input = 15
+output = 75
+""".strip()
+        + "\n"
+    )
+
+    cfg = _load(tmp_path, user_config_path=user_config)
+
+    assert cfg.statusbar is False
+    assert cfg.icons is False
+    assert cfg.pricing == {
+        "codex:gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5},
+        "anthropic:claude-opus-4-1": {"input": 15, "output": 75},
+    }

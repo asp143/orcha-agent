@@ -167,6 +167,42 @@ def register(api) -> None:
     assert list(filesystem[0].tools) == []
 
 
+def test_external_plugin_status_segment_is_visible_in_registry(
+    tmp_path: Path,
+) -> None:
+    plugin_path = tmp_path / "external_status.py"
+    plugin_path.write_text(
+        """
+def external_status(ctx) -> str:
+    return f"external:{ctx.status}"
+
+
+def register(api) -> None:
+    api.add_status_segment("external", external_status, priority=25)
+""".lstrip()
+    )
+    module = _import_module(plugin_path)
+    registry = Registry()
+    api = PluginAPI(
+        name="external_status",
+        config={},
+        state={},
+        registry=registry,
+        bus=EventBus(),
+        request_rebuild=lambda: None,
+    )
+
+    module.register(api)
+
+    [status_segment] = registry.status_segments
+    assert status_segment.name == "external"
+    assert status_segment.plugin == "external_status"
+    assert status_segment.priority == 25
+    assert status_segment.render is module.external_status
+    status_context = SimpleNamespace(status="ready")
+    assert status_segment.render(status_context) == "external:ready"
+
+
 @pytest.mark.asyncio
 async def test_plugin_api_exposes_registered_auth_flow() -> None:
     registry = Registry()

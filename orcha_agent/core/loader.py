@@ -372,6 +372,13 @@ def load_plugins(
                 **cfg.providers.get(prefix, {}),
                 **plugin_config,
             }
+        if spec.name == "statusbar":
+            plugin_config = {
+                "statusbar": cfg.statusbar,
+                "icons": cfg.icons,
+                "pricing": cfg.pricing,
+                **plugin_config,
+            }
         api = PluginAPI(
             name=spec.name,
             config=plugin_config,

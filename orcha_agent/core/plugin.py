@@ -140,6 +140,23 @@ class PluginAPI:
             replace=replace,
         )
 
+    def add_status_segment(
+        self,
+        name: str,
+        render: Callable[[Any], str | None],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_status_segment(
+            self.name,
+            name,
+            render,
+            priority=priority,
+            replace=replace,
+        )
+
+
     def add_provider(
         self,
         prefix: str,

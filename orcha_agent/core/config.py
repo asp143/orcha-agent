@@ -6,7 +6,7 @@ import argparse
 import os
 import tomllib
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -41,6 +41,9 @@ class Config:
     login_prefix: str | None = None
     login_mode: str = "auto"
     banner: bool = True
+    statusbar: bool = True
+    icons: bool = True
+    pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -241,8 +244,15 @@ def load_config(
     models = values.get("models", {})
     providers = values.get("providers", {})
     plugins = values.get("plugins", {})
-    if not isinstance(models, dict) or not isinstance(providers, dict) or not isinstance(plugins, dict):
-        _parser().error("models, providers, and plugins must be TOML tables")
+    ui = values.get("ui", {})
+    pricing = values.get("pricing", {})
+    if not all(
+        isinstance(table, dict)
+        for table in (models, providers, plugins, ui, pricing)
+    ):
+        _parser().error(
+            "models, providers, plugins, ui, and pricing must be TOML tables"
+        )
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
@@ -258,6 +268,17 @@ def load_config(
         login_prefix=getattr(args, "prefix", None),
         login_mode=getattr(args, "login_mode", "auto"),
         banner=bool(core.get("banner", True)),
+        statusbar=bool(ui.get("statusbar", True)),
+        icons=bool(ui.get("icons", True)),
+        pricing={
+            str(model_name): {
+                str(key): float(value)
+                for key, value in price.items()
+                if isinstance(value, (int, float))
+            }
+            for model_name, price in pricing.items()
+            if isinstance(price, Mapping)
+        },
         resume=args.resume,
         list_sessions=args.list_sessions,
         strict_plugins=args.strict_plugins,

@@ -62,6 +62,14 @@ class RendererRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class StatusSegmentRegistration:
+    name: str
+    plugin: str
+    priority: int
+    render: Callable[[Any], str | None]
+
+
+@dataclass(frozen=True, slots=True)
 class SubagentRegistration:
     plugin: str
     priority: int
@@ -109,6 +117,7 @@ class Registry:
 
         self.middleware: list[MiddlewareRegistration] = []
         self.renderers: list[RendererRegistration] = []
+        self.status_segments: list[StatusSegmentRegistration] = []
         self.subagents: list[SubagentRegistration] = []
         self.prompt_fragments: list[PromptFragment] = []
 
@@ -119,6 +128,7 @@ class Registry:
         self._backend_owners: dict[str, str] = {}
         self._mode_owners: dict[str, str] = {}
         self._middleware_owners: dict[str, str] = {}
+        self._status_segment_owners: dict[str, str] = {}
         self._renderer_owners: dict[object, str] = {}
         self._subagent_owners: dict[str, str] = {}
 
@@ -323,6 +333,36 @@ class Registry:
         )
         self.subagents.sort(key=lambda entry: (entry.priority, entry.plugin, entry.name))
 
+    def _add_status_segment(
+        self,
+        plugin: str,
+        name: str,
+        render: Callable[[Any], str | None],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "status segment",
+            name,
+            plugin,
+            self._status_segment_owners,
+            replace=replace,
+        )
+        if replace:
+            self.status_segments[:] = [
+                entry for entry in self.status_segments if entry.name != name
+            ]
+        self.status_segments.append(
+            StatusSegmentRegistration(
+                name=name,
+                plugin=plugin,
+                priority=priority,
+                render=render,
+            )
+        )
+        self.status_segments.sort(key=lambda entry: (entry.priority, entry.name))
+
     def _add_prompt_fragment(
         self,
         plugin: str,
@@ -352,5 +392,6 @@ __all__ = [
     "Renderer",
     "RendererMatch",
     "RendererRegistration",
+    "StatusSegmentRegistration",
     "SubagentRegistration",
 ]
