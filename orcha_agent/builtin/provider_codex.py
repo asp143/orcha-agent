@@ -6,6 +6,7 @@ import os
 import re
 import asyncio
 import base64
+import threading
 import json
 import time
 from collections.abc import Mapping
@@ -252,6 +253,29 @@ def register(api: PluginAPI) -> None:
     )
     token_source = TokenSource(store, "codex", oauth)
 
+    async def authorize_device(ctx: Any) -> dict[str, Any]:
+        cancel_event = threading.Event()
+
+        def run_device() -> dict[str, Any] | BaseException:
+            try:
+                return device.authorize(
+                    output=ctx.console.print,
+                    cancel_event=cancel_event,
+                )
+            except BaseException as exc:
+                return exc
+
+        worker = asyncio.create_task(asyncio.to_thread(run_device))
+        try:
+            result = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            await asyncio.shield(worker)
+            raise
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
     async def login(ctx: Any, mode: LoginMode) -> None:
         selected = mode
         response: dict[str, Any] | None = None
@@ -284,10 +308,7 @@ def register(api: PluginAPI) -> None:
                     no_browser=True,
                 )
             elif selected == "device":
-                response = await asyncio.to_thread(
-                    device.authorize,
-                    output=ctx.console.print,
-                )
+                response = await authorize_device(ctx)
             else:
                 raise ValueError(f"Unsupported Codex login mode: {selected}")
         access = response.get("access_token")

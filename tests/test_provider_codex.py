@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import base64
 import json
 import webbrowser
@@ -153,7 +155,12 @@ def codex_login_harness(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         def __init__(self, **_options: Any) -> None:
             pass
 
-        def authorize(self, *, output: object) -> dict[str, Any]:
+        def authorize(
+            self,
+            *,
+            output: object,
+            cancel_event: threading.Event | None = None,
+        ) -> dict[str, Any]:
             login_paths.append("device")
             device_outputs.append(output)
             error = behavior["device_error"]
@@ -736,6 +743,67 @@ async def test_device_login_keyboard_interrupt_does_not_persist_credential(
     assert codex_login_harness.login_paths == ["device"]
     assert codex_login_harness.saved_credentials == []
     assert codex_login_harness.printed == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_device_login_stops_worker_before_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    exited = threading.Event()
+    saved: list[dict[str, Any]] = []
+
+    class FakeStore:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def get(self, _prefix: str) -> None:
+            return None
+
+        def set(self, _prefix: str, credential: Mapping[str, Any]) -> None:
+            saved.append(dict(credential))
+
+        def delete(self, _prefix: str) -> None:
+            pass
+
+    class FakePKCE:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def refresh(self, _refresh: str) -> dict[str, Any]:
+            raise AssertionError("refresh is not part of login")
+
+    class BlockingDevice:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def authorize(
+            self,
+            *,
+            output: Any,
+            cancel_event: threading.Event,
+        ) -> dict[str, Any]:
+            entered.set()
+            assert cancel_event.wait(timeout=2)
+            exited.set()
+            return {"access_token": "fake-access"}
+
+    monkeypatch.setattr(provider_codex, "CredentialStore", FakeStore)
+    monkeypatch.setattr(provider_codex, "OAuthPKCEFlow", FakePKCE)
+    monkeypatch.setattr(provider_codex, "OAuthDeviceFlow", BlockingDevice)
+    registry = Registry()
+    provider_codex.register(_api(registry))
+    ctx = SimpleNamespace(console=SimpleNamespace(print=lambda _value: None))
+
+    task = asyncio.create_task(registry.auth["codex"].flow.login(ctx, "device"))
+    assert await asyncio.to_thread(entered.wait, 2)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert exited.is_set()
+    assert saved == []
 
 
 @pytest.mark.asyncio
