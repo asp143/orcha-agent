@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from langchain_core.messages import BaseMessage, ChatMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from orcha_agent.core.auth import (
@@ -108,6 +109,30 @@ def _friendly_error(response: httpx.Response) -> RuntimeError | None:
     return RuntimeError("; ".join(details))
 
 
+def _is_instruction_message(message: BaseMessage) -> bool:
+    return isinstance(message, SystemMessage) or (
+        isinstance(message, ChatMessage)
+        and message.role in {"system", "developer"}
+    )
+
+
+def _instruction_text(messages: list[BaseMessage]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        if isinstance(message.content, str):
+            parts.append(message.content)
+            continue
+        text_parts: list[str] = []
+        for block in message.content:
+            if not isinstance(block, Mapping) or block.get("type") != "text":
+                raise ValueError(
+                    "Codex instructions support only string or text-block content"
+                )
+            text_parts.append(str(block.get("text", "")))
+        parts.append("".join(text_parts))
+    return "\n\n".join(parts)
+
+
 def _friendly_cause(exc: BaseException) -> RuntimeError | None:
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -123,6 +148,32 @@ def _friendly_cause(exc: BaseException) -> RuntimeError | None:
 
 
 class CodexChatOpenAI(ChatOpenAI):
+    def _get_request_payload(
+        self,
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        messages = self._convert_input(input_).to_messages()
+        instruction_messages = [
+            message for message in messages if _is_instruction_message(message)
+        ]
+        payload_messages = [
+            message for message in messages if not _is_instruction_message(message)
+        ]
+        if instruction_messages:
+            lifted = _instruction_text(instruction_messages)
+            explicit = kwargs.get("instructions")
+            kwargs["instructions"] = (
+                f"{explicit}\n\n{lifted}" if explicit else lifted
+            )
+        return super()._get_request_payload(
+            payload_messages,
+            stop=stop,
+            **kwargs,
+        )
+
     def _stream(self, *args: Any, **kwargs: Any) -> Any:
         try:
             yield from super()._stream(*args, **kwargs)

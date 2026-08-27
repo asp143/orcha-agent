@@ -1,13 +1,16 @@
+import json
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
-from orcha_agent.builtin import approval_prompt, filesystem, modes
+from orcha_agent.builtin import approval_prompt, filesystem, modes, provider_codex
 from orcha_agent.core.agent import build_agent
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
@@ -36,6 +39,30 @@ class ToolCallingFakeModel(GenericFakeChatModel):
         **kwargs: Any,
     ) -> "ToolCallingFakeModel":
         return self
+
+
+
+class _FakeCodexTokenSource:
+    def get_token(self) -> tuple[str, str]:
+        return "fake-codex-access-token", "fake-codex-account"
+
+
+def _successful_codex_sse() -> httpx.Response:
+    event = {
+        "type": "response.output_text.delta",
+        "sequence_number": 0,
+        "item_id": "fake-message",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "ok",
+        "logprobs": [],
+    }
+    body = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=body.encode(),
+    )
 
 
 def _api(name: str, registry: Registry, bus: EventBus) -> PluginAPI:
@@ -426,3 +453,103 @@ async def test_run_turn_resumes_one_real_graph_interrupt_and_renders_write(
         assert ctx.console.errors == []
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_real_deepagent_sends_codex_compatible_one_turn_payload(
+    tmp_path: Path,
+) -> None:
+    payloads: list[dict[str, Any]] = []
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return _successful_codex_sse()
+
+    registry = Registry()
+    bus = EventBus()
+    transport = httpx.MockTransport(capture)
+    tokens = _FakeCodexTokenSource()
+    filesystem.register(_api("filesystem", registry, bus))
+    modes.register(_api("modes", registry, bus))
+    _api("codex-provider", registry, bus).add_provider(
+        "codex",
+        lambda model_name, provider_config: provider_codex.create_model(
+            model_name,
+            provider_config,
+            tokens,
+            transport=transport,
+        ),
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=False,
+            max_context=None,
+        ),
+    )
+    cfg = replace(
+        _config(tmp_path, "yolo"),
+        model="codex:gpt-5.6-sol",
+        subagent_model="codex:gpt-5.6-sol",
+        summarizer_model="codex:gpt-5.6-sol",
+    )
+    session = SessionStore(cfg.db_path)
+    session.create(
+        cwd=tmp_path,
+        model="codex:gpt-5.6-sol",
+        thread_id="codex-payload-thread",
+    )
+
+    try:
+        graph = await build_agent(registry, cfg, session, bus)
+        result = await graph.ainvoke(
+            {"messages": [{"role": "user", "content": "Answer with ok."}]},
+            config={"configurable": {"thread_id": "codex-payload-thread"}},
+        )
+    finally:
+        session.close()
+
+    final_content = result["messages"][-1].content
+    if isinstance(final_content, list):
+        assert final_content[0]["text"] == "ok"
+    else:
+        assert final_content == "ok"
+    assert len(payloads) == 1
+    payload = payloads[0]
+    required_keys = {
+        "model",
+        "input",
+        "stream",
+        "store",
+        "include",
+        "tools",
+        "instructions",
+    }
+    assert set(payload) in (
+        required_keys,
+        required_keys | {"parallel_tool_calls"},
+    )
+    assert not {"max_output_tokens", "text", "truncation"} & payload.keys()
+    assert payload["instructions"].startswith(
+        "You are a careful terminal coding agent. "
+        "Use tools deliberately and report concrete results."
+    )
+    assert payload["stream"] is True
+    assert payload["store"] is False
+    assert payload["include"] == ["reasoning.encrypted_content"]
+    assert payload["tools"]
+    assert all(tool["type"] == "function" for tool in payload["tools"])
+    assert {"read_file", "write_file"} <= {
+        tool["name"] for tool in payload["tools"]
+    }
+    assert payload["input"]
+    for item in payload["input"]:
+        assert item["type"] in {
+            "message",
+            "function_call",
+            "function_call_output",
+        }
+        if item["type"] == "message":
+            assert item["role"] in {"user", "assistant"}
+        else:
+            assert "role" not in item

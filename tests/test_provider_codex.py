@@ -12,6 +12,12 @@ from typing import Any
 
 import httpx
 import pytest
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_openai import ChatOpenAI
 from rich.console import Console
 
@@ -383,6 +389,90 @@ def test_each_request_uses_fresh_auth_and_never_sends_max_output_tokens() -> Non
         for payload in payloads
     )
     assert tokens.calls == 2
+
+
+def test_codex_payload_lifts_system_message_and_preserves_conversation_order() -> None:
+    requests: list[httpx.Request] = []
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _successful_sse()
+
+    model = provider_codex.create_model(
+        "gpt-5.6-sol",
+        {},
+        FakeTokenSource(),
+        transport=httpx.MockTransport(capture),
+    )
+    messages = [
+        SystemMessage("Follow this exact system instruction."),
+        HumanMessage("Find the fake record."),
+        AIMessage(
+            content="I will look up the record.",
+            tool_calls=[
+                {
+                    "name": "lookup_record",
+                    "args": {"record_id": "fake-123"},
+                    "id": "call-fake-1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(
+            content='{"name":"Fake Record"}',
+            tool_call_id="call-fake-1",
+            name="lookup_record",
+        ),
+        HumanMessage("Summarize that result."),
+    ]
+
+    list(model.stream(messages))
+
+    assert len(requests) == 1
+    payload = json.loads(requests[0].content)
+    assert payload["instructions"] == "Follow this exact system instruction."
+    assert all(
+        item.get("role") not in {"system", "developer"} for item in payload["input"]
+    )
+    assert [
+        item.get("role") if item["type"] == "message" else item["type"]
+        for item in payload["input"]
+    ] == [
+        "user",
+        "assistant",
+        "function_call",
+        "function_call_output",
+        "user",
+    ]
+    assert payload["store"] is False
+    assert payload["include"] == ["reasoning.encrypted_content"]
+    assert "max_output_tokens" not in payload
+
+
+def test_codex_payload_without_system_message_has_no_instruction_input_items() -> None:
+    requests: list[httpx.Request] = []
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _successful_sse()
+
+    model = provider_codex.create_model(
+        "gpt-5.6-sol",
+        {},
+        FakeTokenSource(),
+        transport=httpx.MockTransport(capture),
+    )
+
+    list(model.stream([HumanMessage("A prompt without system instructions.")]))
+
+    assert len(requests) == 1
+    payload = json.loads(requests[0].content)
+    assert all(
+        item.get("role") not in {"system", "developer"} for item in payload["input"]
+    )
+    assert "instructions" not in payload or payload["instructions"] == (
+        "You are ChatGPT, a large language model trained by OpenAI."
+    )
 
 
 @pytest.mark.asyncio
