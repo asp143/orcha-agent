@@ -610,23 +610,21 @@ async def test_sessions_command_renders_registered_session_table(
 
 
 @pytest.mark.asyncio
-async def test_compact_without_summarizer_renders_error_without_compacting() -> None:
+async def test_compact_delegates_when_summarizer_is_lazily_uninitialized() -> None:
     registry = Registry()
-    bus = EventBus()
-    commands_session.register(_api(registry, bus))
-    ctx, output = _context()
+    commands_session.register(_api(registry, EventBus()))
+    ctx, _output = _context()
     ctx.summarizer = None
+    compact_calls = 0
 
-    async def unexpected_compact() -> None:
-        raise AssertionError("unavailable summarizer must not start compaction")
+    async def compact() -> None:
+        nonlocal compact_calls
+        compact_calls += 1
 
-    ctx.compact = unexpected_compact
+    ctx.compact = compact
 
     assert await dispatch_command(registry, ctx, "/compact") is True
-
-    rendered = output.getvalue().lower()
-    assert "summarizer" in rendered
-    assert "unavailable" in rendered
+    assert compact_calls == 1
 
 
 SESSION_COMMANDS = {

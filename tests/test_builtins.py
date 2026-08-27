@@ -37,20 +37,25 @@ EXPECTED_BUILTIN_PLUGINS = {
     "statusbar",
 }
 EXPECTED_COMMANDS = {
+    "branch",
     "clear",
     "compact",
+    "export",
     "exit",
+    "fork",
     "help",
     "login",
     "logout",
     "mode",
     "model",
+    "new",
     "plugins",
     "providers",
     "resume",
     "sessions",
     "status",
     "thinking",
+    "tree",
 }
 EXPECTED_PROVIDERS = {"anthropic", "codex", "google", "langchain", "ollama", "openai"}
 EXPECTED_MODES = {"ask", "edit", "plan", "yolo"}
