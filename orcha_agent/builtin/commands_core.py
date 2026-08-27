@@ -68,13 +68,49 @@ def _auth_registration(ctx: Any, prefix: str) -> Any | None:
     return registration
 
 
+def _model_prefix(model: Any) -> str | None:
+    if isinstance(model, list):
+        model = model[0] if model else None
+    if not isinstance(model, str) or ":" not in model:
+        return None
+    return model.split(":", 1)[0]
+
+
+def _provider_usable(ctx: Any, prefix: str) -> bool:
+    provider = ctx.registry.providers.get(prefix)
+    if provider is None or provider.available() is not None:
+        return False
+    if provider.env_keys and not any(os.environ.get(key) for key in provider.env_keys):
+        return False
+    auth = ctx.registry.auth.get(prefix)
+    return auth is None or auth.flow.status() != "not logged in"
+
+
+async def _after_login(ctx: Any, prefix: str) -> None:
+    cfg = getattr(ctx, "cfg", None)
+    provider = ctx.registry.providers.get(prefix)
+    default_model = None if provider is None else provider.default_model
+    if cfg is None or default_model is None:
+        return
+    model_spec = f"{prefix}:{default_model}"
+    current_prefix = _model_prefix(getattr(cfg, "model", None))
+    if current_prefix != prefix or not _provider_usable(ctx, current_prefix):
+        await ctx.switch_model(model_spec)
+        ctx.console.print(
+            f"Switched model to {model_spec} (use /model to change)"
+        )
+    else:
+        ctx.console.print(f"use /model {model_spec} to switch")
+
+
 async def _login(ctx: Any, args: str) -> None:
     parts = args.split()
     if len(parts) not in {1, 2}:
         ctx.console.error("Usage: /login <prefix> [browser|device|paste]")
         return
     prefix = parts[0]
-    mode = "auto" if len(parts) == 1 else parts[1]
+    mode_argument = "auto" if len(parts) == 1 else parts[1]
+    mode = mode_argument[2:] if mode_argument.startswith("--") else mode_argument
     if mode not in {"auto", "browser", "device", "paste"} or (
         len(parts) == 2 and mode == "auto"
     ):
@@ -83,6 +119,7 @@ async def _login(ctx: Any, args: str) -> None:
     registration = _auth_registration(ctx, prefix)
     if registration is not None:
         await registration.flow.login(ctx, mode)
+        await _after_login(ctx, prefix)
 
 
 async def _logout(ctx: Any, args: str) -> None:

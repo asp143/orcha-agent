@@ -50,6 +50,19 @@ def _plain_terminal(console: Any) -> bool:
     )
 
 
+def _codex_recovery(registry: Any) -> str:
+    auth = getattr(registry, "auth", {}).get("codex")
+    provider = getattr(registry, "providers", {}).get("codex")
+    if (
+        auth is not None
+        and auth.flow.status() != "not logged in"
+        and provider is not None
+        and provider.default_model
+    ):
+        return f"/model codex:{provider.default_model}"
+    return "/login codex"
+
+
 def _model_availability(ctx: Any, model: Any, *, plain: bool) -> str:
     if not isinstance(model, str) or ":" not in model:
         return ""
@@ -61,13 +74,14 @@ def _model_availability(ctx: Any, model: Any, *, plain: bool) -> str:
         return ""
     unavailable = provider.available()
     separator = " - " if plain else " — "
+    recovery = _codex_recovery(registry)
     if unavailable:
-        return f" (not configured{separator}{unavailable}, /login codex, or /model)"
+        return f" (not configured{separator}{unavailable}, {recovery}, or /model)"
     missing_keys = [key for key in provider.env_keys if not os.environ.get(key)]
     if missing_keys:
         return (
             f" (not configured{separator}set {', '.join(missing_keys)}, "
-            "/login codex, or /model)"
+            f"{recovery}, or /model)"
         )
     auth_entries = getattr(registry, "auth", {})
     auth = auth_entries.get(prefix)

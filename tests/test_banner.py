@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from orcha_agent.builtin import banner
+from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.events import AppStart, EventBus
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
@@ -188,6 +189,56 @@ async def test_banner_reports_selected_provider_configuration_without_building_m
     assert "anthropic:claude-opus-5" in output.text
     assert availability_checks == ["anthropic"]
     assert factory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_banner_suggests_logged_in_codex_default_for_unusable_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def configure_registry(api: PluginAPI) -> None:
+        async def unexpected_login(_ctx: object, _mode: str) -> None:
+            raise AssertionError("rendering the banner must not start login")
+
+        async def unexpected_logout(_ctx: object) -> None:
+            raise AssertionError("rendering the banner must not log out")
+
+        caps = ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=False,
+            max_context=None,
+        )
+        api.add_auth(
+            "codex",
+            AuthFlow(
+                login=unexpected_login,
+                logout=unexpected_logout,
+                status=lambda: "logged in as codex@example.test / acct_fake_banner",
+            ),
+        )
+        api.add_provider(
+            "anthropic",
+            lambda model_name, provider_config: (model_name, provider_config),
+            capabilities=caps,
+            models=("claude-opus-5",),
+            env_keys=("ANTHROPIC_API_KEY",),
+        )
+        api.add_provider(
+            "codex",
+            lambda model_name, provider_config: (model_name, provider_config),
+            capabilities=caps,
+            models=("gpt-5.6-sol",),
+            default_model="gpt-5.6-sol",
+        )
+
+    output, _ = await _dispatch_start(
+        monkeypatch,
+        configure_registry=configure_registry,
+    )
+
+    assert "/model codex:gpt-5.6-sol" in output.text
+    assert "/login codex" not in output.text
 
 
 @pytest.mark.asyncio

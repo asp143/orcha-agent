@@ -29,6 +29,7 @@ class CommandRegistration:
 class ProviderRegistration:
     plugin: str
     models: tuple[str, ...]
+    default_model: str | None
     factory: ProviderFactory
     capabilities: Any
     env_keys: tuple[str, ...]
@@ -183,6 +184,7 @@ class Registry:
         *,
         capabilities: Any,
         models: Sequence[str] = (),
+        default_model: str | None = None,
         env_keys: Sequence[str] = (),
         harness: Any | None = None,
         foreign_block_types: Sequence[str] = (),
@@ -193,6 +195,7 @@ class Registry:
         self.providers[prefix] = ProviderRegistration(
             plugin=plugin,
             models=tuple(models),
+            default_model=default_model,
             factory=factory,
             capabilities=capabilities,
             env_keys=tuple(env_keys),

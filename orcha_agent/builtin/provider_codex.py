@@ -326,7 +326,14 @@ def register(api: PluginAPI) -> None:
             "email": extract_email(id_token) if isinstance(id_token, str) else "",
         }
         store.set("codex", credential)
-        ctx.console.print(f"Logged in to codex as {_status(store)}")
+        email = str(credential.get("email") or "")
+        account_id = str(credential.get("account_id") or "")
+        identity = (
+            f"{email} ({account_id})"
+            if email and account_id
+            else email or account_id or "authenticated user"
+        )
+        ctx.console.print(f"Logged in to codex as {identity}")
 
     async def logout(ctx: Any) -> None:
         store.delete("codex")
@@ -351,6 +358,7 @@ def register(api: PluginAPI) -> None:
             max_context=None,
         ),
         models=CODEX_MODELS,
+        default_model="gpt-5.6-sol",
         env_keys=(),
         foreign_block_types=("reasoning",),
     )

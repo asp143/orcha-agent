@@ -54,6 +54,31 @@ def _auth_flow(
     )
 
 
+def _provider_caps() -> ProviderCaps:
+    return ProviderCaps(
+        tool_calling=True,
+        streaming=True,
+        thinking=True,
+        structured_output=False,
+        max_context=None,
+    )
+
+
+def test_add_provider_stores_default_model() -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+
+    api.add_provider(
+        "codex",
+        lambda model_name, provider_config: (model_name, provider_config),
+        capabilities=_provider_caps(),
+        models=("gpt-5.6-sol",),
+        default_model="gpt-5.6-sol",
+    )
+
+    assert registry.providers["codex"].default_model == "gpt-5.6-sol"
+
+
 @pytest.mark.asyncio
 async def test_non_command_is_not_dispatched() -> None:
     registry = Registry()
@@ -279,8 +304,18 @@ async def test_login_without_mode_dispatches_auto_and_updates_provider_status() 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["browser", "device", "paste"])
-async def test_login_dispatches_explicit_mode(mode: str) -> None:
+@pytest.mark.parametrize(
+    ("argument", "mode"),
+    [
+        ("browser", "browser"),
+        ("device", "device"),
+        ("paste", "paste"),
+        ("--browser", "browser"),
+        ("--device", "device"),
+        ("--paste", "paste"),
+    ],
+)
+async def test_login_dispatches_explicit_mode(argument: str, mode: str) -> None:
     registry = Registry()
     api = _api(registry, EventBus())
     calls: list[tuple[object, ...]] = []
@@ -289,8 +324,75 @@ async def test_login_dispatches_explicit_mode(mode: str) -> None:
     ctx, _ = _context()
     ctx.registry = registry
 
-    assert await dispatch_command(registry, ctx, f"/login codex {mode}") is True
+    assert await dispatch_command(registry, ctx, f"/login codex {argument}") is True
     assert calls == [("login", ctx, mode)]
+
+
+@pytest.mark.asyncio
+async def test_login_switches_from_unusable_current_provider_to_codex_default() -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    auth_calls: list[tuple[object, ...]] = []
+    api.add_auth("codex", _auth_flow(auth_calls))
+    api.add_provider(
+        "codex",
+        lambda model_name, provider_config: (model_name, provider_config),
+        capabilities=_provider_caps(),
+        models=("gpt-5.6-sol",),
+        default_model="gpt-5.6-sol",
+    )
+    api.add_provider(
+        "anthropic",
+        lambda model_name, provider_config: (model_name, provider_config),
+        capabilities=_provider_caps(),
+        models=("claude-opus-5",),
+        available=lambda: "set ANTHROPIC_API_KEY",
+    )
+    commands_core.register(api)
+    ctx, output = _context()
+    ctx.registry = registry
+    ctx.cfg = SimpleNamespace(model="anthropic:claude-opus-5")
+    switched: list[str | list[str]] = []
+
+    async def switch_model(spec: str | list[str]) -> None:
+        switched.append(spec)
+
+    ctx.switch_model = switch_model
+
+    assert await dispatch_command(registry, ctx, "/login codex") is True
+    assert auth_calls == [("login", ctx, "auto")]
+    assert switched == ["codex:gpt-5.6-sol"]
+    assert output.getvalue().splitlines() == [
+        "Switched model to codex:gpt-5.6-sol (use /model to change)"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_login_keeps_usable_codex_model_and_prints_default_model_hint() -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    auth_calls: list[tuple[object, ...]] = []
+    api.add_auth("codex", _auth_flow(auth_calls))
+    api.add_provider(
+        "codex",
+        lambda model_name, provider_config: (model_name, provider_config),
+        capabilities=_provider_caps(),
+        models=("gpt-5.6-sol", "gpt-5.5"),
+        default_model="gpt-5.6-sol",
+    )
+    commands_core.register(api)
+    ctx, output = _context()
+    ctx.registry = registry
+    ctx.cfg = SimpleNamespace(model="codex:gpt-5.5")
+
+    async def unexpected_switch(_spec: str | list[str]) -> None:
+        raise AssertionError("a usable current Codex model must not be replaced")
+
+    ctx.switch_model = unexpected_switch
+
+    assert await dispatch_command(registry, ctx, "/login codex") is True
+    assert auth_calls == [("login", ctx, "auto")]
+    assert "/model codex:gpt-5.6-sol" in output.getvalue()
 
 
 @pytest.mark.asyncio
@@ -329,7 +431,7 @@ async def test_login_without_prefix_renders_mode_aware_usage() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "args",
-    ["codex auto", "codex invalid", "codex browser extra"],
+    ["codex auto", "codex invalid", "codex --remote", "codex browser extra"],
 )
 async def test_login_rejects_invalid_mode_usage(args: str) -> None:
     registry = Registry()
@@ -390,6 +492,31 @@ async def test_model_command_normalizes_runtime_fallback_chain() -> None:
 
     assert await dispatch_command(registry, ctx, "/model a:x,b:y") is True
     assert switched == [["a:x", "b:y"]]
+
+
+@pytest.mark.asyncio
+async def test_bare_model_reports_effective_role_models_and_usage() -> None:
+    registry = Registry()
+    commands_model.register(_api(registry, EventBus()))
+    ctx, output = _context(width=120)
+    ctx.cfg = SimpleNamespace(
+        model="anthropic:claude-opus-5",
+        subagent_model=None,
+        summarizer_model="codex:gpt-5.6-sol",
+    )
+
+    async def unexpected_switch(_spec: str | list[str]) -> None:
+        raise AssertionError("bare /model must not switch models")
+
+    ctx.switch_model = unexpected_switch
+
+    assert await dispatch_command(registry, ctx, "/model") is True
+    assert output.getvalue().splitlines() == [
+        "Current model: anthropic:claude-opus-5",
+        "Subagent model: anthropic:claude-opus-5 (inherited)",
+        "Summarizer model: codex:gpt-5.6-sol (explicit)",
+        "Usage: /model <provider:model>[,<provider:model>...]",
+    ]
 
 
 @pytest.mark.asyncio

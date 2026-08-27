@@ -11,6 +11,34 @@ PLUGIN = PluginSpec(name="commands_model", version="1.0.0")
 
 
 async def _model(ctx: Any, args: str) -> None:
+    if not args.strip():
+        cfg = ctx.cfg
+        current = (
+            cfg.model if isinstance(cfg.model, str) else ",".join(cfg.model)
+        )
+        subagent_value = cfg.subagent_model or cfg.model
+        summarizer_value = cfg.summarizer_model or cfg.model
+        subagent = (
+            subagent_value
+            if isinstance(subagent_value, str)
+            else ",".join(subagent_value)
+        )
+        summarizer = (
+            summarizer_value
+            if isinstance(summarizer_value, str)
+            else ",".join(summarizer_value)
+        )
+        ctx.console.print(f"Current model: {current}")
+        ctx.console.print(
+            f"Subagent model: {subagent} "
+            f"({'inherited' if cfg.subagent_model is None else 'explicit'})"
+        )
+        ctx.console.print(
+            f"Summarizer model: {summarizer} "
+            f"({'inherited' if cfg.summarizer_model is None else 'explicit'})"
+        )
+        ctx.console.print("Usage: /model <provider:model>[,<provider:model>...]")
+        return
     try:
         spec = normalize_model_spec(args.strip())
     except ValueError:

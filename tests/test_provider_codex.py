@@ -588,6 +588,7 @@ async def test_register_exposes_models_and_safe_auth_status(
     assert provider.env_keys == ()
     assert provider.models == EXPECTED_MODELS
     assert provider.foreign_block_types == frozenset({"reasoning"})
+    assert provider.default_model == "gpt-5.6-sol"
     assert provider.capabilities.tool_calling is True
     assert provider.capabilities.streaming is True
     assert provider.capabilities.thinking is True
@@ -731,6 +732,9 @@ async def test_explicit_login_modes_route_exactly(
     assert codex_login_harness.saved_credentials[-1][1]["account_id"] == (
         f"acct_fake_{mode}"
     )
+    assert codex_login_harness.printed == [
+        f"Logged in to codex as {mode}@example.test (acct_fake_{mode})"
+    ]
     if mode == "browser":
         assert codex_login_harness.browser_options == [{"no_browser": False}]
         assert opened_urls
