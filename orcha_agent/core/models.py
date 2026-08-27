@@ -170,22 +170,16 @@ class ModelResolver:
             ) from exc
 
 
-def strip_foreign_blocks(
-    graph: Any,
-    thread_config: Any,
+def filter_foreign_blocks(
+    messages: Any,
     foreign_types: set[str] | frozenset[str],
-) -> None:
-    """Replace stored history after removing provider-private AI content blocks."""
-    state = graph.get_state(thread_config)
-    messages = getattr(state, "values", {}).get("messages", ())
-    if not messages:
-        return
-
+) -> list[Any]:
+    """Copy messages after removing provider-private AI content blocks."""
     private_types = frozenset(foreign_types)
-    replacement: list[Any] = [RemoveMessage(id=REMOVE_ALL_MESSAGES)]
+    filtered: list[Any] = []
     for message in messages:
         if not isinstance(message, AIMessage):
-            replacement.append(message)
+            filtered.append(message)
             continue
 
         content = message.content
@@ -208,7 +202,7 @@ def strip_foreign_blocks(
             for key, value in message.response_metadata.items()
             if key not in private_types
         }
-        replacement.append(
+        filtered.append(
             message.model_copy(
                 update={
                     "content": content,
@@ -217,6 +211,24 @@ def strip_foreign_blocks(
                 }
             )
         )
+    return filtered
+
+
+def strip_foreign_blocks(
+    graph: Any,
+    thread_config: Any,
+    foreign_types: set[str] | frozenset[str],
+) -> None:
+    """Replace stored history after removing provider-private AI content blocks."""
+    state = graph.get_state(thread_config)
+    messages = getattr(state, "values", {}).get("messages", ())
+    if not messages:
+        return
+
+    replacement: list[Any] = [
+        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+        *filter_foreign_blocks(messages, foreign_types),
+    ]
 
     graph.update_state(
         thread_config,
@@ -225,4 +237,10 @@ def strip_foreign_blocks(
     )
 
 
-__all__ = ["ModelResolver", "ModelSpec", "ResolvedModel", "strip_foreign_blocks"]
+__all__ = [
+    "ModelResolver",
+    "ModelSpec",
+    "ResolvedModel",
+    "filter_foreign_blocks",
+    "strip_foreign_blocks",
+]

@@ -121,6 +121,53 @@ async def test_compact_uses_the_configured_summarizer_model(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_compact_excludes_provider_thinking_from_summary_input(
+    tmp_path: Path,
+) -> None:
+    history = _HistoryGraph(
+        [
+            AIMessage(
+                content=[
+                    {
+                        "type": "reasoning",
+                        "summary": [
+                            {"type": "summary_text", "text": "private reasoning"}
+                        ],
+                    },
+                    {"type": "thinking", "thinking": "private thinking"},
+                    {"type": "text", "text": "visible answer"},
+                ],
+                additional_kwargs={
+                    "reasoning": {"summary": "legacy private reasoning"},
+                    "keep": "additional",
+                },
+                response_metadata={
+                    "thinking": "metadata private thinking",
+                    "keep": "metadata",
+                },
+            )
+        ]
+    )
+    ctx = _context(tmp_path, agent=history)
+    seen: list[list[Any]] = []
+
+    class Summarizer:
+        async def ainvoke(self, messages: list[Any]) -> AIMessage:
+            seen.append(messages)
+            return AIMessage(content="compact summary")
+
+    ctx.summarizer = Summarizer()
+
+    await ctx.compact()
+
+    summarized = seen[0][0]
+    assert isinstance(summarized, AIMessage)
+    assert summarized.content == [{"type": "text", "text": "visible answer"}]
+    assert summarized.additional_kwargs == {"keep": "additional"}
+    assert summarized.response_metadata == {"keep": "metadata"}
+
+
+@pytest.mark.asyncio
 async def test_requested_rebuild_runs_after_the_current_stream_finishes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

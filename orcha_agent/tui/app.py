@@ -34,7 +34,11 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.loader import PluginRecord, load_plugins
-from orcha_agent.core.models import ModelResolver, strip_foreign_blocks
+from orcha_agent.core.models import (
+    ModelResolver,
+    filter_foreign_blocks,
+    strip_foreign_blocks,
+)
 from orcha_agent.core.plugin import Handled, Resolved
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
@@ -459,7 +463,10 @@ class AppContext:
             "constraints, failures, and remaining work."
         )
         state = self.agent.get_state(self.thread_config)
-        messages = list(getattr(state, "values", {}).get("messages", ()))
+        messages = filter_foreign_blocks(
+            getattr(state, "values", {}).get("messages", ()),
+            {"reasoning", "thinking"},
+        )
         if self.summarizer is None:
             raise RuntimeError("summarizer model is unavailable")
         summary = await self.summarizer.ainvoke(
