@@ -105,6 +105,31 @@ uv run orcha --trust-cwd
 Project plugins execute Python with the same filesystem and shell access as
 orcha, so do not trust repositories you have not reviewed.
 
+## Status bar
+
+The prompt keeps an omp-style session footer updated with the selected model,
+effort, mode, workspace, Git state, context use, cumulative tokens, and
+estimated cost:
+
+```text
+󰚩 GPT-5.6 Sol · 󰪣 high · ask · deepagent · feat/pi-agent ?2 +1 · 26.3%/272k · 󰁨 12.4k↑ 3.1k↓ · 󰙺 $0.42
+```
+
+Use `/status` to print the same values vertically. Disable the footer or Nerd
+Font icons in user or project configuration:
+
+```toml
+[ui]
+statusbar = false
+icons = false
+
+[pricing."codex:gpt-5.6-sol"]
+input = 5
+output = 30
+cache_read = 0.5
+```
+
+
 ## Plugins
 
 Plugins are discovered from built-ins, the `orcha_agent.plugins` entry-point
