@@ -30,20 +30,31 @@ API keys.
 
 ## Codex (ChatGPT subscription) login
 
-Codex uses a ChatGPT subscription through OAuth rather than an OpenAI API key:
+Codex uses a ChatGPT subscription through OAuth rather than an OpenAI API key.
+Automatic mode opens a browser on a local desktop and uses device login on
+headless or SSH sessions:
 
 ```bash
 uv run orcha login codex
 ```
 
-Or log in from the REPL and select the model:
+Select a mode explicitly when needed:
+
+```bash
+uv run orcha login codex --browser
+uv run orcha login codex --device   # headless servers and SSH
+uv run orcha login codex --paste    # paste a redirect URL or code
+```
+
+The same modes are available in the REPL:
 
 ```text
 /login codex
+/login codex browser
+/login codex device
+/login codex paste
 /model codex:gpt-5.6-sol
 ```
-
-Use `orcha login codex --no-browser` when the browser callback is unavailable.
 
 
 ## Configuration
