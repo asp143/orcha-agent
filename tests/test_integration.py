@@ -563,11 +563,13 @@ async def test_real_deepagent_sends_codex_compatible_one_turn_payload(
         "include",
         "tools",
         "instructions",
+        "reasoning",
     }
     assert set(payload) in (
         required_keys,
         required_keys | {"parallel_tool_calls"},
     )
+    assert payload["reasoning"] == {"effort": "medium", "summary": "auto"}
     assert not {"max_output_tokens", "text", "truncation"} & payload.keys()
     assert payload["instructions"].startswith(
         "You are a careful terminal coding agent. "
