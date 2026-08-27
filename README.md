@@ -167,6 +167,9 @@ See `examples/plugins/hello.py` for a complete external plugin.
 
 ## Commands
 
-`/help`, `/clear`, `/exit`, `/plugins`, `/providers`, `/login <prefix>`,
-`/logout <prefix>`, `/sessions`, `/resume <id>`, `/compact`,
-`/model <spec>`, `/mode <name>`, and `/thinking on|off`.
+`/help`, `/clear`, `/new`, `/exit`, `/plugins`, `/providers`, `/login <prefix>`,
+`/logout <prefix>`, `/tree [--all]`, `/branch <id-prefix>`, `/fork`,
+`/export [path]`, `/sessions`, `/resume <prefix>`, `/compact`, `/model <spec>`,
+`/mode <name>`, and `/thinking on|off`.
+
+`/clear` resets the current session history, while `/new` starts a fresh session.
