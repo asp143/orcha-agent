@@ -25,6 +25,7 @@ from orcha_agent.builtin import commands_core, commands_model
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
     AppExit,
+    AppStart,
     EventBus,
     InterruptRaised,
     ModelChunk,
@@ -825,6 +826,150 @@ async def test_run_app_continues_after_cancelled_command_and_emits_app_exit(
     assert Prompt.calls == 2
     assert console.warnings == ["interrupted"]
     assert len(app_events) == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "hint"),
+    [
+        ("model x", "Did you mean /model x?"),
+        ("mode plan", "Did you mean /mode plan?"),
+        ("help", "Did you mean /help?"),
+    ],
+)
+@pytest.mark.parametrize("has_agent", [False, True])
+@pytest.mark.asyncio
+async def test_run_app_hints_for_registered_commands_missing_a_slash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    hint: str,
+    has_agent: bool,
+) -> None:
+    console = _RecordingConsole()
+    prompt = _PromptScript(text)
+    ensure_calls: list[Any] = []
+    build_calls: list[Any] = []
+
+    class RecordingGraph:
+        def __init__(self) -> None:
+            self.inputs: list[Any] = []
+
+        async def astream(
+            self,
+            next_input: Any,
+            **_kwargs: Any,
+        ) -> AsyncIterator[tuple[str, Any]]:
+            self.inputs.append(next_input)
+            yield "updates", {}
+
+    graph = RecordingGraph()
+
+    async def record_ensure(self: AppContext) -> bool:
+        ensure_calls.append(self.agent)
+        return self.agent is not None
+
+    async def record_build(*args: Any, **kwargs: Any) -> RecordingGraph:
+        build_calls.append((args, kwargs))
+        return graph
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        _register_lazy_runtime(
+            registry,
+            bus,
+            provider_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("provider factory must not run for a command hint")
+            ),
+        )
+
+        async def install_agent(event: AppStart) -> None:
+            if has_agent:
+                event.ctx.agent = graph
+
+        bus.on(AppStart, install_agent)
+        return []
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "build_agent", record_build)
+    monkeypatch.setattr(AppContext, "ensure_agent", record_ensure)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="fake:ready"))
+
+    assert status == 0
+    assert prompt.prompts == ["> ", "> "]
+    assert console.warnings == [hint]
+    assert console.errors == []
+    assert ensure_calls == []
+    assert build_calls == []
+    assert graph.inputs == []
+
+
+@pytest.mark.asyncio
+async def test_run_app_sends_a_non_command_first_word_to_the_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+    prompt = _PromptScript("modeling the problem")
+
+    class RecordingGraph:
+        def __init__(self) -> None:
+            self.inputs: list[Any] = []
+
+        async def astream(
+            self,
+            next_input: Any,
+            **_kwargs: Any,
+        ) -> AsyncIterator[tuple[str, Any]]:
+            self.inputs.append(next_input)
+            yield "updates", {}
+
+    graph = RecordingGraph()
+
+    def load_runtime(
+        registry: Registry,
+        bus: EventBus,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        _register_lazy_runtime(
+            registry,
+            bus,
+            provider_factory=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("provider factory must not replace the usable agent")
+            ),
+        )
+
+        async def install_agent(event: AppStart) -> None:
+            event.ctx.agent = graph
+
+        bus.on(AppStart, install_agent)
+        return []
+
+    async def forbidden_build(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("usable agent must not be rebuilt")
+
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "load_plugins", load_runtime)
+    monkeypatch.setattr(app_module, "build_agent", forbidden_build)
+    monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
+
+    status = await run_app(_config(tmp_path, model="fake:ready"))
+
+    assert status == 0
+    assert graph.inputs == [
+        {"messages": [{"role": "user", "content": "modeling the problem"}]}
+    ]
+    assert console.warnings == []
+    assert console.errors == []
 
 
 @pytest.mark.asyncio

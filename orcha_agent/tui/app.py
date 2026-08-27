@@ -870,6 +870,11 @@ async def run_app(cfg: Config) -> int:
                 text = (await prompt.prompt_async("> ")).strip()
                 if not text:
                     continue
+                if not text.startswith("/"):
+                    first_word = text.split(maxsplit=1)[0]
+                    if first_word in registry.commands:
+                        ctx.console.warning(f"Did you mean /{text}?")
+                        continue
                 if await dispatch_command(registry, ctx, text):
                     if ctx.rebuild_requested:
                         await ctx.rebuild()
