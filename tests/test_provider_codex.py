@@ -248,7 +248,7 @@ def test_create_model_uses_exact_codex_responses_configuration() -> None:
         "originator": "pi",
         "OpenAI-Beta": "responses=experimental",
     }
-    assert model.reasoning is None
+    assert model.reasoning == {"effort": "medium", "summary": "auto"}
     assert model.max_tokens is None
     assert isinstance(model.http_client, httpx.Client)
     assert isinstance(model.http_async_client, httpx.AsyncClient)
@@ -384,6 +384,10 @@ def test_each_request_uses_fresh_auth_and_never_sends_max_output_tokens() -> Non
     assert all("max_output_tokens" not in payload for payload in payloads)
     assert all(payload["stream"] is True for payload in payloads)
     assert all(payload["store"] is False for payload in payloads)
+    assert all(
+        payload["reasoning"] == {"effort": "medium", "summary": "auto"}
+        for payload in payloads
+    )
     assert all(
         payload["include"] == ["reasoning.encrypted_content"]
         for payload in payloads

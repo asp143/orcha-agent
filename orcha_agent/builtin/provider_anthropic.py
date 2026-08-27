@@ -16,20 +16,35 @@ def _available() -> str | None:
     return None if find_spec("langchain_anthropic") is not None else _INSTALL_HINT
 
 
-def _factory(model_name: str, config: Mapping[str, Any]) -> Any:
+def _factory(
+    model_name: str,
+    config: Mapping[str, Any],
+    *,
+    thinking_on: bool = True,
+) -> Any:
     from langchain_anthropic import ChatAnthropic
 
     options = dict(config)
-    if options.get("thinking") == "adaptive":
-        options["thinking"] = {"type": "adaptive"}
+    options.pop("thinking", None)
+    if thinking_on:
+        options["thinking"] = {
+            "type": "adaptive",
+            "display": "summarized",
+        }
     options["model"] = model_name
     return ChatAnthropic(**options)
 
 
 def register(api: PluginAPI) -> None:
+    configured_thinking = str(api.config.get("_ui_thinking", "summary"))
+
+    def factory(model_name: str, config: Mapping[str, Any]) -> Any:
+        display = str(api.state.get("thinking", configured_thinking))
+        return _factory(model_name, config, thinking_on=display != "off")
+
     api.add_provider(
         "anthropic",
-        _factory,
+        factory,
         capabilities=ProviderCaps(
             tool_calling=True,
             streaming=True,

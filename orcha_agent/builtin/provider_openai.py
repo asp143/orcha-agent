@@ -20,6 +20,12 @@ def _factory(model_name: str, config: Mapping[str, Any]) -> Any:
     from langchain_openai import ChatOpenAI
 
     options = dict(config)
+    reasoning_effort = options.pop("reasoning_effort", None)
+    if reasoning_effort:
+        options["reasoning"] = {
+            "effort": str(reasoning_effort),
+            "summary": "auto",
+        }
     options["model"] = model_name
     return ChatOpenAI(**options)
 

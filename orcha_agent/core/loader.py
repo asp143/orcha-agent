@@ -372,6 +372,8 @@ def load_plugins(
                 **cfg.providers.get(prefix, {}),
                 **plugin_config,
             }
+        if spec.name == "provider_anthropic":
+            plugin_config["_ui_thinking"] = cfg.thinking
         if spec.name == "statusbar":
             plugin_config = {
                 "statusbar": cfg.statusbar,

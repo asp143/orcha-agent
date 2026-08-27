@@ -270,12 +270,11 @@ def create_model(
         "http_client": http_client,
         "http_async_client": http_async_client,
     }
-    reasoning_effort = config.get("reasoning_effort")
-    if reasoning_effort:
-        options["reasoning"] = {
-            "effort": str(reasoning_effort),
-            "summary": "auto",
-        }
+    reasoning_effort = config.get("reasoning_effort") or "medium"
+    options["reasoning"] = {
+        "effort": str(reasoning_effort),
+        "summary": "auto",
+    }
     return CodexChatOpenAI(**options)
 
 

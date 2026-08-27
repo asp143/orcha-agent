@@ -176,8 +176,40 @@ def test_anthropic_adaptive_thinking_config_is_normalized(
     provider_anthropic.register(
         PluginAPI(
             name="provider_anthropic",
-            config={},
+            config={"_ui_thinking": "summary"},
             state={},
+            registry=registry,
+            bus=EventBus(),
+            request_rebuild=lambda: None,
+        )
+    )
+
+    model = registry.providers["anthropic"].factory(
+        "claude-opus-5",
+        {"max_tokens": 16000},
+    )
+
+    assert model["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+    }
+    assert model["max_tokens"] == 16000
+
+
+def test_anthropic_omits_thinking_when_session_toggle_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import langchain_anthropic
+
+    from orcha_agent.builtin import provider_anthropic
+
+    monkeypatch.setattr(langchain_anthropic, "ChatAnthropic", lambda **options: options)
+    registry = Registry()
+    provider_anthropic.register(
+        PluginAPI(
+            name="provider_anthropic",
+            config={"_ui_thinking": "summary"},
+            state={"thinking": "off"},
             registry=registry,
             bus=EventBus(),
             request_rebuild=lambda: None,
@@ -189,5 +221,34 @@ def test_anthropic_adaptive_thinking_config_is_normalized(
         {"thinking": "adaptive", "max_tokens": 16000},
     )
 
-    assert model["thinking"] == {"type": "adaptive"}
-    assert model["max_tokens"] == 16000
+    assert "thinking" not in model
+
+
+def test_openai_reasoning_effort_requests_auto_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import langchain_openai
+
+    from orcha_agent.builtin import provider_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", lambda **options: options)
+    registry = Registry()
+    provider_openai.register(
+        PluginAPI(
+            name="provider_openai",
+            config={},
+            state={},
+            registry=registry,
+            bus=EventBus(),
+            request_rebuild=lambda: None,
+        )
+    )
+
+    model = registry.providers["openai"].factory(
+        "gpt-5.6-sol",
+        {"reasoning_effort": "high", "temperature": 0},
+    )
+
+    assert model["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert "reasoning_effort" not in model
+    assert model["temperature"] == 0
