@@ -8,7 +8,7 @@ import pytest
 from prompt_toolkit.formatted_text import HTML, to_formatted_text
 
 from orcha_agent.builtin import statusbar
-from orcha_agent.core.events import EventBus
+from orcha_agent.core.events import EventBus, ThreadSwitch
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.app import _bottom_toolbar
@@ -420,6 +420,51 @@ def test_cost_segment_is_hidden_without_a_price_table_entry(tmp_path: Path) -> N
     )
 
     assert statusbar.cost_segment(ctx) is None
+
+
+@pytest.mark.asyncio
+async def test_thread_switch_resets_usage_counters_without_flushing_git_cache(
+    tmp_path: Path,
+) -> None:
+    registry = Registry()
+    bus = EventBus()
+    cached_git = "<style fg='ansigreen'>git: main +1</style>"
+    state = {
+        "last_input_tokens": 136_000,
+        "input_tokens": 150_000,
+        "output_tokens": 25_000,
+        "cache_read_tokens": 40_000,
+        "_git_at": 901.5,
+        "_git_value": cached_git,
+        "custom_status_state": {"expanded": True},
+    }
+    statusbar.register(_api(registry, bus, state))
+    ctx = _ctx(tmp_path, state=state, registry=registry)
+
+    assert _plain(statusbar.context_segment(ctx)).endswith("50.0%/272k")
+    assert _plain(statusbar.tokens_segment(ctx)) == "󰁨 150k↑ 25k↓"
+    assert _plain(statusbar.cost_segment(ctx)) != "󰙺 $0.00"
+
+    event = ThreadSwitch(
+        session_id="session-a1b2",
+        old="session-a1b2.0",
+        new="session-a1b2.1",
+        reason="compact",
+    )
+    assert await bus.emit(event) is None
+
+    assert _plain(statusbar.context_segment(ctx)).endswith("0.0%/272k")
+    assert _plain(statusbar.tokens_segment(ctx)) == "󰁨 0↑ 0↓"
+    assert _plain(statusbar.cost_segment(ctx)) == "󰙺 $0.00"
+    assert state == {
+        "last_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "_git_at": 901.5,
+        "_git_value": cached_git,
+        "custom_status_state": {"expanded": True},
+    }
 
 
 @pytest.mark.parametrize(

@@ -71,6 +71,13 @@ class SessionSwitch(Event):
     old: str | None
     new: str | None
 
+@dataclass(slots=True)
+class ThreadSwitch(Event):
+    session_id: str
+    old: str
+    new: str
+    reason: str
+
 
 @dataclass(slots=True)
 class ModelSwitch(Event):
@@ -162,6 +169,7 @@ __all__ = [
     "ModelChunk",
     "ModelSwitch",
     "SessionSwitch",
+    "ThreadSwitch",
     "ToolCallEnd",
     "ToolCallStart",
     "TurnEnd",

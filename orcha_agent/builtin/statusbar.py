@@ -9,7 +9,7 @@ from time import monotonic
 from prompt_toolkit.formatted_text import HTML, to_formatted_text
 from typing import Any, Mapping
 
-from orcha_agent.core.events import ModelChunk
+from orcha_agent.core.events import ModelChunk, ThreadSwitch
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
 PLUGIN = PluginSpec(name="statusbar", version="1.0.0")
@@ -265,6 +265,12 @@ def register(api: PluginAPI) -> None:
     async def track(event: ModelChunk) -> None:
         _usage(event, api.state)
 
+    async def reset_usage(_event: ThreadSwitch) -> None:
+        api.state["input_tokens"] = 0
+        api.state["output_tokens"] = 0
+        api.state["cache_read_tokens"] = 0
+        api.state["last_input_tokens"] = 0
+
     async def show(ctx: Any, _args: str) -> None:
         for name, render in SEGMENTS:
             try:
@@ -275,4 +281,5 @@ def register(api: PluginAPI) -> None:
                 ctx.console.print(_plain_markup(value))
 
     api.on(ModelChunk, track, priority=10)
+    api.on(ThreadSwitch, reset_usage, priority=10)
     api.add_command("status", show, help="Show status bar segments")

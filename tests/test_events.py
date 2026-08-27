@@ -3,7 +3,12 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from orcha_agent.core.events import EventBus, InterruptRaised, TurnStart
+from orcha_agent.core.events import (
+    EventBus,
+    InterruptRaised,
+    ThreadSwitch,
+    TurnStart,
+)
 from orcha_agent.core.plugin import Handled, PluginAPI, Resolved
 from orcha_agent.core.registry import Registry
 
@@ -96,3 +101,32 @@ async def test_resolved_interrupt_stops_fallback_approval_and_preserves_resume_v
     assert result is resolved
     assert result.resume_value == {"decisions": [{"type": "approve"}]}
     assert observed == ["write file?"]
+
+
+@pytest.mark.asyncio
+async def test_thread_switch_carries_thread_identity_and_dispatches_on_event_bus() -> None:
+    registry = Registry()
+    bus = EventBus()
+    observed: list[ThreadSwitch] = []
+
+    async def record(event: ThreadSwitch) -> None:
+        observed.append(event)
+
+    _api("thread-observer", registry, bus).on(ThreadSwitch, record)
+    event = ThreadSwitch(
+        session_id="session-a1b2",
+        old="session-a1b2.0",
+        new="session-a1b2.1",
+        reason="branch",
+    )
+
+    result = await bus.emit(event)
+
+    assert result is None
+    assert observed == [event]
+    assert (event.session_id, event.old, event.new, event.reason) == (
+        "session-a1b2",
+        "session-a1b2.0",
+        "session-a1b2.1",
+        "branch",
+    )
