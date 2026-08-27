@@ -6,6 +6,7 @@ from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 
 
 class ConsoleOutput:
@@ -18,10 +19,10 @@ class ConsoleOutput:
         self.console.print(*objects, **kwargs)
 
     def error(self, message: str) -> None:
-        self.console.print(Panel(message, title="Error", border_style="red"))
+        self.console.print(Panel(Text(message), title="Error", border_style="red"))
 
     def warning(self, message: str) -> None:
-        self.console.print(Panel(message, title="Warning", border_style="yellow"))
+        self.console.print(Panel(Text(message), title="Warning", border_style="yellow"))
 
 
 __all__ = ["ConsoleOutput"]

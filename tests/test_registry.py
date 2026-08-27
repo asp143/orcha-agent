@@ -21,8 +21,8 @@ def _api(name: str, registry: Registry, bus: EventBus) -> PluginAPI:
 
 
 def _auth_flow(label: str) -> AuthFlow:
-    async def login(ctx: Any) -> None:
-        ctx.auth_action = ("login", label)
+    async def login(ctx: Any, mode: str) -> None:
+        ctx.auth_action = ("login", label, mode)
 
     async def logout(ctx: Any) -> None:
         ctx.auth_action = ("logout", label)

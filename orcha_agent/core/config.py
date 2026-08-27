@@ -39,7 +39,7 @@ class Config:
     trust_all_cwd: bool = False
     command: str = "repl"
     login_prefix: str | None = None
-    no_browser: bool = False
+    login_mode: str = "auto"
     banner: bool = True
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
@@ -65,7 +65,11 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser("repl", help="start the interactive terminal agent")
     login = subcommands.add_parser("login", help="log in to a provider")
     login.add_argument("prefix")
-    login.add_argument("--no-browser", action="store_true")
+    modes = login.add_mutually_exclusive_group()
+    modes.add_argument("--browser", dest="login_mode", action="store_const", const="browser")
+    modes.add_argument("--device", dest="login_mode", action="store_const", const="device")
+    modes.add_argument("--paste", dest="login_mode", action="store_const", const="paste")
+    login.set_defaults(login_mode="auto")
     return parser
 
 
@@ -244,7 +248,7 @@ def load_config(
         cwd=resolved_cwd,
         command=args.command or "repl",
         login_prefix=getattr(args, "prefix", None),
-        no_browser=getattr(args, "no_browser", False),
+        login_mode=getattr(args, "login_mode", "auto"),
         banner=bool(core.get("banner", True)),
         resume=args.resume,
         list_sessions=args.list_sessions,

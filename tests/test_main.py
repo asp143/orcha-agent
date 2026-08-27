@@ -51,22 +51,24 @@ def test_main_loads_dotenv_only_from_trusted_cwd(
         assert "ORCHA_TEST_SENTINEL" not in os.environ
 
 
-def test_main_login_loads_auth_plugins_without_starting_repl(
+@pytest.mark.parametrize("login_mode", ["auto", "browser", "device", "paste"])
+def test_main_login_passes_mode_to_auth_plugin_without_starting_repl(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    login_mode: str,
 ) -> None:
     cfg = SimpleNamespace(
         command="login",
         login_prefix="codex",
-        no_browser=True,
+        login_mode=login_mode,
         cwd=tmp_path,
         trust_cwd=False,
     )
     loaded_configs: list[object] = []
-    login_contexts: list[object] = []
+    login_calls: list[tuple[object, str]] = []
 
-    async def login(ctx: object) -> None:
-        login_contexts.append(ctx)
+    async def login(ctx: object, mode: str) -> None:
+        login_calls.append((ctx, mode))
 
     async def logout(_ctx: object) -> None:
         raise AssertionError("login command must not invoke logout")
@@ -111,8 +113,8 @@ def test_main_login_loads_auth_plugins_without_starting_repl(
 
     assert exc_info.value.code == 0
     assert loaded_configs == [cfg]
-    assert len(login_contexts) == 1
-    assert getattr(login_contexts[0], "no_browser") is True
+    assert len(login_calls) == 1
+    assert login_calls[0][1] == login_mode
 
 
 def test_main_login_reports_auth_failure_without_starting_repl(
@@ -121,15 +123,15 @@ def test_main_login_reports_auth_failure_without_starting_repl(
     cfg = SimpleNamespace(
         command="login",
         login_prefix="codex",
-        no_browser=False,
+        login_mode="auto",
         cwd=Path("/unused"),
         trust_cwd=False,
     )
     error_messages: list[str] = []
-    login_contexts: list[object] = []
+    login_calls: list[tuple[object, str]] = []
 
-    async def login(ctx: object) -> None:
-        login_contexts.append(ctx)
+    async def login(ctx: object, mode: str) -> None:
+        login_calls.append((ctx, mode))
         raise RuntimeError("authentication failed")
 
     async def logout(_ctx: object) -> None:
@@ -179,4 +181,5 @@ def test_main_login_reports_auth_failure_without_starting_repl(
 
     assert exc_info.value.code == 1
     assert error_messages == ["authentication failed"]
-    assert len(login_contexts) == 1
+    assert len(login_calls) == 1
+    assert login_calls[0][1] == "auto"

@@ -61,30 +61,38 @@ def _capabilities(value: object) -> str:
     )
 
 
-async def _auth_action(ctx: Any, args: str, *, action: str) -> None:
-    parts = args.split()
-    if len(parts) != 1:
-        ctx.console.error(f"Usage: /{action} <prefix>")
-        return
-    prefix = parts[0]
+def _auth_registration(ctx: Any, prefix: str) -> Any | None:
     registration = ctx.registry.auth.get(prefix)
     if registration is None:
         ctx.console.error(f"Unknown auth prefix: {prefix}")
-        return
-    callback = (
-        registration.flow.login
-        if action == "login"
-        else registration.flow.logout
-    )
-    await callback(ctx)
+    return registration
 
 
 async def _login(ctx: Any, args: str) -> None:
-    await _auth_action(ctx, args, action="login")
+    parts = args.split()
+    if len(parts) not in {1, 2}:
+        ctx.console.error("Usage: /login <prefix> [browser|device|paste]")
+        return
+    prefix = parts[0]
+    mode = "auto" if len(parts) == 1 else parts[1]
+    if mode not in {"auto", "browser", "device", "paste"} or (
+        len(parts) == 2 and mode == "auto"
+    ):
+        ctx.console.error("Usage: /login <prefix> [browser|device|paste]")
+        return
+    registration = _auth_registration(ctx, prefix)
+    if registration is not None:
+        await registration.flow.login(ctx, mode)
 
 
 async def _logout(ctx: Any, args: str) -> None:
-    await _auth_action(ctx, args, action="logout")
+    parts = args.split()
+    if len(parts) != 1:
+        ctx.console.error("Usage: /logout <prefix>")
+        return
+    registration = _auth_registration(ctx, parts[0])
+    if registration is not None:
+        await registration.flow.logout(ctx)
 
 
 def _provider_flags(capabilities: Any) -> str:

@@ -170,10 +170,10 @@ def register(api) -> None:
 @pytest.mark.asyncio
 async def test_plugin_api_exposes_registered_auth_flow() -> None:
     registry = Registry()
-    calls: list[tuple[str, object]] = []
+    calls: list[tuple[object, ...]] = []
 
-    async def login(ctx: object) -> None:
-        calls.append(("login", ctx))
+    async def login(ctx: object, mode: str) -> None:
+        calls.append(("login", ctx, mode))
 
     async def logout(ctx: object) -> None:
         calls.append(("logout", ctx))
@@ -198,6 +198,6 @@ async def test_plugin_api_exposes_registered_auth_flow() -> None:
     assert registration.plugin == "external_auth"
     assert registration.flow.status() == "logged in as test@example.com"
     context = object()
-    await registration.flow.login(context)
+    await registration.flow.login(context, "device")
     await registration.flow.logout(context)
-    assert calls == [("login", context), ("logout", context)]
+    assert calls == [("login", context, "device"), ("logout", context)]

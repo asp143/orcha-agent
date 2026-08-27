@@ -29,10 +29,12 @@ async def _run_login(cfg: object) -> int:
         registry=registry,
         bus=bus,
         console=console,
-        no_browser=bool(getattr(cfg, "no_browser", False)),
     )
     try:
-        await registration.flow.login(ctx)
+        await registration.flow.login(
+            ctx,
+            getattr(cfg, "login_mode", "auto"),
+        )
     except Exception as exc:
         console.error(str(exc))
         return 1

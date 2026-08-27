@@ -33,14 +33,14 @@ def _context(*, width: int = 100) -> tuple[SimpleNamespace, StringIO]:
 
 
 def _auth_flow(
-    calls: list[tuple[str, object]],
+    calls: list[tuple[object, ...]],
     *,
     status: str = "not logged in",
 ) -> AuthFlow:
     current = {"status": status}
 
-    async def login(ctx: object) -> None:
-        calls.append(("login", ctx))
+    async def login(ctx: object, mode: str) -> None:
+        calls.append(("login", ctx, mode))
         current["status"] = "logged in as test@example.com"
 
     async def logout(ctx: object) -> None:
@@ -251,11 +251,11 @@ async def test_providers_codex_models_move_from_narrow_summary_to_prefix_detail(
 
 
 @pytest.mark.asyncio
-async def test_login_dispatches_to_named_auth_flow_and_updates_provider_status() -> None:
+async def test_login_without_mode_dispatches_auto_and_updates_provider_status() -> None:
     registry = Registry()
     bus = EventBus()
     api = _api(registry, bus)
-    calls: list[tuple[str, object]] = []
+    calls: list[tuple[object, ...]] = []
     api.add_auth("codex", _auth_flow(calls))
     api.add_provider(
         "codex",
@@ -273,16 +273,31 @@ async def test_login_dispatches_to_named_auth_flow_and_updates_provider_status()
     ctx.registry = registry
 
     assert await dispatch_command(registry, ctx, "/login codex") is True
-    assert calls == [("login", ctx)]
+    assert calls == [("login", ctx, "auto")]
     assert await dispatch_command(registry, ctx, "/providers") is True
     assert "logged in as test@example.com" in output.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["browser", "device", "paste"])
+async def test_login_dispatches_explicit_mode(mode: str) -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    calls: list[tuple[object, ...]] = []
+    api.add_auth("codex", _auth_flow(calls))
+    commands_core.register(api)
+    ctx, _ = _context()
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, f"/login codex {mode}") is True
+    assert calls == [("login", ctx, mode)]
 
 
 @pytest.mark.asyncio
 async def test_logout_dispatches_to_named_auth_flow() -> None:
     registry = Registry()
     api = _api(registry, EventBus())
-    calls: list[tuple[str, object]] = []
+    calls: list[tuple[object, ...]] = []
     api.add_auth(
         "codex",
         _auth_flow(calls, status="logged in as test@example.com"),
@@ -297,16 +312,52 @@ async def test_logout_dispatches_to_named_auth_flow() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["login", "logout"])
-async def test_auth_command_without_prefix_renders_usage(command: str) -> None:
+async def test_login_without_prefix_renders_mode_aware_usage() -> None:
     registry = Registry()
     api = _api(registry, EventBus())
     commands_core.register(api)
     ctx, output = _context()
     ctx.registry = registry
 
-    assert await dispatch_command(registry, ctx, f"/{command}") is True
-    assert f"usage: /{command} <prefix>" in output.getvalue().lower()
+    assert await dispatch_command(registry, ctx, "/login") is True
+    assert (
+        "usage: /login <prefix> [browser|device|paste]"
+        in output.getvalue().lower()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "args",
+    ["codex auto", "codex invalid", "codex browser extra"],
+)
+async def test_login_rejects_invalid_mode_usage(args: str) -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    calls: list[tuple[object, ...]] = []
+    api.add_auth("codex", _auth_flow(calls))
+    commands_core.register(api)
+    ctx, output = _context()
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, f"/login {args}") is True
+    assert (
+        "usage: /login <prefix> [browser|device|paste]"
+        in output.getvalue().lower()
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_logout_without_prefix_renders_usage() -> None:
+    registry = Registry()
+    api = _api(registry, EventBus())
+    commands_core.register(api)
+    ctx, output = _context()
+    ctx.registry = registry
+
+    assert await dispatch_command(registry, ctx, "/logout") is True
+    assert "usage: /logout <prefix>" in output.getvalue().lower()
 
 
 @pytest.mark.asyncio

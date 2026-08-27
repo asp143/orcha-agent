@@ -23,28 +23,77 @@ def _load(
     )
 
 
-def test_cli_parser_accepts_bare_repl(tmp_path: Path) -> None:
-    cfg = _load(
+def test_cli_parser_defaults_login_mode_to_auto(tmp_path: Path) -> None:
+    repl = _load(
         tmp_path,
         argv=("repl",),
         env={"HOME": str(tmp_path)},
     )
+    login = _load(
+        tmp_path,
+        argv=("login", "codex"),
+        env={"HOME": str(tmp_path)},
+    )
 
-    assert cfg.command == "repl"
-    assert cfg.login_prefix is None
-    assert cfg.no_browser is False
+    assert repl.command == "repl"
+    assert repl.login_prefix is None
+    assert repl.login_mode == "auto"
+    assert login.command == "login"
+    assert login.login_prefix == "codex"
+    assert login.login_mode == "auto"
 
 
-def test_cli_parser_accepts_login_prefix_and_no_browser(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("flag", "mode"),
+    [
+        ("--browser", "browser"),
+        ("--device", "device"),
+        ("--paste", "paste"),
+    ],
+)
+def test_cli_parser_accepts_one_explicit_login_mode(
+    tmp_path: Path,
+    flag: str,
+    mode: str,
+) -> None:
     cfg = _load(
         tmp_path,
-        argv=("login", "codex", "--no-browser"),
+        argv=("login", "codex", flag),
         env={"HOME": str(tmp_path)},
     )
 
     assert cfg.command == "login"
     assert cfg.login_prefix == "codex"
-    assert cfg.no_browser is True
+    assert cfg.login_mode == mode
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--browser", "--device"),
+        ("--browser", "--paste"),
+        ("--device", "--paste"),
+    ],
+)
+def test_cli_parser_rejects_multiple_login_modes(
+    tmp_path: Path,
+    flags: tuple[str, str],
+) -> None:
+    with pytest.raises(SystemExit):
+        _load(
+            tmp_path,
+            argv=("login", "codex", *flags),
+            env={"HOME": str(tmp_path)},
+        )
+
+
+def test_cli_parser_rejects_obsolete_no_browser_option(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        _load(
+            tmp_path,
+            argv=("login", "codex", "--no-browser"),
+            env={"HOME": str(tmp_path)},
+        )
 
 
 def test_model_precedence_walks_all_five_layers_without_skipping_project_config(
