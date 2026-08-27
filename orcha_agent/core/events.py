@@ -38,6 +38,7 @@ class ModelChunk(Event):
     chunk: Any
     role: str
     model_name: str | None = None
+    source_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ class ToolCallStart(Event):
     name: str
     args: dict[str, Any]
     id: str
+    source_id: str | None = None
 
 
 @dataclass(slots=True)

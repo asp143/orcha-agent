@@ -589,32 +589,40 @@ class _ToolCallBuffer:
     """Assemble provider tool-call chunks before rendering their arguments."""
 
     def __init__(self) -> None:
-        self._pending: dict[int | str, _PendingToolCall] = {}
-        self._emitted: set[str] = set()
+        self._pending: dict[tuple[str, int | str], _PendingToolCall] = {}
+        self._emitted: set[tuple[str, str]] = set()
 
-    def add(self, message: AIMessage) -> list[ToolCallStart]:
+    def add(
+        self,
+        message: AIMessage,
+        *,
+        source_id: str = "main",
+    ) -> list[ToolCallStart]:
         chunks = getattr(message, "tool_call_chunks", ())
         if not chunks:
             events: list[ToolCallStart] = []
             for call in message.tool_calls:
                 identifier = call.get("id") or f"{call['name']}:{len(self._emitted)}"
-                if identifier in self._emitted:
+                emitted_key = (source_id, identifier)
+                if emitted_key in self._emitted:
                     continue
-                self._emitted.add(identifier)
+                self._emitted.add(emitted_key)
                 events.append(
                     ToolCallStart(
                         name=call["name"],
                         args=call.get("args", {}),
                         id=identifier,
+                        source_id=source_id,
                     )
                 )
             return events
 
         completed: list[ToolCallStart] = []
         for chunk in chunks:
-            key = chunk.get("index")
-            if key is None:
-                key = chunk.get("id") or len(self._pending)
+            chunk_key = chunk.get("index")
+            if chunk_key is None:
+                chunk_key = chunk.get("id") or len(self._pending)
+            key = (source_id, chunk_key)
             pending = self._pending.setdefault(key, _PendingToolCall())
             name = chunk.get("name")
             if name:
@@ -625,7 +633,8 @@ class _ToolCallBuffer:
             identifier = chunk.get("id")
             if identifier:
                 pending.id = identifier
-            if not pending.name or not pending.id or pending.id in self._emitted:
+            emitted_key = (source_id, pending.id)
+            if not pending.name or not pending.id or emitted_key in self._emitted:
                 continue
             try:
                 parsed_args = json.loads(pending.args)
@@ -633,12 +642,13 @@ class _ToolCallBuffer:
                 continue
             if not isinstance(parsed_args, dict):
                 continue
-            self._emitted.add(pending.id)
+            self._emitted.add(emitted_key)
             completed.append(
                 ToolCallStart(
                     name=pending.name,
                     args=parsed_args,
                     id=pending.id,
+                    source_id=source_id,
                 )
             )
             self._pending.pop(key, None)
@@ -659,8 +669,9 @@ async def _message_event(
         return
     if isinstance(message, ToolMessage):
         return
+    source_id = "/".join(str(part) for part in namespace) if namespace else "main"
     if isinstance(message, AIMessage):
-        for event in tool_calls.add(message):
+        for event in tool_calls.add(message, source_id=source_id):
             await _render(ctx, event)
     node = metadata.get("langgraph_node", "") if isinstance(metadata, Mapping) else ""
     agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
@@ -676,6 +687,7 @@ async def _message_event(
                 chunk=message,
                 role=role,
                 model_name=model_labels.take(message, metadata),
+                source_id=source_id,
             ),
         )
 

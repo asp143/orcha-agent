@@ -785,7 +785,18 @@ async def test_subgraph_stream_namespace_marks_model_chunk_as_subagent(
                 ("research:4d3f",),
                 "messages",
                 (
-                    AIMessageChunk(content="subagent finding"),
+                    AIMessageChunk(
+                        content="subagent finding",
+                        tool_call_chunks=[
+                            {
+                                "name": "read_file",
+                                "args": '{"path":"README.md"}',
+                                "id": "call-1",
+                                "index": 0,
+                                "type": "tool_call_chunk",
+                            }
+                        ],
+                    ),
                     {"langgraph_node": "agent"},
                 ),
             )
@@ -799,6 +810,15 @@ async def test_subgraph_stream_namespace_marks_model_chunk_as_subagent(
     chunks = [event for event in ctx.bus.events if isinstance(event, ModelChunk)]
     assert [(event.chunk.content, event.role) for event in chunks] == [
         ("subagent finding", "subagent")
+    ]
+    assert [getattr(event, "source_id", None) for event in chunks] == [
+        "research:4d3f"
+    ]
+    tool_starts = [
+        event for event in ctx.bus.events if isinstance(event, ToolCallStart)
+    ]
+    assert [getattr(event, "source_id", None) for event in tool_starts] == [
+        "research:4d3f"
     ]
 
 

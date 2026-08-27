@@ -53,7 +53,7 @@ class _StreamRenderer:
         self._icons = bool(api.config.get("icons", True))
         self._seen_blocks: set[tuple[str, object, str, object]] = set()
         self._pending_model_prefix: dict[str, str] = {}
-        self._needs_answer_gap = False
+        self._needs_answer_gap: set[str] = set()
 
     def _thinking_mode(self) -> str:
         return str(self._api.state.get("thinking", self._configured_thinking))
@@ -63,19 +63,28 @@ class _StreamRenderer:
         return mode != "off" and (not _is_subagent(role) or mode == "all")
 
     @staticmethod
-    def _block_key(event: ModelChunk, block: Mapping[str, Any]) -> tuple[str, object, str, object]:
+    def _source_id(event: ModelChunk) -> str:
+        return str(event.source_id or event.role)
+
+    @classmethod
+    def _block_key(
+        cls,
+        event: ModelChunk,
+        block: Mapping[str, Any],
+    ) -> tuple[str, object, str, object]:
         chunk_id = getattr(event.chunk, "id", None)
         index = block.get("index", block.get("id"))
-        return (event.role, chunk_id, str(block.get("type")), index)
+        return (cls._source_id(event), chunk_id, str(block.get("type")), index)
 
     async def reset(self, _event: TurnStart) -> None:
         self._seen_blocks.clear()
         self._pending_model_prefix.clear()
-        self._needs_answer_gap = False
+        self._needs_answer_gap.clear()
 
     def model_chunk(self, event: ModelChunk) -> Text | None:
+        source_id = self._source_id(event)
         if event.model_name:
-            self._pending_model_prefix[event.role] = f"[{event.model_name}] "
+            self._pending_model_prefix[source_id] = f"[{event.model_name}] "
 
         value = getattr(event.chunk, "content", event.chunk)
         parts = value if isinstance(value, (list, tuple)) else (value,)
@@ -87,32 +96,33 @@ class _StreamRenderer:
                     continue
                 key = self._block_key(event, part)
                 if key not in self._seen_blocks:
-                    if self._needs_answer_gap:
+                    if source_id in self._needs_answer_gap:
                         rendered.append("\n", style="dim italic")
-                    prefix = self._pending_model_prefix.pop(event.role, "")
+                    prefix = self._pending_model_prefix.pop(source_id, "")
                     header = "󰟶 thinking" if self._icons else "[thinking]"
                     rendered.append(f"{prefix}{header}\n", style="dim italic")
                     self._seen_blocks.add(key)
                 rendered.append(content, style="dim italic")
-                self._needs_answer_gap = True
+                self._needs_answer_gap.add(source_id)
                 continue
 
             content = _text(part)
             if not content:
                 continue
-            if self._needs_answer_gap:
+            if source_id in self._needs_answer_gap:
                 rendered.append("\n\n")
-                self._needs_answer_gap = False
-            rendered.append(self._pending_model_prefix.pop(event.role, ""))
+                self._needs_answer_gap.remove(source_id)
+            rendered.append(self._pending_model_prefix.pop(source_id, ""))
             rendered.append(content, style="dim" if _is_subagent(event.role) else "")
 
         return rendered if rendered.plain else None
 
     def tool_start(self, event: ToolCallStart) -> Panel | Group:
         panel = _render_tool_start(event)
-        if not self._needs_answer_gap:
+        source_id = event.source_id or "main"
+        if source_id not in self._needs_answer_gap:
             return panel
-        self._needs_answer_gap = False
+        self._needs_answer_gap.remove(source_id)
         return Group(Text("\n\n"), panel)
 
 

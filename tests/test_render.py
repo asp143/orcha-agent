@@ -270,6 +270,49 @@ async def test_subagent_reasoning_requires_all_mode(mode: str, expected: str) ->
 
 
 @pytest.mark.asyncio
+async def test_interleaved_subagents_keep_independent_labels_and_answer_gaps() -> None:
+    _, rendered = await _render_events(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="subagent-a",
+                content=[
+                    {"type": "thinking", "index": 0, "thinking": "A plan"}
+                ],
+            ),
+            role="subagent",
+            model_name="fake:model-a",
+            source_id="research:a",
+        ),
+        ModelChunk(
+            chunk=AIMessageChunk(
+                id="subagent-b",
+                content=[
+                    {"type": "thinking", "index": 0, "thinking": "B plan"}
+                ],
+            ),
+            role="subagent",
+            model_name="fake:model-b",
+            source_id="research:b",
+        ),
+        ModelChunk(
+            chunk=AIMessageChunk(id="subagent-b", content="B answer"),
+            role="subagent",
+            source_id="research:b",
+        ),
+        ModelChunk(
+            chunk=AIMessageChunk(id="subagent-a", content="A answer"),
+            role="subagent",
+            source_id="research:a",
+        ),
+        config={"thinking": "all", "icons": False},
+    )
+
+    assert "[fake:model-a] [thinking]\nA plan" in rendered
+    assert "[fake:model-b] [thinking]\nB plan" in rendered
+    assert rendered.endswith("B answer\n\nA answer")
+
+
+@pytest.mark.asyncio
 async def test_thinking_stream_separates_following_tool_call() -> None:
     _, rendered = await _render_events(
         ModelChunk(
