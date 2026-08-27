@@ -50,6 +50,7 @@ EXPECTED_COMMANDS = {
     "resume",
     "sessions",
     "status",
+    "thinking",
 }
 EXPECTED_PROVIDERS = {"anthropic", "codex", "google", "langchain", "ollama", "openai"}
 EXPECTED_MODES = {"ask", "edit", "plan", "yolo"}

@@ -43,6 +43,7 @@ class Config:
     banner: bool = True
     statusbar: bool = True
     icons: bool = True
+    thinking: str = "summary"
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
@@ -253,6 +254,9 @@ def load_config(
         _parser().error(
             "models, providers, plugins, ui, and pricing must be TOML tables"
         )
+    thinking = str(ui.get("thinking", "summary"))
+    if thinking not in {"summary", "off", "all"}:
+        parser.error("[ui] thinking must be summary, off, or all")
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
@@ -270,6 +274,7 @@ def load_config(
         banner=bool(core.get("banner", True)),
         statusbar=bool(ui.get("statusbar", True)),
         icons=bool(ui.get("icons", True)),
+        thinking=thinking,
         pricing={
             str(model_name): {
                 str(key): float(value)

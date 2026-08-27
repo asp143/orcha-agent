@@ -16,13 +16,19 @@ from orcha_agent.tui import app
 from orcha_agent.tui.console import ConsoleOutput
 
 
-def _api(registry: Registry, bus: EventBus) -> PluginAPI:
+def _api(
+    registry: Registry,
+    bus: EventBus,
+    *,
+    config: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
+) -> PluginAPI:
     return PluginAPI(
         name="render-default",
         registry=registry,
         bus=bus,
-        config={},
-        state={},
+        config={} if config is None else config,
+        state={} if state is None else state,
         request_rebuild=lambda: None,
     )
 
@@ -44,6 +50,9 @@ class _CapturingConsole:
         self.renderables.extend(objects)
         self._delegate.print(*objects, **kwargs)
 
+    def error(self, message: str) -> None:
+        self._delegate.error(message)
+
 
 async def _render(event: object) -> tuple[list[object], str]:
     registry = Registry()
@@ -55,6 +64,61 @@ async def _render(event: object) -> tuple[list[object], str]:
     await app._render(ctx, event)
 
     return console.renderables, console.output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_thinking_command_persists_session_toggle() -> None:
+    registry = Registry()
+    bus = EventBus()
+    renderer_state: dict[str, Any] = {}
+    anthropic_state: dict[str, Any] = {}
+    render_default.register(
+        _api(
+            registry,
+            bus,
+            config={"thinking": "all", "icons": False},
+            state=renderer_state,
+        )
+    )
+    persisted: list[dict[str, dict[str, Any]]] = []
+    rebuilds: list[None] = []
+
+    async def rebuild() -> None:
+        rebuilds.append(None)
+
+    ctx = SimpleNamespace(
+        registry=registry,
+        bus=bus,
+        console=_CapturingConsole(),
+        plugin_states={
+            "render_default": renderer_state,
+            "provider_anthropic": anthropic_state,
+        },
+        persist_plugin_states=lambda: persisted.append(
+            {
+                name: dict(state)
+                for name, state in ctx.plugin_states.items()
+            }
+        ),
+        rebuild=rebuild,
+    )
+
+    assert await app.dispatch_command(registry, ctx, "/thinking off") is True
+    assert await app.dispatch_command(registry, ctx, "/thinking on") is True
+
+    assert renderer_state == {"thinking": "summary"}
+    assert anthropic_state == {"thinking": "summary"}
+    assert persisted == [
+        {
+            "render_default": {"thinking": "off"},
+            "provider_anthropic": {"thinking": "off"},
+        },
+        {
+            "render_default": {"thinking": "summary"},
+            "provider_anthropic": {"thinking": "summary"},
+        },
+    ]
+    assert rebuilds == [None, None]
 
 
 @pytest.mark.asyncio

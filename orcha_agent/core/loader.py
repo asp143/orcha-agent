@@ -379,6 +379,12 @@ def load_plugins(
                 "pricing": cfg.pricing,
                 **plugin_config,
             }
+        if spec.name == "render_default":
+            plugin_config = {
+                "thinking": cfg.thinking,
+                "icons": cfg.icons,
+                **plugin_config,
+            }
         api = PluginAPI(
             name=spec.name,
             config=plugin_config,

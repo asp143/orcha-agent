@@ -169,11 +169,31 @@ def _is_error(event: object) -> bool:
 def _render_error(event: object) -> Panel:
     message = str(event)
     if not message:
-        message = _text(getattr(event, "error", None)) or "Unknown error"
+        message = type(event).__name__
     return Panel(Text(message), title="Error", border_style="red")
 
 
+async def _thinking_command(api: PluginAPI, ctx: Any, args: str) -> None:
+    value = args.strip()
+    modes = {"on": "summary", "off": "off"}
+    if value not in modes:
+        ctx.console.error("Usage: /thinking on|off")
+        return
+
+    mode = modes[value]
+    api.state["thinking"] = mode
+    ctx.plugin_states.setdefault("provider_anthropic", {})["thinking"] = mode
+    ctx.persist_plugin_states()
+    await ctx.rebuild()
+    ctx.console.print(f"Thinking: {value}")
+
+
 def register(api: PluginAPI) -> None:
+    api.add_command(
+        "thinking",
+        lambda ctx, args: _thinking_command(api, ctx, args),
+        help="Toggle thinking display: /thinking on|off",
+    )
     api.add_renderer("ModelChunk", _render_model_chunk)
     api.add_renderer("ToolCallStart", _render_tool_start)
     api.add_renderer("ToolCallEnd", _render_tool_end)

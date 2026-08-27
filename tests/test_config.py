@@ -291,6 +291,18 @@ def test_banner_defaults_to_enabled(tmp_path: Path) -> None:
     assert _load(tmp_path).banner is True
 
 
+def test_thinking_display_defaults_to_summary(tmp_path: Path) -> None:
+    assert _load(tmp_path).thinking == "summary"
+
+
+def test_thinking_display_rejects_unknown_mode(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text('[ui]\nthinking = "verbose"\n')
+
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=user_config)
+
+
 def test_core_config_can_disable_banner(tmp_path: Path) -> None:
     user_config = tmp_path / "user.toml"
     user_config.write_text("[core]\nbanner = false\n")
@@ -307,6 +319,7 @@ def test_ui_flags_and_per_model_pricing_survive_toml_loading(tmp_path: Path) -> 
 [ui]
 statusbar = false
 icons = false
+thinking = "all"
 
 [pricing."codex:gpt-5.6-sol"]
 input = 5
@@ -324,6 +337,7 @@ output = 75
 
     assert cfg.statusbar is False
     assert cfg.icons is False
+    assert cfg.thinking == "all"
     assert cfg.pricing == {
         "codex:gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5},
         "anthropic:claude-opus-4-1": {"input": 15, "output": 75},
