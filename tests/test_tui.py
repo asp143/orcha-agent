@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from deepagents.middleware.summarization import SummarizationMiddleware
+from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -1117,6 +1119,110 @@ async def test_failed_model_switch_preserves_config_graph_and_history(
     assert ctx.agent is old_graph
     assert old_graph.messages == [private_history]
     assert not any(isinstance(event, ModelSwitch) for event in ctx.bus.events)
+
+
+@pytest.mark.asyncio
+async def test_model_switch_retargets_unset_role_models_to_selected_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _SessionDouble()
+    setattr(session, "saver", object())
+    ctx = _context(tmp_path, session=session)
+    ctx.cfg = replace(
+        ctx.cfg,
+        model="anthropic:old",
+        subagent_model=None,
+        summarizer_model=None,
+    )
+    api = PluginAPI(
+        name="switch-runtime",
+        config={},
+        state={},
+        registry=ctx._registry,
+        bus=ctx._bus,
+        request_rebuild=lambda: None,
+    )
+    api.add_mode(
+        "ask",
+        ModeSpec(description="Ask mode", interrupt_on={}, allowed_tools=None),
+    )
+    api.add_backend("local_shell", lambda _cfg: object())
+    caps = ProviderCaps(
+        tool_calling=True,
+        streaming=True,
+        thinking=False,
+        structured_output=False,
+        max_context=None,
+    )
+    anthropic_availability_calls: list[None] = []
+    anthropic_factory_calls: list[str] = []
+    codex_availability_calls: list[None] = []
+    codex_factory_calls: list[str] = []
+    created: list[FakeListChatModel] = []
+
+    def anthropic_available() -> str:
+        anthropic_availability_calls.append(None)
+        return "ANTHROPIC_API_KEY is missing"
+
+    def anthropic_factory(model_name: str, _provider_config: Any) -> FakeListChatModel:
+        anthropic_factory_calls.append(model_name)
+        return FakeListChatModel(responses=[model_name])
+
+    def codex_available() -> None:
+        codex_availability_calls.append(None)
+
+    def codex_factory(model_name: str, _provider_config: Any) -> FakeListChatModel:
+        codex_factory_calls.append(model_name)
+        model = FakeListChatModel(responses=[f"codex:{model_name}"])
+        created.append(model)
+        return model
+
+    api.add_provider(
+        "anthropic",
+        anthropic_factory,
+        capabilities=caps,
+        available=anthropic_available,
+    )
+    api.add_provider(
+        "codex",
+        codex_factory,
+        capabilities=caps,
+        available=codex_available,
+    )
+    captured: dict[str, Any] = {}
+    candidate_graph = object()
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or candidate_graph,
+    )
+
+    await ctx.switch_model("codex:x")
+
+    general_purpose = next(
+        spec for spec in captured["subagents"] if spec["name"] == "general-purpose"
+    )
+    summarizer = next(
+        middleware
+        for middleware in captured["middleware"]
+        if isinstance(middleware, SummarizationMiddleware)
+    )
+    assert ctx.cfg.model == "codex:x"
+    assert ctx.cfg.subagent_model is None
+    assert ctx.cfg.summarizer_model is None
+    assert ctx.agent is candidate_graph
+    assert isinstance(captured["model"], BaseChatModel)
+    assert isinstance(general_purpose["model"], BaseChatModel)
+    assert isinstance(summarizer.model, BaseChatModel)
+    assert isinstance(ctx.summarizer, BaseChatModel)
+    assert captured["model"] is created[0]
+    assert general_purpose["model"] is created[1]
+    assert summarizer.model is created[2]
+    assert ctx.summarizer is created[3]
+    assert codex_availability_calls == [None, None, None, None]
+    assert codex_factory_calls == ["x", "x", "x", "x"]
+    assert anthropic_availability_calls == []
+    assert anthropic_factory_calls == []
 
 
 @pytest.mark.asyncio

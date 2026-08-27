@@ -19,8 +19,8 @@ class Config:
     """Fully resolved application configuration."""
 
     model: str | list[str]
-    subagent_model: str | list[str]
-    summarizer_model: str | list[str]
+    subagent_model: str | list[str] | None
+    summarizer_model: str | list[str] | None
     mode: str
     backend: str
     memory: tuple[str, ...]
@@ -220,8 +220,16 @@ def load_config(
         core["cwd"] = args.cwd
 
     model = _model_spec(core.get("model", DEFAULT_MODEL), parser)
-    subagent_model = _model_spec(core.get("subagent_model", model), parser)
-    summarizer_model = _model_spec(core.get("summarizer_model", model), parser)
+    subagent_model = (
+        _model_spec(core["subagent_model"], parser)
+        if "subagent_model" in core
+        else None
+    )
+    summarizer_model = (
+        _model_spec(core["summarizer_model"], parser)
+        if "summarizer_model" in core
+        else None
+    )
     resolved_cwd = _home_path(core.get("cwd", trust_target), home).resolve()
     trust_cwd = is_trusted_cwd(
         resolved_cwd,

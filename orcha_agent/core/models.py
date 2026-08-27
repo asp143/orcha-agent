@@ -73,8 +73,14 @@ class ModelResolver:
         """Construct independent model objects for each built-in role."""
         return {
             "main": self.resolve(self._config.model, "main"),
-            "subagent": self.resolve(self._config.subagent_model, "subagent"),
-            "summarizer": self.resolve(self._config.summarizer_model, "summarizer"),
+            "subagent": self.resolve(
+                self._config.subagent_model or self._config.model,
+                "subagent",
+            ),
+            "summarizer": self.resolve(
+                self._config.summarizer_model or self._config.model,
+                "summarizer",
+            ),
         }
 
     def _expand_aliases(

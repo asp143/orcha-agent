@@ -131,6 +131,38 @@ def test_model_precedence_walks_all_five_layers_without_skipping_project_config(
     assert _load(tmp_path).model == "anthropic:claude-opus-5"
 
 
+def test_unset_role_models_remain_unset_when_main_model_is_configured(
+    tmp_path: Path,
+) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text('[core]\nmodel = "codex:gpt-5.1-codex"\n')
+
+    cfg = _load(tmp_path, user_config_path=user_config)
+
+    assert cfg.model == "codex:gpt-5.1-codex"
+    assert cfg.subagent_model is None
+    assert cfg.summarizer_model is None
+
+
+def test_explicit_role_models_are_preserved(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text(
+        """
+[core]
+model = "codex:gpt-5.1-codex"
+subagent_model = "anthropic:claude-haiku-4-5"
+summarizer_model = "openai:gpt-5-mini"
+""".strip()
+        + "\n"
+    )
+
+    cfg = _load(tmp_path, user_config_path=user_config)
+
+    assert cfg.model == "codex:gpt-5.1-codex"
+    assert cfg.subagent_model == "anthropic:claude-haiku-4-5"
+    assert cfg.summarizer_model == "openai:gpt-5-mini"
+
+
 def test_model_aliases_and_per_plugin_sections_survive_toml_loading(tmp_path: Path) -> None:
     project_config = tmp_path / "project.toml"
     project_config.write_text(

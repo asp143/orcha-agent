@@ -212,7 +212,7 @@ class AppContext:
         if not self.registry.providers:
             return self.summarizer
         return ModelResolver(self.registry, cfg).resolve(
-            cfg.summarizer_model,
+            cfg.summarizer_model or cfg.model,
             "summarizer",
         )
 

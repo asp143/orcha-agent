@@ -209,6 +209,78 @@ async def test_main_model_fallback_is_middleware_and_role_models_remain_chat_mod
 
 
 @pytest.mark.asyncio
+async def test_build_agent_inherits_unset_role_models_from_selected_main_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, bus, api = _kernel()
+    anthropic_availability_calls: list[None] = []
+    anthropic_factory_calls: list[str] = []
+    codex_factory_calls: list[str] = []
+    created: list[FakeListChatModel] = []
+
+    def anthropic_available() -> str:
+        anthropic_availability_calls.append(None)
+        return "ANTHROPIC_API_KEY is missing"
+
+    def anthropic_factory(
+        model_name: str,
+        _provider_config: dict[str, Any],
+    ) -> FakeListChatModel:
+        anthropic_factory_calls.append(model_name)
+        return FakeListChatModel(responses=[model_name])
+
+    def codex_factory(
+        model_name: str,
+        _provider_config: dict[str, Any],
+    ) -> FakeListChatModel:
+        codex_factory_calls.append(model_name)
+        model = FakeListChatModel(responses=[f"codex:{model_name}"])
+        created.append(model)
+        return model
+
+    api.add_provider(
+        "anthropic",
+        anthropic_factory,
+        capabilities=_caps(),
+        available=anthropic_available,
+    )
+    api.add_provider("codex", codex_factory, capabilities=_caps())
+    cfg = replace(
+        _config(tmp_path, "yolo"),
+        model="codex:x",
+        subagent_model=None,
+        summarizer_model=None,
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    with SessionStore(tmp_path / "sessions.db") as session:
+        await build_agent(registry, cfg, session, bus)
+
+    general_purpose = next(
+        spec for spec in captured["subagents"] if spec["name"] == "general-purpose"
+    )
+    summarizer = next(
+        middleware
+        for middleware in captured["middleware"]
+        if isinstance(middleware, SummarizationMiddleware)
+    )
+    assert isinstance(captured["model"], BaseChatModel)
+    assert isinstance(general_purpose["model"], BaseChatModel)
+    assert isinstance(summarizer.model, BaseChatModel)
+    assert captured["model"] is created[0]
+    assert general_purpose["model"] is created[1]
+    assert summarizer.model is created[2]
+    assert codex_factory_calls == ["x", "x", "x"]
+    assert anthropic_availability_calls == []
+    assert anthropic_factory_calls == []
+
+
+@pytest.mark.asyncio
 async def test_plan_graph_rejects_scripted_write_and_keeps_read_only_filesystem(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
