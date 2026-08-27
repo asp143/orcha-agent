@@ -26,8 +26,6 @@ async def _help(ctx: Any, _args: str) -> None:
     ctx.console.print(table)
 
 
-async def _clear(ctx: Any, _args: str) -> None:
-    await ctx.clear()
 
 
 async def _exit(ctx: Any, _args: str) -> None:
@@ -201,7 +199,6 @@ async def _providers(ctx: Any, args: str) -> None:
 
 def register(api: PluginAPI) -> None:
     api.add_command("help", _help, help="List available slash commands")
-    api.add_command("clear", _clear, help="Clear the current conversation")
     api.add_command("exit", _exit, help="Exit orcha-agent")
     api.add_command("plugins", _plugins, help="List loaded plugins")
     api.add_command("providers", _providers, help="List model providers and availability")

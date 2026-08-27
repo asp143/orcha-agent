@@ -1,16 +1,27 @@
+import json
+import re
+from collections.abc import Iterator
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage, HumanMessage, message_to_dict
 from rich.console import Console
 
 from orcha_agent.builtin import commands_core, commands_model, commands_session
 from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.events import EventBus
+from orcha_agent.core.ledger import (
+    CompactionEntry,
+    Ledger,
+    MessageEntry,
+    ResetBoundaryEntry,
+)
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
-from orcha_agent.core.session import SessionInfo
+from orcha_agent.core.session import SessionInfo, SessionStore
 from orcha_agent.tui.app import dispatch_command
 from orcha_agent.tui.console import ConsoleOutput
 
@@ -26,9 +37,16 @@ def _api(registry: Registry, bus: EventBus) -> PluginAPI:
     )
 
 
-def _context(*, width: int = 100) -> tuple[SimpleNamespace, StringIO]:
+def _context(
+    *, width: int = 100, styles: bool = False
+) -> tuple[SimpleNamespace, StringIO]:
     output = StringIO()
-    console = Console(file=output, force_terminal=False, color_system=None, width=width)
+    console = Console(
+        file=output,
+        force_terminal=styles,
+        color_system="standard" if styles else None,
+        width=width,
+    )
     return SimpleNamespace(console=ConsoleOutput(console), agent=None), output
 
 
@@ -62,6 +80,36 @@ def _provider_caps() -> ProviderCaps:
         structured_output=False,
         max_context=None,
     )
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain_terminal(value: str) -> str:
+    return _ANSI_ESCAPE.sub("", value)
+
+
+def _clear_output(output: StringIO) -> None:
+    output.seek(0)
+    output.truncate(0)
+
+
+@pytest.fixture
+def session_command_context(
+    tmp_path: Path,
+) -> Iterator[tuple[SimpleNamespace, StringIO, SessionInfo, Ledger]]:
+    with SessionStore(tmp_path / "sessions.db") as store:
+        session = store.create(
+            tmp_path,
+            ["fake:primary", "fake:fallback"],
+            thread_id="session-a1b2",
+            title="Session command tests",
+        )
+        ctx, output = _context(width=240)
+        ctx.session = store
+        ctx.session_id = session.thread_id
+        ctx.ledger = Ledger(store)
+        yield ctx, output, session, ctx.ledger
 
 
 def test_add_provider_stores_default_model() -> None:
@@ -537,29 +585,28 @@ async def test_resume_without_session_id_renders_usage_without_resuming() -> Non
 
 
 @pytest.mark.asyncio
-async def test_sessions_command_renders_registered_session_table() -> None:
+async def test_sessions_command_renders_registered_session_table(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, output, session, ledger = session_command_context
+    for _ in range(7):
+        ledger.append(session.thread_id, ResetBoundaryEntry())
     registry = Registry()
-    bus = EventBus()
-    commands_session.register(_api(registry, bus))
-    ctx, output = _context(width=240)
-    session = SessionInfo(
-        thread_id="saved-session",
-        cwd="/work/project",
-        model="fake:model",
-        created="2026-08-27T10:30:00+00:00",
-        title="Investigate parser",
-    )
-    ctx.session = SimpleNamespace(list=lambda: [session])
+    commands_session.register(_api(registry, EventBus()))
 
     assert await dispatch_command(registry, ctx, "/sessions") is True
 
     rendered = output.getvalue()
     assert "Sessions" in rendered
-    assert "saved-session" in rendered
-    assert "Investigate parser" in rendered
-    assert "fake:model" in rendered
-    assert "/work/project" in rendered
-    assert "2026-08-27T10:30:00+00:00" in rendered
+    assert session.thread_id in rendered
+    assert session.title is not None
+    assert session.title in rendered
+    assert re.search(r"fake:primary\s*,\s*fake:fallback", rendered)
+    assert "['fake:primary'" not in rendered
+    assert "Entries" in rendered
+    assert re.search(rf"{re.escape(session.thread_id)}.*\b7\b", rendered)
+    assert session.cwd in rendered
+    assert session.created in rendered
 
 
 @pytest.mark.asyncio
@@ -580,3 +627,299 @@ async def test_compact_without_summarizer_renders_error_without_compacting() -> 
     rendered = output.getvalue().lower()
     assert "summarizer" in rendered
     assert "unavailable" in rendered
+
+
+SESSION_COMMANDS = {
+    "tree",
+    "branch",
+    "fork",
+    "new",
+    "clear",
+    "compact",
+    "export",
+    "sessions",
+    "resume",
+}
+
+
+def test_session_commands_own_the_complete_session_surface() -> None:
+    session_registry = Registry()
+    commands_session.register(_api(session_registry, EventBus()))
+    assert SESSION_COMMANDS <= set(session_registry.commands)
+
+    core_registry = Registry()
+    commands_core.register(_api(core_registry, EventBus()))
+    assert "clear" not in core_registry.commands
+
+
+@pytest.mark.asyncio
+async def test_tree_default_summarizes_users_and_marks_topology_and_leaf(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, _output, session, ledger = session_command_context
+    styled_ctx, output = _context(width=240, styles=True)
+    ctx.console = styled_ctx.console
+    long_prompt = "u" * 60 + "TRUNCATED-SUFFIX"
+    user = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content=long_prompt))),
+    )
+    first_reply = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="first reply"))),
+    )
+    ledger.branch(session.thread_id, user.id)
+    second_reply = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="second reply"))),
+    )
+    compacted = ledger.append(
+        session.thread_id, CompactionEntry(summary="summary of both replies")
+    )
+    reset = ledger.append(session.thread_id, ResetBoundaryEntry())
+
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    assert await dispatch_command(registry, ctx, "/tree") is True
+
+    rendered = output.getvalue()
+    plain = _plain_terminal(rendered)
+    assert user.id in plain
+    assert long_prompt[:60] in plain
+    assert "TRUNCATED-SUFFIX" not in plain
+    user_line = next(line for line in plain.splitlines() if user.id in line)
+    assert re.search(r"\b2\b", user_line)
+    assert first_reply.id not in plain
+    assert second_reply.id not in plain
+    assert compacted.id in plain and "⊟" in plain
+    assert reset.id in plain and "⊠" in plain
+    assert "⎇" in plain
+
+    leaf_line = next(line for line in rendered.splitlines() if reset.id in line)
+    sgr_parameters = {
+        parameter
+        for escape in re.findall(r"\x1b\[([0-9;]*)m", leaf_line)
+        for parameter in escape.split(";")
+    }
+    highlight_parameters = {"1", "4", "7"} | {
+        str(code) for code in (*range(40, 50), *range(100, 108))
+    }
+    assert sgr_parameters & highlight_parameters
+
+
+@pytest.mark.asyncio
+async def test_tree_all_renders_every_entry_id_and_payload_kind(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, output, session, ledger = session_command_context
+    entries = [
+        ledger.append(
+            session.thread_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content="question"))),
+        ),
+        ledger.append(
+            session.thread_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="answer"))),
+        ),
+        ledger.append(session.thread_id, CompactionEntry(summary="short summary")),
+        ledger.append(session.thread_id, ResetBoundaryEntry()),
+    ]
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert await dispatch_command(registry, ctx, "/tree --all") is True
+
+    rendered = output.getvalue()
+    assert all(entry.id in rendered for entry in entries)
+    assert "question" in rendered
+    assert "answer" in rendered
+    assert "⊟" in rendered
+    assert "⊠" in rendered
+
+
+@pytest.mark.asyncio
+async def test_branch_resolves_a_unique_prefix_before_delegating(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, _output, session, ledger = session_command_context
+    target = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content="branch here"))),
+    )
+    branched: list[str] = []
+
+    async def branch(entry_id: str) -> None:
+        branched.append(entry_id)
+
+    ctx.branch = branch
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert await dispatch_command(registry, ctx, f"/branch {target.id[:4]}") is True
+    assert branched == [target.id]
+
+
+@pytest.mark.asyncio
+async def test_branch_reports_ambiguous_and_missing_prefixes_without_mutation(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, output, session, ledger = session_command_context
+    entries = [
+        ledger.append(
+            session.thread_id,
+            MessageEntry(message=message_to_dict(HumanMessage(content=f"entry {index}"))),
+        )
+        for index in range(17)
+    ]
+    by_initial: dict[str, list[str]] = {}
+    for entry in entries:
+        by_initial.setdefault(entry.id[0], []).append(entry.id)
+    prefix, candidates = next(
+        (initial, ids) for initial, ids in by_initial.items() if len(ids) > 1
+    )
+    branched: list[str] = []
+
+    async def branch(entry_id: str) -> None:
+        branched.append(entry_id)
+
+    ctx.branch = branch
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    leaf_before = ledger.leaf(session.thread_id)
+
+    assert await dispatch_command(registry, ctx, f"/branch {prefix}") is True
+    ambiguous_output = output.getvalue()
+    assert "ambiguous" in ambiguous_output.lower()
+    assert all(candidate in ambiguous_output for candidate in sorted(candidates))
+    assert branched == []
+    assert ledger.leaf(session.thread_id) == leaf_before
+
+    _clear_output(output)
+    missing_prefix = "not-a-ledger-id"
+    assert await dispatch_command(registry, ctx, f"/branch {missing_prefix}") is True
+    missing_output = output.getvalue().lower()
+    assert missing_prefix in missing_output
+    assert "unknown" in missing_output or "not found" in missing_output
+    assert branched == []
+    assert ledger.leaf(session.thread_id) == leaf_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "method_name"),
+    [
+        pytest.param("/fork", "fork", id="fork"),
+        pytest.param("/new", "new_session", id="new"),
+        pytest.param("/clear", "clear", id="clear"),
+        pytest.param("/compact", "compact", id="compact"),
+    ],
+)
+async def test_zero_argument_session_commands_delegate_once(
+    command: str, method_name: str
+) -> None:
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    ctx, _output = _context()
+    calls: list[str] = []
+
+    async def operation() -> None:
+        calls.append(method_name)
+
+    setattr(ctx, method_name, operation)
+    ctx.summarizer = object()
+
+    assert await dispatch_command(registry, ctx, command) is True
+    assert calls == [method_name]
+
+
+@pytest.mark.asyncio
+async def test_export_uses_default_and_explicit_paths(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, output, session, ledger = session_command_context
+    ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content="export me"))),
+    )
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    monkeypatch.chdir(tmp_path)
+
+    assert await dispatch_command(registry, ctx, "/export") is True
+    default_path = tmp_path / f"{session.thread_id}.jsonl"
+    assert default_path.is_file()
+    assert json.loads(default_path.read_text().splitlines()[0])["id"] == session.thread_id
+    assert str(default_path.name) in output.getvalue()
+    _clear_output(output)
+    explicit_path = tmp_path / "chosen-session.jsonl"
+    assert await dispatch_command(registry, ctx, f"/export {explicit_path}") is True
+    assert explicit_path.is_file()
+    assert json.loads(explicit_path.read_text().splitlines()[0])["id"] == session.thread_id
+    assert str(explicit_path) in output.getvalue()
+
+@pytest.mark.asyncio
+async def test_resume_delegates_the_supplied_session_prefix() -> None:
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    ctx, _output = _context()
+    resumed: list[str] = []
+
+    async def resume(prefix: str) -> None:
+        resumed.append(prefix)
+
+    ctx.resume = resume
+
+    assert await dispatch_command(registry, ctx, "/resume session-a1") is True
+    assert resumed == ["session-a1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("/tree --bogus", id="tree-option"),
+        pytest.param("/branch", id="branch-missing"),
+        pytest.param("/branch one two", id="branch-extra"),
+        pytest.param("/fork extra", id="fork"),
+        pytest.param("/new extra", id="new"),
+        pytest.param("/clear extra", id="clear"),
+        pytest.param("/compact extra", id="compact"),
+        pytest.param("/export one two", id="export"),
+        pytest.param("/sessions extra", id="sessions"),
+        pytest.param("/resume one two", id="resume"),
+    ],
+)
+async def test_invalid_session_command_usage_does_not_mutate_state(
+    command: str,
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, output, session, ledger = session_command_context
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    mutations: list[tuple[object, ...]] = []
+    monkeypatch.chdir(tmp_path)
+    ledger_before = (ledger.leaf(session.thread_id), ledger.count(session.thread_id))
+    sessions_before = ctx.session.list()
+    files_before = {path.name for path in tmp_path.iterdir()}
+
+    async def mutate(*args: object) -> None:
+        mutations.append(args)
+
+    ctx.branch = mutate
+    ctx.fork = mutate
+    ctx.new_session = mutate
+    ctx.clear = mutate
+    ctx.compact = mutate
+    ctx.resume = mutate
+    ctx.summarizer = object()
+
+    assert await dispatch_command(registry, ctx, command) is True
+    assert (ledger.leaf(session.thread_id), ledger.count(session.thread_id)) == ledger_before
+    assert ctx.session.list() == sessions_before
+    assert {path.name for path in tmp_path.iterdir()} == files_before
+    assert mutations == []
+    assert "usage:" in output.getvalue().lower()
