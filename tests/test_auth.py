@@ -321,6 +321,31 @@ def test_device_flow_propagates_keyboard_interrupt_without_exchanging() -> None:
     )
 
 
+def test_loopback_bind_fallback_raises_when_browser_does_not_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = int(occupied.getsockname()[1])
+        flow = OAuthPKCEFlow(
+            client_id="fake-client-id",
+            authorize_url="https://accounts.invalid/authorize",
+            token_url="https://tokens.invalid/token",
+            scopes="openid",
+            redirect_port=port,
+            redirect_path="/auth/callback",
+            input_fn=lambda _prompt: pytest.fail("paste prompt must not open"),
+        )
+        monkeypatch.setattr(
+            "orcha_agent.core.auth.webbrowser.open",
+            lambda _url: False,
+        )
+
+        with pytest.raises(RuntimeError, match="browser did not open"):
+            flow.authorize()
+
+
 def test_credential_store_writes_atomically_with_private_permissions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

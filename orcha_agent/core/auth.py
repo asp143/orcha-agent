@@ -222,8 +222,8 @@ class OAuthPKCEFlow:
         *,
         open_browser: bool = True,
     ) -> str:
-        if open_browser:
-            webbrowser.open(authorization_url)
+        if open_browser and not webbrowser.open(authorization_url):
+            raise RuntimeError("browser did not open")
         pasted = self.input_fn(
             f"Open this URL to authenticate:\n{authorization_url}\n"
             "Paste the redirect URL or authorization code: "
@@ -333,6 +333,10 @@ class OAuthPKCEFlow:
         )
 
 
+class DeviceAuthorizationCancelled(RuntimeError):
+    pass
+
+
 class OAuthDeviceFlow:
     """OAuth device authorization flow with polling and code exchange."""
 
@@ -368,6 +372,7 @@ class OAuthDeviceFlow:
         self,
         *,
         output: Callable[[str], None] = print,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         response = self._post(
             self.user_code_url,
@@ -388,7 +393,14 @@ class OAuthDeviceFlow:
         code_verifier: str | None = None
         while self.monotonic() < deadline:
             remaining = deadline - self.monotonic()
-            self.sleep(min(interval, remaining))
+            delay = min(interval, remaining)
+            if cancel_event is not None:
+                if cancel_event.wait(timeout=delay):
+                    raise DeviceAuthorizationCancelled(
+                        "OAuth device authorization cancelled"
+                    )
+            else:
+                self.sleep(delay)
             if self.monotonic() >= deadline:
                 break
             poll = self._post(
