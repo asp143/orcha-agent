@@ -1,22 +1,24 @@
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from langgraph.types import Command
 
-from orcha_agent.builtin import approval_prompt, filesystem, modes, provider_codex
+from orcha_agent.builtin import approval_prompt, filesystem, modes, provider_codex, statusbar
 from orcha_agent.core.agent import build_agent
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
     AgentBuildAfter,
     Event,
     EventBus,
+    ModelChunk,
     InterruptRaised,
     ToolCallEnd,
     ToolCallStart,
@@ -40,6 +42,37 @@ class ToolCallingFakeModel(GenericFakeChatModel):
     ) -> "ToolCallingFakeModel":
         return self
 
+
+class _UsageStreamGraph:
+    def __init__(self, turns: list[list[tuple[Any, ...]]]) -> None:
+        self.turns = list(turns)
+
+    async def astream(
+        self,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> AsyncIterator[tuple[Any, ...]]:
+        for item in self.turns.pop(0):
+            yield item
+
+
+class _UsageContext:
+    def __init__(self, agent: Any, registry: Registry, bus: EventBus) -> None:
+        self.agent = agent
+        self.registry = registry
+        self.bus = bus
+        self._bus = bus
+        self.console = _RecordingConsole()
+        self.thread_id = "usage-thread"
+        self.thread_config = {"configurable": {"thread_id": self.thread_id}}
+        self.rebuild_requested = False
+        self.session = SimpleNamespace(get=lambda _thread_id: None)
+
+    async def ensure_agent(self) -> bool:
+        return True
+
+    async def rebuild(self) -> None:
+        raise AssertionError("usage streaming must not request a rebuild")
 
 
 class _FakeCodexTokenSource:
@@ -65,13 +98,19 @@ def _successful_codex_sse() -> httpx.Response:
     )
 
 
-def _api(name: str, registry: Registry, bus: EventBus) -> PluginAPI:
+def _api(
+    name: str,
+    registry: Registry,
+    bus: EventBus,
+    *,
+    state: dict[str, Any] | None = None,
+) -> PluginAPI:
     return PluginAPI(
         name=name,
         registry=registry,
         bus=bus,
         config={},
-        state={},
+        state={} if state is None else state,
         request_rebuild=lambda: None,
     )
 
@@ -553,3 +592,121 @@ async def test_real_deepagent_sends_codex_compatible_one_turn_payload(
             assert item["role"] in {"user", "assistant"}
         else:
             assert "role" not in item
+
+
+@pytest.mark.asyncio
+async def test_streamed_main_and_subagent_usage_accumulates_once_across_turns_and_resume(
+    tmp_path: Path,
+) -> None:
+    usage_metadata = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "input_token_details": {"cache_read": 10},
+    }
+    subagent_usage = {
+        "input_tokens": 30,
+        "output_tokens": 5,
+        "total_tokens": 35,
+        "input_token_details": {"cache_read": 4},
+    }
+    resumed_usage = {
+        "input_tokens": 50,
+        "output_tokens": 10,
+        "total_tokens": 60,
+        "input_token_details": {"cache_read": 5},
+    }
+    graph = _UsageStreamGraph(
+        [
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(content="main response"),
+                        {"langgraph_node": "agent"},
+                    ),
+                ),
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(content="", usage_metadata=usage_metadata),
+                        {"langgraph_node": "agent"},
+                    ),
+                ),
+                (
+                    ("tools:research",),
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content="subagent response",
+                            usage_metadata=subagent_usage,
+                        ),
+                        {"langgraph_node": "agent", "ls_agent_type": "subagent"},
+                    ),
+                ),
+            ],
+            [
+                (
+                    "messages",
+                    (
+                        AIMessageChunk(
+                            content="resumed response",
+                            usage_metadata=resumed_usage,
+                        ),
+                        {"langgraph_node": "agent"},
+                    ),
+                )
+            ],
+        ]
+    )
+    registry = Registry()
+    bus = EventBus()
+    state: dict[str, Any] = {}
+    statusbar.register(_api("statusbar", registry, bus, state=state))
+    observed: list[ModelChunk] = []
+
+    async def record_usage(event: ModelChunk) -> None:
+        if getattr(event.chunk, "usage_metadata", None):
+            observed.append(event)
+
+    bus.on(ModelChunk, record_usage, plugin="test", priority=1000)
+    ctx = _UsageContext(graph, registry, bus)
+
+    await _run_turn(ctx, "first")
+
+    assert [
+        (event.role, event.chunk.usage_metadata["input_tokens"])
+        for event in observed
+    ] == [("main", 100), ("subagent", 30)]
+    assert state == {
+        "input_tokens": 130,
+        "output_tokens": 25,
+        "cache_read_tokens": 14,
+        "last_input_tokens": 30,
+    }
+
+    # AppContext.resume preserves the PluginAPI state object by replacing its
+    # contents. Using unrelated saved totals catches handlers that retained
+    # local counters instead of reading the live state mapping.
+    state.clear()
+    state.update(
+        {
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "cache_read_tokens": 40,
+            "last_input_tokens": 900,
+        }
+    )
+    await _run_turn(ctx, "after resume")
+
+    assert [
+        (event.role, event.chunk.usage_metadata["input_tokens"])
+        for event in observed
+    ] == [("main", 100), ("subagent", 30), ("main", 50)]
+    assert state == {
+        "input_tokens": 1_050,
+        "output_tokens": 110,
+        "cache_read_tokens": 45,
+        "last_input_tokens": 50,
+    }
+    assert ctx.console.errors == []

@@ -34,6 +34,7 @@ EXPECTED_BUILTIN_PLUGINS = {
     "provider_ollama",
     "provider_openai",
     "render_default",
+    "statusbar",
 }
 EXPECTED_COMMANDS = {
     "clear",
@@ -48,6 +49,7 @@ EXPECTED_COMMANDS = {
     "providers",
     "resume",
     "sessions",
+    "status",
 }
 EXPECTED_PROVIDERS = {"anthropic", "codex", "google", "langchain", "ollama", "openai"}
 EXPECTED_MODES = {"ask", "edit", "plan", "yolo"}
