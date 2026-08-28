@@ -22,7 +22,13 @@ from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
 from orcha_agent.core.config import Config, is_trusted_cwd
-from orcha_agent.core.events import AppExit, AppStart, Event, EventBus
+from orcha_agent.core.events import (
+    AppExit,
+    AppStart,
+    Event,
+    EventBus,
+    SessionSwitch,
+)
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.registry import Registry
@@ -99,6 +105,29 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
 def _compat(name: str, default: Any) -> Any:
     facade = sys.modules.get("orcha_agent.tui.app")
     return getattr(facade, name, default) if facade is not None else default
+
+
+def _resolve_runtime_themes(
+    cfg: Any,
+    plugin_states: Mapping[str, Mapping[str, Any]],
+    warn: Callable[[str], None],
+) -> tuple[dict[str, Theme], Theme]:
+    themes = load_themes(
+        cwd=cfg.cwd,
+        trusted=cfg.trust_cwd,
+        warn=warn,
+        symbols=cfg.symbols,
+    )
+    selected = plugin_states.get("commands_core", {}).get("theme", cfg.theme)
+    if not isinstance(selected, str):
+        selected = cfg.theme
+    try:
+        active = select_theme(themes, selected)
+    except KeyError:
+        warn(f"Unknown theme '{selected}'; using dark.")
+        active = themes["dark"]
+    return themes, active
+
 
 
 class UIFacade:
@@ -281,14 +310,27 @@ class ApplicationRuntime:
     def _notify(self, text: str) -> None:
         self.transcript.append_banner(text, level="info")
         self.application.invalidate()
-    def _set_theme(self, name: str) -> Any:
-        selected = select_theme(self._themes, name)
+
+    def _apply_theme(self, selected: Any) -> Any:
         self.theme = selected
         prompt_style = getattr(selected, "pt", None)
         if prompt_style is not None:
             self.application.style = prompt_style
         self.application.invalidate()
         return selected
+
+    def _set_theme(self, name: str) -> Any:
+        return self._apply_theme(select_theme(self._themes, name))
+
+    def replace_themes(
+        self,
+        themes: Mapping[str, Any],
+        selected: Any,
+    ) -> Any:
+        self._themes = dict(themes)
+        identifier = str(getattr(selected, "id", "default"))
+        self._themes.setdefault(identifier, selected)
+        return self._apply_theme(selected)
 
 
     def _render_block(self, block: Block, width: int, rows: int) -> Any:
@@ -342,6 +384,7 @@ class ApplicationRuntime:
             file=stream,
             force_terminal=force_terminal,
             width=max(1, width),
+            theme=getattr(self.theme, "rich", None),
         )
         self._print_block(console, block, width, rows, viewport=True)
         return stream.getvalue()
@@ -429,6 +472,27 @@ class ApplicationRuntime:
             self.scheduler.commit_now()
             await self._drain_pending()
             await self.scheduler.aclose()
+
+
+def _register_theme_refresh(
+    bus: EventBus,
+    ctx: Any,
+    runtime: ApplicationRuntime,
+) -> None:
+    async def refresh_theme(_event: SessionSwitch) -> None:
+        themes, active = _resolve_runtime_themes(
+            ctx.cfg,
+            ctx.plugin_states,
+            ctx.console.warning,
+        )
+        runtime.replace_themes(themes, active)
+
+    bus.on(
+        SessionSwitch,
+        refresh_theme,
+        plugin="<tui-theme>",
+        priority=9_000,
+    )
 
 async def run_app(cfg: Config) -> int:
     """Compose plugins and run the interactive terminal application."""
@@ -565,22 +629,11 @@ async def run_app(cfg: Config) -> int:
             except Exception as exc:
                 ctx.console.error(f"{type(exc).__name__}: {exc}")
 
-        available_themes = load_themes(
-            cwd=cfg.cwd,
-            trusted=cfg.trust_cwd,
-            warn=ctx.console.warning,
-            symbols=cfg.symbols,
+        available_themes, active_theme = _resolve_runtime_themes(
+            ctx.cfg,
+            states,
+            ctx.console.warning,
         )
-        saved_theme = states.get("commands_core", {}).get("theme", cfg.theme)
-        if not isinstance(saved_theme, str):
-            saved_theme = cfg.theme
-        try:
-            active_theme: Theme = select_theme(available_themes, saved_theme)
-        except KeyError:
-            ctx.console.warning(
-                f"Unknown theme '{saved_theme}'; using dark."
-            )
-            active_theme = available_themes["dark"]
 
         history_path = _compat("_history_path", _history_path)()
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -598,6 +651,8 @@ async def run_app(cfg: Config) -> int:
             theme=active_theme,
             themes=available_themes,
         )
+        if hasattr(runtime, "replace_themes"):
+            _register_theme_refresh(bus, ctx, runtime)
         if hasattr(runtime, "transcript"):
             ctx.transcript = runtime.transcript
             ctx.ui = runtime.ui

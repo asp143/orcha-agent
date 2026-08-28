@@ -96,6 +96,30 @@ def _supports_unicode(encoding: str | None) -> bool:
     return True
 
 
+def _rich_box(values: Mapping[str, Any], prefix: str, *, ascii: bool) -> box.Box:
+    top_left = values[f"{prefix}.topLeft"]
+    top_right = values[f"{prefix}.topRight"]
+    bottom_left = values[f"{prefix}.bottomLeft"]
+    bottom_right = values[f"{prefix}.bottomRight"]
+    horizontal = values[f"{prefix}.horizontal"]
+    vertical = values[f"{prefix}.vertical"]
+    return box.Box(
+        "\n".join(
+            (
+                f"{top_left}{horizontal}{horizontal}{top_right}",
+                f"{vertical} {vertical}{vertical}",
+                f"{vertical}{horizontal}{horizontal}{vertical}",
+                f"{vertical} {vertical}{vertical}",
+                f"{vertical}{horizontal}{horizontal}{vertical}",
+                f"{vertical}{horizontal}{horizontal}{vertical}",
+                f"{vertical} {vertical}{vertical}",
+                f"{bottom_left}{horizontal}{horizontal}{bottom_right}",
+            )
+        ),
+        ascii=ascii,
+    )
+
+
 def resolve_symbols(
     preset: str,
     overrides: Mapping[str, object] | None = None,
@@ -115,13 +139,18 @@ def resolve_symbols(
             raise ValueError(f"unknown symbol key: {key}")
         if not isinstance(value, str) or not value:
             raise ValueError(f"symbol override {key} must be a non-empty string")
+        if key.startswith(("boxRound.", "boxSharp.")) and len(value) != 1:
+            raise ValueError(f"symbol override {key} must be one character")
         values[key] = value
-    if selected == "ascii":
-        values["boxRound"] = box.ASCII
-        values["boxSharp"] = box.ASCII
+    ascii_preset = selected == "ascii"
+    if any(key.startswith("boxRound.") for key in (overrides or {})):
+        values["boxRound"] = _rich_box(values, "boxRound", ascii=ascii_preset)
     else:
-        values["boxRound"] = box.ROUNDED
-        values["boxSharp"] = box.SQUARE
+        values["boxRound"] = box.ASCII if ascii_preset else box.ROUNDED
+    if any(key.startswith("boxSharp.") for key in (overrides or {})):
+        values["boxSharp"] = _rich_box(values, "boxSharp", ascii=ascii_preset)
+    else:
+        values["boxSharp"] = box.ASCII if ascii_preset else box.SQUARE
     values["preset"] = selected
     return values
 

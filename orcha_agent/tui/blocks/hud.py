@@ -9,7 +9,7 @@ from rich.text import Text
 
 from orcha_agent.tui.frame import Block
 
-from . import theme_value
+from . import theme_spinner, theme_symbol, theme_value
 
 _MAX_ROWS = 8
 
@@ -38,7 +38,12 @@ def render_todo(
             done = bool(item.get("done") or item.get("status") == "done")
         else:
             label, done = str(item), False
-        rendered.append(f"\n{'✔' if done else '○'} {label}", style="dim" if done else "")
+        glyph = theme_symbol(
+            theme,
+            "status.success" if done else "status.pending",
+            "✔" if done else "○",
+        )
+        rendered.append(f"\n{glyph} {label}", style="dim" if done else "")
     return rendered
 
 
@@ -55,13 +60,16 @@ def render_subagents(
         return None
     rows = min(_MAX_ROWS, budget_rows)
     rendered = Text("Subagents", style=f"bold {theme_value(theme, 'accent')}")
+    spinner_frame = int(block.data.get("spinner_frame", 0))
+    spinner = theme_spinner(theme, "spinner.status", spinner_frame, ("✻",))
+    separator = theme_symbol(theme, "sep.thin", "·")
     for agent in agents[: max(0, rows - 1)]:
         if isinstance(agent, Mapping):
             name = str(agent.get("name", agent.get("id", "agent")))
             status = str(agent.get("status", "running"))
         else:
             name, status = str(agent), "running"
-        rendered.append(f"\n✻ {name} · {status}")
+        rendered.append(f"\n{spinner} {name} {separator} {status}")
     return rendered
 
 

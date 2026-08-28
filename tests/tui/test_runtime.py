@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,11 +11,23 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.text import Text
 
-from orcha_agent.core.events import ModelChunk, TurnEnd, TurnStart
+from orcha_agent.core.events import (
+    EventBus,
+    ModelChunk,
+    SessionSwitch,
+    TurnEnd,
+    TurnStart,
+)
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.frame import Block
-from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
+from orcha_agent.tui.runtime import (
+    ApplicationRuntime,
+    UIFacade,
+    _register_theme_refresh,
+)
+from orcha_agent.tui.theme import COLOR_TOKENS, Theme, load_themes
 
 
 @pytest.mark.asyncio
@@ -250,3 +264,102 @@ def test_renderer_cache_is_separated_by_runtime_theme_id() -> None:
         assert runtime._render_block(block, 80, 3) == "two"
 
     assert calls == ["one", "two"]
+
+
+def test_active_block_capture_uses_selected_rich_theme() -> None:
+    class ThemeProbe:
+        def __init__(self) -> None:
+            self.style: object | None = None
+
+        def __rich_console__(
+            self,
+            console: Console,
+            _options: object,
+        ) -> list[Text]:
+            self.style = console.get_style("accent")
+            return [Text("named")]
+
+    probe = ThemeProbe()
+    registry = Registry()
+
+    def render(
+        _block: Block,
+        _theme: object,
+        _width: int,
+        _rows: int,
+        _expanded: bool,
+    ) -> ThemeProbe:
+        return probe
+
+    registry._add_block_renderer("test", "named", render)
+    theme = Theme(
+        id="named",
+        name="Named",
+        colors={token: "#010203" for token in COLOR_TOKENS},
+        symbols={},
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            registry=registry,
+            theme=theme,
+            themes={theme.id: theme},
+            input=pipe,
+            output=DummyOutput(),
+        )
+        runtime._capture_block(
+            Block(id="named", kind="named", data={}),
+            80,
+            1,
+            force_terminal=True,
+        )
+
+    assert probe.style is not None
+    assert getattr(getattr(probe.style, "color"), "triplet").hex == "#010203"
+
+
+@pytest.mark.asyncio
+async def test_session_switch_reloads_project_themes_and_saved_selection(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    theme_dir = project / ".orcha-agent/themes"
+    theme_dir.mkdir(parents=True)
+    (theme_dir / "target.json").write_text(
+        json.dumps(
+            {
+                "name": "Target",
+                "colors": {"accent": "#123456"},
+                "symbols": {"preset": "nerd", "overrides": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    initial_themes = load_themes(home=tmp_path, cwd=tmp_path)
+    ctx = SimpleNamespace(
+        cfg=SimpleNamespace(
+            cwd=project,
+            trust_cwd=True,
+            symbols="ascii",
+            theme="dark",
+        ),
+        plugin_states={"commands_core": {"theme": "target"}},
+        console=SimpleNamespace(warning=lambda _message: None),
+    )
+    bus = EventBus()
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            theme=initial_themes["dark"],
+            themes=initial_themes,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        _register_theme_refresh(bus, ctx, runtime)
+
+        await bus.emit(SessionSwitch(old="old", new="target"))
+
+    assert runtime.theme.id == "target"
+    assert runtime.theme.name == "Target"
+    assert runtime.theme.symbols["status.success"] == "+"
+    assert "target" in runtime._themes

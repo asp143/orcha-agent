@@ -64,6 +64,18 @@ def theme_symbol(theme: Any, name: str, default: Any) -> Any:
     return getattr(symbols, name, default)
 
 
+def theme_spinner(
+    theme: Any,
+    name: str,
+    frame: int,
+    default: Sequence[str],
+) -> str:
+    frames = theme_symbol(theme, name, default)
+    if not isinstance(frames, (str, Sequence)) or not frames:
+        frames = default
+    return str(frames[frame % len(frames)])
+
+
 def theme_id(theme: Any) -> str:
     if theme is None:
         return "default"
@@ -136,4 +148,5 @@ __all__ = [
     "theme_id",
     "theme_symbol",
     "theme_value",
+    "theme_spinner",
 ]

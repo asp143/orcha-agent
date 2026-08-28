@@ -15,7 +15,7 @@ from rich.text import Text
 
 from orcha_agent.tui.frame import Block, BlockState
 
-from . import theme_symbol, theme_value
+from . import theme_spinner, theme_symbol, theme_value
 from .diff import render as render_diff
 from .thinking import SPINNER_FRAMES
 
@@ -204,33 +204,49 @@ def render(
         if name == "execute" and not pending
         else None
     )
+    separator = str(theme_symbol(theme, "sep.thin", "·"))
     title = (
         f"{name_label}"
-        f"{f' · {detail}' if detail else ''}"
-        f"{f' · exit {execute_code}' if execute_code is not None else ''}"
+        f"{f' {separator} {detail}' if detail else ''}"
+        f"{f' {separator} exit {execute_code}' if execute_code is not None else ''}"
     )
     elapsed = float(block.data.get("elapsed", 0.0))
-    glyph = (
-        "✘"
-        if error
-        else (
-            SPINNER_FRAMES[
-                int(block.data.get("spinner_frame", 0)) % len(SPINNER_FRAMES)
-            ]
-            if pending
-            else "✔"
+    spinner_frame = int(block.data.get("spinner_frame", 0))
+    if error:
+        glyph = str(theme_symbol(theme, "status.error", "✘"))
+    elif pending:
+        glyph = theme_spinner(
+            theme,
+            "spinner.activity",
+            spinner_frame,
+            SPINNER_FRAMES,
         )
-    )
+    else:
+        glyph = str(theme_symbol(theme, "status.success", "✔"))
 
     if budget_rows == 1:
         return Text(
-            f"{glyph} {title} · {elapsed:.1f}s",
+            f"{glyph} {title} {separator} {elapsed:.1f}s",
             style=str(theme_value(theme, "toolTitle")),
         )
     if budget_rows == 2:
-        corner = getattr(theme_symbol(theme, "boxRound", box.ROUNDED), "top_left", "╭")
+        fallback_box = theme_symbol(theme, "boxRound", box.ROUNDED)
+        corner = str(
+            theme_symbol(
+                theme,
+                "boxRound.topLeft",
+                getattr(fallback_box, "top_left", "╭"),
+            )
+        )
+        horizontal = str(
+            theme_symbol(
+                theme,
+                "boxRound.horizontal",
+                getattr(fallback_box, "top", "─"),
+            )
+        )
         return Text(
-            f"{corner}─ {title}",
+            f"{corner}{horizontal} {title}",
             style=f"bold {theme_value(theme, 'toolTitle')}",
         )
 

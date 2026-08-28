@@ -9,7 +9,7 @@ from rich.text import Text
 
 from orcha_agent.tui.frame import Block
 
-from . import theme_value
+from . import theme_spinner, theme_symbol, theme_value
 
 SPINNER_FRAMES = ("✻", "✼", "❉", "❊", "✺", "✹", "✸", "✶")
 
@@ -29,11 +29,13 @@ def render(
             style=f"italic {theme_value(theme, 'thinkingText')}",
             code_theme="monokai",
         )
-    frame = int(block.data.get("spinner_frame", 0)) % len(SPINNER_FRAMES)
+    frame = int(block.data.get("spinner_frame", 0))
     tokens = int(block.data.get("reasoning_tokens", 0))
     rate = float(block.data.get("tokens_per_second", 0.0))
+    separator = theme_symbol(theme, "sep.thin", "·")
     return Text(
-        f"{SPINNER_FRAMES[frame]} {tokens} tokens · {rate:.1f} tok/s",
+        f"{theme_spinner(theme, 'spinner.activity', frame, SPINNER_FRAMES)} "
+        f"{tokens} tokens {separator} {rate:.1f} tok/s",
         style=str(theme_value(theme, "thinkingOff")),
     )
 
