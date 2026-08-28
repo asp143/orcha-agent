@@ -227,6 +227,54 @@ async def test_runtime_hud_tracks_todos_queue_and_real_subagent_lifecycle() -> N
 
 
 @pytest.mark.asyncio
+async def test_live_hud_changes_invalidate_cached_sections_and_spinner_frames() -> None:
+    theme = {
+        "id": "hud-cache",
+        "colors": {"accent": "cyan"},
+        "symbols": {
+            "spinner.status": ("A", "B"),
+            "sep.thin": "|",
+            "status.pending": "o",
+        },
+    }
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        output=_Output(),
+        status=lambda: "",
+        theme=theme,
+        ctx=SimpleNamespace(
+            cfg=SimpleNamespace(cwd=Path.cwd(), notify=False, symbols="ascii"),
+            session=SimpleNamespace(get=lambda _session: SimpleNamespace(title="work")),
+            session_id="session",
+            plugin_states={},
+        ),
+    )
+    runtime.set_todos([{"content": "old todo", "status": "pending"}])
+    runtime.queue.append("old prompt")
+    await runtime.handle_presentation(
+        ToolCallStart("task", {"description": "worker one"}, "call-1")
+    )
+    first = runtime._hud_text().value
+    assert "old todo" in first
+    assert "old prompt" in first
+    assert "A worker one" in first
+
+    runtime.set_todos([{"content": "new todo", "status": "pending"}])
+    runtime.queue.clear()
+    runtime.queue.append("new prompt")
+    await runtime.handle_presentation(
+        ToolCallStart("task", {"description": "worker two"}, "call-2")
+    )
+    runtime._spinner_tick(1)
+    second = runtime._hud_text().value
+
+    assert "new todo" in second and "old todo" not in second
+    assert "new prompt" in second and "old prompt" not in second
+    assert "worker one" in second and "B worker two" in second
+    await runtime.scheduler.aclose()
+
+
+@pytest.mark.asyncio
 async def test_runtime_notification_triggers_cover_turn_end_and_approval() -> None:
     messages: list[str] = []
 

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from copy import deepcopy
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from io import StringIO
@@ -314,6 +315,10 @@ class ApplicationRuntime:
         self._live_subagents: dict[str, dict[str, str]] = {}
         self._turn_active = False
         self._spinner_frame = 0
+        self._hud_sections = {
+            kind: Block(f"hud-{kind}", kind)
+            for kind in ("todo", "subagents", "queue")
+        }
         self._approval_notification_sent = False
         self._shell_runner = shell_runner or self._run_shell_process
         self._custom_editor = editor_runner is not None
@@ -484,23 +489,32 @@ class ApplicationRuntime:
         self.ui.set_todos(todos)
         self.application.invalidate()
 
+    def _hud_block(self, kind: str, data: Mapping[str, Any]) -> Block:
+        block = self._hud_sections[kind]
+        snapshot = deepcopy(dict(data))
+        if block.data != snapshot:
+            block.data.clear()
+            block.update(snapshot)
+        return block
+
     def _hud_blocks(self) -> list[Block]:
         blocks: list[Block] = []
         if self.ui.todos:
-            blocks.append(Block("hud-todo", "todo", data={"items": self.ui.todos}))
+            blocks.append(self._hud_block("todo", {"items": self.ui.todos[:7]}))
         if self.ui.subagents:
             blocks.append(
-                Block(
-                    "hud-subagents",
+                self._hud_block(
                     "subagents",
-                    data={
-                        "agents": self.ui.subagents,
+                    {
+                        "agents": self.ui.subagents[:7],
                         "spinner_frame": self._spinner_frame,
                     },
                 )
             )
         if self.queue:
-            blocks.append(Block("hud-queue", "queue", data={"prompts": list(self.queue.items)}))
+            blocks.append(
+                self._hud_block("queue", {"prompts": list(self.queue.items[:7])})
+            )
         return blocks
 
     def _hud_text(self) -> Any:
