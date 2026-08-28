@@ -4,7 +4,13 @@ import asyncio
 
 import pytest
 
-from orcha_agent.tui.frame import Block, Frame, FrameScheduler, BlockState
+from orcha_agent.tui.frame import (
+    Block,
+    BlockState,
+    Frame,
+    FrameScheduler,
+    ViewportItem,
+)
 
 
 def test_blocks_commit_in_creation_order_after_earlier_active_block_settles() -> None:
@@ -40,6 +46,17 @@ def test_viewport_budget_and_tool_degradation_follow_available_rows() -> None:
     assert Frame.row_budget(terminal_rows=12, composer_rows=3, status_rows=1) == 8
     assert Frame.row_budget(terminal_rows=2, composer_rows=3, status_rows=1) == 0
     assert [Frame.tool_rows(rows) for rows in range(5)] == [0, 1, 2, 3, 3]
+
+
+def test_viewport_planning_counts_wrapped_rows_at_the_current_width() -> None:
+    frame = Frame()
+    block = frame.add("assistant", {"text": "abcdefghijkl"})
+
+    narrow = frame.viewport_plan(5, width=5)
+    wide = frame.viewport_plan(5, width=20)
+
+    assert narrow == [ViewportItem(block, 3)]
+    assert wide == [ViewportItem(block, 1)]
 
 
 @pytest.mark.asyncio

@@ -2242,6 +2242,13 @@ async def test_clear_keeps_session_and_plugin_state_while_seeding_empty_thread(
     )
     old_session = ctx.session_id
     old_thread = ctx.thread_id
+    runtime_clears = 0
+
+    async def clear_scrollback() -> None:
+        nonlocal runtime_clears
+        runtime_clears += 1
+
+    ctx.ui = SimpleNamespace(clear=clear_scrollback)
 
     await ctx.clear()
 
@@ -2254,7 +2261,8 @@ async def test_clear_keeps_session_and_plugin_state_while_seeding_empty_thread(
         ctx.thread_config,
         {"messages": [], "todos": [], "files": {}},
     )
-    assert ctx.console.clear_calls == 1
+    assert runtime_clears == 1
+    assert ctx.console.clear_calls == 0
     thread_switches = [
         event for event in ctx.bus.events if isinstance(event, ThreadSwitch)
     ]
@@ -3399,11 +3407,19 @@ async def test_new_session_clears_console_after_success(tmp_path: Path) -> None:
     with SessionStore(tmp_path / "new-session-console.sqlite") as store:
         ctx = _real_context(tmp_path, store, None, session_id="old-session")
         old_session = ctx.session_id
+        runtime_clears = 0
+
+        async def clear_scrollback() -> None:
+            nonlocal runtime_clears
+            runtime_clears += 1
+
+        ctx.ui = SimpleNamespace(clear=clear_scrollback)
 
         await ctx.new_session()
 
         assert ctx.session_id != old_session
-        assert ctx.console.clear_calls == 1
+        assert runtime_clears == 1
+        assert ctx.console.clear_calls == 0
         assert [(event.old, event.new) for event in _session_switches(ctx)] == [
             (old_session, ctx.session_id)
         ]

@@ -214,6 +214,13 @@ class AppContext:
     def request_rebuild(self) -> None:
         self.rebuild_requested = True
 
+    async def _clear_terminal(self) -> None:
+        clear = getattr(self.ui, "clear", None)
+        if callable(clear):
+            await clear()
+        else:
+            self.console.console.clear()
+
     def _always_allowed(self) -> set[str]:
         allowed: set[str] = set()
         for state in self.plugin_states.values():
@@ -496,7 +503,7 @@ class AppContext:
         self.history_model = None
         self._pending_switch_old_thread = None
         self.rebuild_requested = False
-        self.console.console.clear()
+        await self._clear_terminal()
         await self._bus.emit(SessionSwitch(old=old_session, new=self.session_id))
 
     async def clear(self) -> None:
@@ -529,7 +536,7 @@ class AppContext:
                 self.thread_id = prior_thread
                 self._pending_switch_old_thread = prior_switch_old_thread
             raise
-        self.console.console.clear()
+        await self._clear_terminal()
 
     async def resume(self, prefix: str) -> None:
         try:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -19,6 +18,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
 from orcha_agent.core.config import Config, is_trusted_cwd
@@ -107,9 +107,11 @@ class UIFacade:
         *,
         show_overlay: Callable[[object], Awaitable[Any]] | None = None,
         notify: Callable[[str], None] | None = None,
+        clear: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._show_overlay = show_overlay
         self._notify = notify
+        self._clear = clear
         self.notifications: list[str] = []
         self.thinking_visible = True
         self.tools_expanded = False
@@ -126,6 +128,10 @@ class UIFacade:
 
     async def ask(self, questions: object) -> Any:
         return await self.show(questions)
+
+    async def clear(self) -> None:
+        if self._clear is not None:
+            await self._clear()
 
     def toggle_thinking(self) -> bool:
         self.thinking_visible = not self.thinking_visible
@@ -152,9 +158,10 @@ class ApplicationRuntime:
         self._submit = submit
         self.registry = registry
         self.frame = Frame()
-        self.ui = UIFacade(notify=self._notify)
+        self.ui = UIFacade(notify=self._notify, clear=self._clear_scrollback)
         self._status = status or (lambda: "")
-        self._pending: set[asyncio.Task[None]] = set()
+        self._pending: set[asyncio.Future[Any]] = set()
+        self._terminal_pending: set[asyncio.Future[Any]] = set()
         self._submit_lock = asyncio.Lock()
         self._scrollback = console or Console()
 
@@ -218,10 +225,22 @@ class ApplicationRuntime:
         buffer.reset(append_to_history=bool(text))
         if not text:
             return False
-        task = asyncio.create_task(self._submit_serially(text))
-        self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
+        self._track(self._submit_serially(text))
         return False
+
+    def _track(
+        self,
+        awaitable: Awaitable[Any],
+        *,
+        terminal: bool = False,
+    ) -> asyncio.Future[Any]:
+        future = asyncio.ensure_future(awaitable)
+        self._pending.add(future)
+        future.add_done_callback(self._pending.discard)
+        if terminal:
+            self._terminal_pending.add(future)
+            future.add_done_callback(self._terminal_pending.discard)
+        return future
 
     async def _submit_serially(self, text: str) -> None:
         async with self._submit_lock:
@@ -251,27 +270,83 @@ class ApplicationRuntime:
             return block.data.get("renderable", "")
         return block.data.get("text", block.data.get("message", str(block.data)))
 
+    def _composer_height(self, width: int) -> int:
+        width = max(1, width)
+        rows = 0
+        for line in self.buffer.text.split("\n"):
+            columns = sum(get_cwidth(character) for character in line)
+            rows += max(1, (columns + width - 1) // width)
+        return min(8, max(1, rows))
+
+    def _print_block(
+        self,
+        console: Console,
+        block: Block,
+        width: int,
+        rows: int,
+        *,
+        viewport: bool,
+    ) -> None:
+        if block.kind == "raw":
+            options = dict(block.data.get("options", {}))
+            objects = block.data.get("objects")
+            if objects is not None:
+                console.print(*objects, **options)
+            else:
+                console.print(block.data.get("renderable", ""), **options)
+            return
+        console.print(
+            self._render_block(block, width, rows),
+            end="" if viewport else "\n",
+        )
+
+    def _capture_block(
+        self,
+        block: Block,
+        width: int,
+        rows: int,
+        *,
+        force_terminal: bool,
+    ) -> str:
+        stream = StringIO()
+        console = Console(
+            file=stream,
+            force_terminal=force_terminal,
+            width=max(1, width),
+        )
+        self._print_block(console, block, width, rows, viewport=True)
+        return stream.getvalue()
+
+    def _measure_block(self, block: Block, width: int) -> int:
+        rendered = self._capture_block(
+            block,
+            width,
+            10_000,
+            force_terminal=False,
+        )
+        return max(1, len(rendered.splitlines()))
+
     def _viewport_text(self) -> Any:
         size = self.application.output.get_size()
+        width = max(1, size.columns)
         budget = Frame.row_budget(
             terminal_rows=size.rows,
-            composer_rows=1,
+            composer_rows=self._composer_height(width),
             status_rows=1,
         )
         rendered: list[str] = []
-        for item in self.frame.viewport_plan(budget):
-            stream = StringIO()
-            console = Console(
-                file=stream,
+        for item in self.frame.viewport_plan(
+            budget,
+            width=width,
+            measure=self._measure_block,
+        ):
+            value = self._capture_block(
+                item.block,
+                width,
+                item.rows,
                 force_terminal=True,
-                width=max(1, size.columns),
-                soft_wrap=True,
             )
-            console.print(
-                self._render_block(item.block, size.columns, item.rows),
-                end="",
-            )
-            lines = stream.getvalue().splitlines(keepends=True)
+            lines = value.splitlines(keepends=True)
             if len(lines) > item.rows:
                 lines = (
                     lines[-item.rows :]
@@ -281,21 +356,39 @@ class ApplicationRuntime:
             rendered.append("".join(lines))
         return ANSI("\n".join(rendered))
 
-    def _commit_blocks(self, blocks: list[Block]) -> None:
-        def write_blocks() -> None:
-            width = self.application.output.get_size().columns
-            for block in blocks:
-                options = block.data.get("options", {}) if block.kind == "raw" else {}
-                self._scrollback.print(
-                    self._render_block(block, width, 10_000),
-                    **options,
-                )
+    def _write_blocks(self, blocks: list[Block]) -> None:
+        width = max(1, self.application.output.get_size().columns)
+        for block in blocks:
+            self._print_block(
+                self._scrollback,
+                block,
+                width,
+                10_000,
+                viewport=False,
+            )
 
-        result = run_in_terminal(write_blocks)
-        if inspect.isawaitable(result):
-            task = asyncio.create_task(result)
-            self._pending.add(task)
-            task.add_done_callback(self._pending.discard)
+    def _commit_blocks(self, blocks: list[Block]) -> None:
+        self._track(
+            run_in_terminal(lambda: self._write_blocks(blocks)),
+            terminal=True,
+        )
+
+    async def _clear_scrollback(self) -> None:
+        self.scheduler.commit_now()
+        await self._drain(self._terminal_pending)
+        await self._track(
+            run_in_terminal(self._scrollback.clear),
+            terminal=True,
+        )
+        self.transcript.clear()
+        self.application.invalidate()
+
+    async def _drain(self, pending: set[asyncio.Future[Any]]) -> None:
+        while pending:
+            await asyncio.gather(*tuple(pending))
+
+    async def _drain_pending(self) -> None:
+        await self._drain(self._pending)
 
     async def run(self) -> None:
         try:
@@ -303,8 +396,9 @@ class ApplicationRuntime:
         except EOFError:
             pass
         finally:
-            if self._pending:
-                await asyncio.gather(*tuple(self._pending), return_exceptions=True)
+            await self._drain_pending()
+            self.scheduler.commit_now()
+            await self._drain_pending()
             await self.scheduler.aclose()
 
 async def run_app(cfg: Config) -> int:

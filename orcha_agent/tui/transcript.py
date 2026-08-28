@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from rich.console import Group
-
 from orcha_agent.core.events import (
     ModelChunk,
     ThreadSwitch,
@@ -80,7 +78,7 @@ class Transcript:
         self,
         renderable: Any,
         *,
-        immediate: bool = True,
+        immediate: bool = False,
         **options: Any,
     ) -> Block:
         block = self.frame.add(
@@ -95,11 +93,11 @@ class Transcript:
         message: str,
         *,
         level: str = "error",
-        immediate: bool = True,
+        immediate: bool = False,
     ) -> Block:
         lines = message.splitlines()
         if level == "error" and len(lines) > 8:
-            lines = [*lines[:8], "…"]
+            lines = [*lines[:7], "…"]
         block = self.frame.add("banner", {"message": "\n".join(lines), "level": level})
         self._commit(block, immediate=immediate)
         return block
@@ -122,9 +120,14 @@ class Transcript:
         return False
 
     async def handle(self, event: object) -> None:
-        if self._legacy(event):
-            return
         if isinstance(event, TurnStart):
+            for prior in self.frame.blocks:
+                if prior.state is BlockState.ACTIVE:
+                    prior.settle()
+            self._source_blocks.clear()
+            self._tools.clear()
+            if self._legacy(event):
+                return
             block = self.frame.add(
                 "user",
                 {"text": event.text, "thread_id": event.thread_id},
@@ -133,6 +136,8 @@ class Transcript:
             self._commit(block, immediate=True)
             if self.scheduler is not None:
                 self.scheduler.render_now()
+            return
+        if self._legacy(event):
             return
         if isinstance(event, ModelChunk):
             self._model_chunk(event)
@@ -226,14 +231,21 @@ class Transcript:
             self.scheduler.request_invalidate()
 
     def print(self, *objects: Any, **kwargs: Any) -> Block:
-        renderable: Any
-        if not objects:
-            renderable = ""
-        elif len(objects) == 1:
-            renderable = objects[0]
-        else:
-            renderable = Group(*objects)
-        return self.append_raw(renderable, **kwargs)
+        block = self.frame.add(
+            "raw",
+            {
+                "objects": tuple(objects),
+                "options": dict(kwargs),
+                "level": "raw",
+            },
+        )
+        self._commit(block)
+        return block
+
+    def clear(self) -> None:
+        self.frame.blocks.clear()
+        self._source_blocks.clear()
+        self._tools.clear()
 
 
 __all__ = ["Transcript"]

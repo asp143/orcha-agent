@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 
 import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from rich.console import Console
+
+from orcha_agent.core.events import ModelChunk, TurnEnd, TurnStart
 
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 
@@ -13,13 +17,21 @@ from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 async def test_application_is_headlessly_driveable_through_submit_and_exit() -> None:
     submitted: list[str] = []
     submitted_event = asyncio.Event()
+    stream = StringIO()
+    console = Console(file=stream, force_terminal=False)
 
     async def submit(text: str) -> None:
+        await runtime.transcript.handle(TurnStart(thread_id="thread", text=text))
         submitted.append(text)
         submitted_event.set()
 
     with create_pipe_input() as pipe:
-        runtime = ApplicationRuntime(submit, input=pipe, output=DummyOutput())
+        runtime = ApplicationRuntime(
+            submit,
+            input=pipe,
+            output=DummyOutput(),
+            console=console,
+        )
         task = asyncio.create_task(runtime.run())
         await asyncio.sleep(0)
         pipe.send_text("hello\n")
@@ -29,6 +41,7 @@ async def test_application_is_headlessly_driveable_through_submit_and_exit() -> 
 
     assert submitted == ["hello"]
     assert runtime.application.full_screen is False
+    assert "hello" in stream.getvalue()
 
 
 @pytest.mark.asyncio
@@ -50,3 +63,90 @@ async def test_ui_facade_controls_runtime_state_and_overlay_results() -> None:
     assert facade.notifications == ["saved"]
     assert facade.thinking_visible is False
     assert facade.tools_expanded is True
+
+
+@pytest.mark.asyncio
+async def test_exit_drains_the_final_coalesced_transcript_commit() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    stream = StringIO()
+
+    async def submit(_text: str) -> None:
+        await runtime.transcript.handle(
+            ModelChunk(chunk="final answer", role="main", source_id="main")
+        )
+        started.set()
+        await release.wait()
+        await runtime.transcript.handle(TurnEnd(thread_id="thread"))
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            input=pipe,
+            output=DummyOutput(),
+            console=Console(file=stream, force_terminal=False),
+        )
+        task = asyncio.create_task(runtime.run())
+        await asyncio.sleep(0)
+        pipe.send_text("go\n")
+        await asyncio.wait_for(started.wait(), timeout=1)
+        pipe.send_bytes(b"\x04")
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+
+    assert "final answer" in stream.getvalue()
+
+
+def test_composer_height_counts_newlines_and_wrapped_rows() -> None:
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        runtime.buffer.text = "one\ntwo\n123456789"
+
+        assert runtime._composer_height(5) == 4
+
+
+@pytest.mark.asyncio
+async def test_runtime_clear_uses_application_terminal_operation_and_redraws() -> None:
+    cleared = asyncio.Event()
+
+    async def submit(_text: str) -> None:
+        runtime.frame.add("assistant", {"text": "stale"})
+        await runtime.ui.clear()
+        cleared.set()
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(submit, input=pipe, output=DummyOutput())
+        task = asyncio.create_task(runtime.run())
+        await asyncio.sleep(0)
+        pipe.send_text("clear\n")
+        await asyncio.wait_for(cleared.wait(), timeout=1)
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, timeout=1)
+
+    assert runtime.frame.blocks == []
+
+
+@pytest.mark.asyncio
+async def test_transcript_print_replays_rich_sep_and_end_semantics() -> None:
+    expected_stream = StringIO()
+    actual_stream = StringIO()
+    expected = Console(file=expected_stream, force_terminal=False)
+    actual = Console(file=actual_stream, force_terminal=False)
+    expected.print("alpha", "beta", sep="|", end="!")
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+            console=actual,
+        )
+        runtime.transcript.print("alpha", "beta", sep="|", end="!")
+        runtime._write_blocks(runtime.frame.blocks)
+        await runtime.scheduler.aclose()
+
+    assert actual_stream.getvalue() == expected_stream.getvalue()

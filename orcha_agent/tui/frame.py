@@ -119,8 +119,16 @@ class Frame:
     def tool_rows(available_rows: int) -> int:
         return min(3, max(0, available_rows))
 
-    def viewport_plan(self, budget_rows: int) -> list[ViewportItem]:
-        """Allocate rows newest-first, then restore transcript order."""
+    def viewport_plan(
+        self,
+        budget_rows: int,
+        *,
+        width: int | None = None,
+        measure: Callable[[Block, int], int] | None = None,
+    ) -> list[ViewportItem]:
+        """Allocate measured visual rows newest-first in transcript order."""
+        if width is not None:
+            width = max(1, width)
         remaining = max(0, budget_rows)
         planned: list[ViewportItem] = []
         for block in reversed(self.blocks):
@@ -130,9 +138,19 @@ class Frame:
                 continue
             if block.kind == "tool":
                 requested = self.tool_rows(remaining)
+            elif width is not None and measure is not None:
+                requested = min(remaining, max(1, measure(block, width)))
             else:
-                content = block.data.get("text", block.data.get("message", ""))
-                content_rows = max(1, str(content).count("\n") + 1)
+                content = str(
+                    block.data.get("text", block.data.get("message", ""))
+                )
+                if width is None:
+                    content_rows = max(1, content.count("\n") + 1)
+                else:
+                    content_rows = sum(
+                        max(1, (len(line) + width - 1) // width)
+                        for line in content.split("\n")
+                    )
                 requested = min(remaining, content_rows)
             if requested:
                 planned.append(ViewportItem(block, requested))
