@@ -45,6 +45,7 @@ EXPECTED_COMMANDS = {
     "fork",
     "help",
     "login",
+    "keys",
     "logout",
     "mode",
     "model",
