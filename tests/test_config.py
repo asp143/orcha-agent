@@ -366,3 +366,17 @@ def test_ui_theme_and_symbols_have_maintainable_defaults(tmp_path: Path) -> None
 
     assert cfg.theme == "dark"
     assert cfg.symbols == "nerd"
+
+
+@pytest.mark.parametrize("shape", ["box", "claude", "borderless"])
+def test_ui_composer_accepts_supported_shapes(tmp_path: Path, shape: str) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(f'[ui]\ncomposer = "{shape}"\n', encoding="utf-8")
+    assert _load(tmp_path, user_config_path=config).composer == shape
+
+
+def test_ui_composer_rejects_unknown_shape(tmp_path: Path) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text('[ui]\ncomposer = "floating"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=config)

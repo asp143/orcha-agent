@@ -172,6 +172,40 @@ class PluginAPI:
             replace=replace,
         )
 
+    def add_completer(
+        self,
+        trigger: str,
+        fn: Callable[[Any], Any],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_completer(
+            self.name,
+            trigger,
+            fn,
+            priority=priority,
+            replace=replace,
+        )
+
+    def add_keybinding(
+        self,
+        action: str,
+        handler: Callable[[Any, Any], Any],
+        default: str | Sequence[str] = "",
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_keybinding(
+            self.name,
+            action,
+            handler,
+            default,
+            priority=priority,
+            replace=replace,
+        )
+
 
     def add_provider(
         self,

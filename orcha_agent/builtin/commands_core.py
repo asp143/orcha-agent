@@ -231,6 +231,17 @@ async def _theme(ctx: Any, args: str) -> None:
     ctx.console.print(f"Theme: {selected_name}")
 
 
+async def _keys(ctx: Any, _args: str) -> None:
+    effective = getattr(getattr(ctx, "ui", None), "effective_keys", {})
+    if not effective:
+        ctx.console.error("Keybindings are unavailable.")
+        return
+    lines = ["Keybindings"]
+    for action, bindings in sorted(effective.items()):
+        lines.append(f"{action}: {', '.join(bindings) or 'unbound'}")
+    ctx.console.print("\n".join(lines))
+
+
 def register(api: PluginAPI) -> None:
     api.add_command("help", _help, help="List available slash commands")
     api.add_command("exit", _exit, help="Exit orcha-agent")
@@ -239,3 +250,4 @@ def register(api: PluginAPI) -> None:
     api.add_command("login", _login, help="Log in to a provider: /login <prefix>")
     api.add_command("logout", _logout, help="Log out of a provider: /logout <prefix>")
     api.add_command("theme", _theme, help="Switch themes: /theme <name>")
+    api.add_command("keys", _keys, help="List effective keybindings")

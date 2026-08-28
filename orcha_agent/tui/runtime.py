@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import os
+import shlex
+import subprocess
 import sys
+import tempfile
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from io import StringIO
@@ -11,9 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application, run_in_terminal
-from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.formatted_text import ANSI, HTML
-from prompt_toolkit.history import FileHistory
+from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
@@ -28,13 +33,18 @@ from orcha_agent.core.events import (
     Event,
     EventBus,
     SessionSwitch,
+    ToolCallEnd,
+    ToolCallStart,
 )
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
 
+from .blocks import BlockRendererDispatcher, DEFAULT_THEME
 from .console import ConsoleOutput
+from .complete import ComposerCompleter
+from .composer import Composer
 from .context import (
     AppContext,
     _session_resolution_error,
@@ -42,15 +52,16 @@ from .context import (
     _uncheckpointed_seed_target,
 )
 from .frame import Block, Frame, FrameScheduler
-from .blocks import BlockRendererDispatcher, DEFAULT_THEME
+from .history import SQLiteHistory, history_path
+from .keys import create_key_bindings, load_keybindings
+from .queue import PromptQueue, split_submission
 from .transcript import Transcript
 from .theme import Theme, load_themes, select_theme
 from .turn import _run_cancellable_turn
 
 
-
 def _history_path() -> Path:
-    return Path.home() / ".local/share/orcha-agent/history"
+    return history_path()
 
 
 def _bindings() -> KeyBindings:
@@ -187,16 +198,23 @@ class ApplicationRuntime:
         submit: Callable[[str], Awaitable[None]],
         *,
         registry: Registry | None = None,
-        history: FileHistory | None = None,
+        history: History | None = None,
         status: Callable[[], Any] | None = None,
         input: Any = None,
         output: Any = None,
         console: Console | None = None,
         theme: Any = DEFAULT_THEME,
         themes: Mapping[str, Any] | None = None,
+        ctx: Any = None,
+        composer_shape: str = "box",
+        keybindings_path: str | Path | None = None,
+        shell_runner: Callable[[str, Path, float], Any] | None = None,
+        editor_runner: Callable[[str], str] | None = None,
     ) -> None:
         self._submit = submit
+        self.ctx = ctx
         self.registry = registry
+        completion_registry = registry or Registry()
         self.frame = Frame()
         self.theme: Any = theme
         self._themes = dict(themes or {})
@@ -207,7 +225,10 @@ class ApplicationRuntime:
         self._block_dispatcher = BlockRendererDispatcher(
             registry.block_renderers if registry is not None else {}
         )
+        previous_ui = getattr(ctx, "ui", None)
+        show_overlay = getattr(previous_ui, "show", None)
         self.ui = UIFacade(
+            show_overlay=show_overlay,
             notify=self._notify,
             clear=self._clear_scrollback,
             set_theme=self._set_theme,
@@ -216,21 +237,52 @@ class ApplicationRuntime:
         self._pending: set[asyncio.Future[Any]] = set()
         self._terminal_pending: set[asyncio.Future[Any]] = set()
         self._submit_lock = asyncio.Lock()
+        self._early_notifications: list[str] = []
         self._scrollback = console or Console()
+        self.queue = PromptQueue()
+        self.ui.queue = self.queue
+        if ctx is not None:
+            ctx.ui = self.ui
+            ctx.queue = self.queue
+        self.streaming = False
+        self._active_turn: asyncio.Task[Any] | None = None
+        self._last_escape = 0.0
+        self._last_interrupt = 0.0
+        self._shell_runner = shell_runner or self._run_shell_process
+        self._custom_editor = editor_runner is not None
+        self._editor_runner = editor_runner or self._run_editor_process
+        self.thinking_level = self._restore_thinking_level()
+        self.ui.thinking_level = self.thinking_level
 
-        self.buffer = Buffer(
+        completer = ComposerCompleter(completion_registry, self._cwd())
+        self.composer = Composer(
+            shape=composer_shape,
+            theme=theme,
+            model=self._model_label,
+            thinking=lambda: self.thinking_level,
             history=history,
-            multiline=True,
+            completer=completer,
             accept_handler=self._accept,
         )
-        bindings = _bindings()
+        self.buffer = self.composer.buffer
+        self._restore_draft()
+        effective = load_keybindings(
+            user_path=keybindings_path,
+            registry=completion_registry,
+            warn=self._notify,
+        )
+        self.ui.effective_keys = effective
+        handlers = self._action_handlers()
+        bindings = create_key_bindings(effective, handlers)
 
-        @bindings.add("c-d")
-        def _exit(event: Any) -> None:
-            if event.current_buffer.text:
-                event.current_buffer.delete()
-            else:
-                event.app.exit()
+        @bindings.add("escape")
+        def _escape(event: Any) -> None:
+            self._escape_ladder(event)
+
+        @bindings.add("s-escape")
+        def _double_escape(event: Any) -> None:
+            self._escape_ladder(event)
+            self._escape_ladder(event)
 
         root = FloatContainer(
             content=HSplit(
@@ -239,10 +291,7 @@ class ApplicationRuntime:
                         FormattedTextControl(self._viewport_text),
                         height=Dimension(min=0),
                     ),
-                    Window(
-                        BufferControl(buffer=self.buffer),
-                        height=Dimension(min=1, max=8),
-                    ),
+                    self.composer.container,
                     Window(
                         FormattedTextControl(self._status),
                         height=1,
@@ -265,6 +314,8 @@ class ApplicationRuntime:
             full_screen=False,
             **kwargs,
         )
+        self.application.ttimeoutlen = 0.1
+        self.application.timeoutlen = 0.1
         self.scheduler = FrameScheduler(
             self.frame,
             commit=self._commit_blocks,
@@ -275,14 +326,273 @@ class ApplicationRuntime:
             registry=registry,
             scheduler=self.scheduler,
         )
+        for notification in self._early_notifications:
+            self.transcript.append_banner(notification, level="info")
+        self._early_notifications.clear()
 
-    def _accept(self, buffer: Buffer) -> bool:
-        text = buffer.text.strip()
-        buffer.reset(append_to_history=bool(text))
+    def _cwd(self) -> Path:
+        value = getattr(getattr(self.ctx, "cfg", None), "cwd", Path.cwd())
+        return Path(value)
+
+    def _model_label(self) -> str:
+        value = getattr(getattr(self.ctx, "cfg", None), "model", "model")
+        return value[0] if isinstance(value, list) and value else str(value)
+
+    def _composer_state(self) -> dict[str, Any]:
+        states = getattr(self.ctx, "plugin_states", None)
+        if not isinstance(states, dict):
+            return {}
+        return states.setdefault("composer", {})
+
+    def _restore_thinking_level(self) -> str:
+        value = self._composer_state().get("thinking_level", "off")
+        return value if value in {"off", "low", "medium", "high", "max"} else "off"
+
+    def _restore_draft(self) -> None:
+        state = self._composer_state()
+        draft = state.get("draft")
+        if not isinstance(draft, str) or not draft:
+            return
+        self.buffer.text = draft
+        self.buffer.cursor_position = len(draft)
+        state.pop("draft", None)
+
+    def _persist_state(self) -> None:
+        persist = getattr(self.ctx, "persist_plugin_states", None)
+        if persist is not None:
+            persist()
+
+    def _accept(self, buffer: Any) -> bool:
+        raw = buffer.text
+        text = raw.strip()
         if not text:
+            if self.streaming and self.queue:
+                buffer.reset(append_to_history=False)
+                self._abort_turn()
             return False
-        self._track(self._submit_serially(text))
+        buffer.reset(append_to_history=True)
+        if text == ".":
+            text = "keep going"
+        prompts = split_submission(text)
+        is_batch = len(prompts) > 1
+        if self.streaming:
+            self.queue.extend(prompts)
+            self.application.invalidate()
+            return False
+        first = prompts.pop(0)
+        if is_batch:
+            self.queue.extend(prompts)
+        self._track(self._submit_serially(first))
         return False
+
+    def _action_handlers(self) -> dict[str, Callable[[Any], None]]:
+        return {
+            "submit": self._submit_action,
+            "newline": lambda event: event.current_buffer.insert_text("\n"),
+            "queue": self._queue_draft,
+            "dequeue": self._dequeue,
+            "toggle_thinking": lambda _event: self.ui.toggle_thinking(),
+            "cycle_thinking_level": lambda _event: self._cycle_thinking_level(),
+            "expand_tools": lambda _event: self.ui.expand_tools(not self.ui.tools_expanded),
+            "model_picker": lambda _event: self._track(self.ui.show("model")),
+            "cycle_model": lambda _event: self._track(self._cycle_model()),
+            "history_search": lambda _event: self._track(self._history_search()),
+            "external_editor": lambda _event: self._track(self._external_editor()),
+            "clear_screen": lambda _event: self._track(self.ui.clear()),
+            "interrupt": self._interrupt,
+            "exit": self._exit,
+            **self._plugin_handlers(),
+        }
+
+    def _plugin_handlers(self) -> dict[str, Callable[[Any], None]]:
+        handlers: dict[str, Callable[[Any], None]] = {}
+        if self.registry is None:
+            return handlers
+        for action, registration in self.registry.keybindings.items():
+            def invoke(event: Any, registration: Any = registration) -> None:
+                result = registration.handler(self.ctx, event)
+                if inspect.isawaitable(result):
+                    self._track(result)
+            handlers[action] = invoke
+        return handlers
+
+    def _submit_action(self, event: Any) -> None:
+        buffer = event.current_buffer
+        if buffer.text.endswith("\\"):
+            buffer.text = buffer.text[:-1] + "\n"
+            buffer.cursor_position = len(buffer.text)
+            return
+        buffer.validate_and_handle()
+
+    def _queue_draft(self, event: Any) -> None:
+        if not self.streaming:
+            return
+        text = event.current_buffer.text.strip()
+        if text:
+            self.queue.extend(split_submission(text))
+            event.current_buffer.reset(append_to_history=False)
+            event.app.invalidate()
+
+    def _dequeue(self, event: Any) -> None:
+        text = self.queue.pop_last()
+        if text is not None:
+            event.current_buffer.text = text
+            event.current_buffer.cursor_position = len(text)
+
+    def _abort_turn(self) -> None:
+        if self._active_turn is not None and not self._active_turn.done():
+            self._active_turn.cancel()
+
+    def _escape_ladder(self, event: Any) -> None:
+        buffer = event.current_buffer
+        if buffer.complete_state is not None:
+            buffer.cancel_completion()
+            return
+        if self.streaming:
+            restored = self.queue.restore_text()
+            if restored:
+                buffer.text = restored
+                buffer.cursor_position = len(restored)
+            self._abort_turn()
+            return
+        if buffer.text:
+            return
+        now = time.monotonic()
+        if now - self._last_escape <= 0.5:
+            self._last_escape = 0.0
+            self._track(self.ui.show("tree"))
+        else:
+            self._last_escape = now
+
+    def _interrupt(self, event: Any) -> None:
+        buffer = event.current_buffer
+        if buffer.text:
+            buffer.reset(append_to_history=False)
+            self._last_interrupt = 0.0
+            return
+        if self.streaming:
+            self._abort_turn()
+            self._last_interrupt = 0.0
+            return
+        now = time.monotonic()
+        if now - self._last_interrupt <= 1.0:
+            event.app.exit()
+        else:
+            self._last_interrupt = now
+
+    def _exit(self, event: Any) -> None:
+        text = event.current_buffer.text
+        if text:
+            self._composer_state()["draft"] = text
+            self._persist_state()
+        if self.streaming:
+            self._abort_turn()
+        event.app.exit()
+
+    async def _history_search(self) -> None:
+        selected = await self.ui.show("history")
+        if isinstance(selected, str):
+            self.buffer.text = selected
+            self.buffer.cursor_position = len(selected)
+
+    def _thinking_supported(self) -> bool:
+        if self.registry is None:
+            return False
+        model = self._model_label()
+        prefix, separator, _name = model.partition(":")
+        registration = self.registry.providers.get(prefix) if separator else None
+        return bool(registration and registration.capabilities.thinking)
+
+    def _cycle_thinking_level(self) -> None:
+        if not self._thinking_supported():
+            self.ui.notify("Thinking levels are unavailable for the active provider.")
+            return
+        levels = ("off", "low", "medium", "high", "max")
+        self.thinking_level = levels[(levels.index(self.thinking_level) + 1) % len(levels)]
+        self.ui.thinking_level = self.thinking_level
+        self._composer_state()["thinking_level"] = self.thinking_level
+        self._persist_state()
+        self.application.invalidate()
+
+    async def _cycle_model(self) -> None:
+        if self.registry is None or self.ctx is None:
+            return
+        available = [
+            f"{prefix}:{model}"
+            for prefix, provider in sorted(self.registry.providers.items())
+            for model in provider.models
+            if provider.available() is None
+        ]
+        if not available:
+            self.ui.notify("No models are available.")
+            return
+        current = self._model_label()
+        index = available.index(current) + 1 if current in available else 0
+        await self.ctx.switch_model(available[index % len(available)])
+
+    async def _external_editor(self) -> None:
+        if not self._custom_editor and not (os.environ.get("VISUAL") or os.environ.get("EDITOR")):
+            self.ui.notify("Set $VISUAL or $EDITOR to edit the draft externally.")
+            return
+        original = self.buffer.text
+        try:
+            edited = await run_in_terminal(lambda: self._editor_runner(original))
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.ui.notify(f"External editor failed: {exc}")
+            return
+        if isinstance(edited, str):
+            self.buffer.text = edited
+            self.buffer.cursor_position = len(edited)
+
+    @staticmethod
+    def _run_editor_process(text: str) -> str:
+        command = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+        if not command:
+            return text
+        path = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".md", delete=False) as stream:
+                stream.write(text)
+                path = stream.name
+            subprocess.run([*shlex.split(command), path], check=True)
+            return Path(path).read_text(encoding="utf-8")
+        finally:
+            if path:
+                Path(path).unlink(missing_ok=True)
+
+    @staticmethod
+    def _run_shell_process(command: str, cwd: Path, timeout: float) -> Any:
+        return subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+        )
+
+    async def _run_shell(self, command: str) -> None:
+        identifier = f"execute-{time.monotonic_ns()}"
+        bus = getattr(self.ctx, "_bus", None)
+        if bus is not None:
+            await bus.emit(ToolCallStart(name="execute", args={"command": command}, id=identifier))
+        try:
+            completed = await asyncio.to_thread(self._shell_runner, command, self._cwd(), 60.0)
+            result = {
+                "returncode": int(getattr(completed, "returncode", 0)),
+                "stdout": str(getattr(completed, "stdout", "")),
+                "stderr": str(getattr(completed, "stderr", "")),
+            }
+        except subprocess.TimeoutExpired:
+            result = {"returncode": 124, "stdout": "", "stderr": "timed out after 60 seconds"}
+        if bus is not None:
+            await bus.emit(ToolCallEnd(name="execute", id=identifier, result=result))
+
+    async def _dispatch_submission(self, text: str) -> None:
+        if text.startswith("!"):
+            await self._run_shell(text[1:].strip())
+        else:
+            await self._submit(text)
 
     def _track(
         self,
@@ -300,16 +610,31 @@ class ApplicationRuntime:
 
     async def _submit_serially(self, text: str) -> None:
         async with self._submit_lock:
-            try:
-                await self._submit(text)
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                self.transcript.append_banner("interrupted", level="warning")
-            except Exception as exc:
-                self.transcript.append_banner(f"{type(exc).__name__}: {exc}")
+            current: str | None = text
+            while current is not None:
+                self.streaming = True
+                self._active_turn = asyncio.create_task(self._dispatch_submission(current))
+                try:
+                    await self._active_turn
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    self.transcript.append_banner("interrupted", level="warning")
+                except Exception as exc:
+                    self.transcript.append_banner(f"{type(exc).__name__}: {exc}")
+                finally:
+                    self._active_turn = None
+                    self.streaming = False
+                    self.application.invalidate()
+                current = self.queue.pop()
 
     def _notify(self, text: str) -> None:
-        self.transcript.append_banner(text, level="info")
-        self.application.invalidate()
+        transcript = getattr(self, "transcript", None)
+        application = getattr(self, "application", None)
+        if transcript is None:
+            self._early_notifications.append(text)
+            return
+        transcript.append_banner(text, level="info")
+        if application is not None:
+            application.invalidate()
 
     def _apply_theme(self, selected: Any) -> Any:
         self.theme = selected
@@ -344,12 +669,7 @@ class ApplicationRuntime:
         )
 
     def _composer_height(self, width: int) -> int:
-        width = max(1, width)
-        rows = 0
-        for line in self.buffer.text.split("\n"):
-            columns = sum(get_cwidth(character) for character in line)
-            rows += max(1, (columns + width - 1) // width)
-        return min(8, max(1, rows))
+        return self.composer.text_rows(width)
 
     def _print_block(
         self,
@@ -404,7 +724,7 @@ class ApplicationRuntime:
         width = max(1, size.columns)
         budget = Frame.row_budget(
             terminal_rows=size.rows,
-            composer_rows=self._composer_height(width),
+            composer_rows=self._composer_height(width) + self.composer.chrome_lines,
             status_rows=1,
         )
         rendered: list[str] = []
@@ -636,13 +956,17 @@ async def run_app(cfg: Config) -> int:
             ctx.console.warning,
         )
 
-        history_path = _compat("_history_path", _history_path)()
-        history_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_history_path = _compat("_history_path", _history_path)()
+        prompt_history_path.parent.mkdir(parents=True, exist_ok=True)
         runtime_type = _compat("ApplicationRuntime", ApplicationRuntime)
         runtime = runtime_type(
             submit,
             registry=registry,
-            history=FileHistory(str(history_path)),
+            history=SQLiteHistory(
+                prompt_history_path,
+                cwd=ctx.cfg.cwd,
+                session_id=session_id,
+            ),
             status=lambda: _bottom_toolbar(ctx),
             console=(
                 ctx.console.console
@@ -651,6 +975,8 @@ async def run_app(cfg: Config) -> int:
             ),
             theme=active_theme,
             themes=available_themes,
+            ctx=ctx,
+            composer_shape=ctx.cfg.composer,
         )
         if hasattr(runtime, "replace_themes"):
             _register_theme_refresh(bus, ctx, runtime)

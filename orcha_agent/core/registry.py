@@ -11,6 +11,8 @@ RendererMatch: TypeAlias = str | Callable[[Any], bool]
 Renderer: TypeAlias = Callable[[Any], Any | None]
 BlockRenderer: TypeAlias = Callable[..., Any]
 AvailabilityCheck: TypeAlias = Callable[[], str | None]
+CompleterFunction: TypeAlias = Callable[[Any], Any]
+KeybindingHandler: TypeAlias = Callable[[Any, Any], Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,23 @@ class StatusSegmentRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class CompleterRegistration:
+    plugin: str
+    priority: int
+    trigger: str
+    fn: CompleterFunction
+
+
+@dataclass(frozen=True, slots=True)
+class KeybindingRegistration:
+    plugin: str
+    priority: int
+    action: str
+    handler: KeybindingHandler
+    default: str | Sequence[str]
+
+
+@dataclass(frozen=True, slots=True)
 class SubagentRegistration:
     plugin: str
     priority: int
@@ -127,6 +146,8 @@ class Registry:
         self.renderers: list[RendererRegistration] = []
         self.block_renderers: list[BlockRendererRegistration] = []
         self.status_segments: list[StatusSegmentRegistration] = []
+        self.completers: list[CompleterRegistration] = []
+        self.keybindings: dict[str, KeybindingRegistration] = {}
         self.subagents: list[SubagentRegistration] = []
         self.prompt_fragments: list[PromptFragment] = []
 
@@ -138,6 +159,8 @@ class Registry:
         self._mode_owners: dict[str, str] = {}
         self._middleware_owners: dict[str, str] = {}
         self._status_segment_owners: dict[str, str] = {}
+        self._completer_owners: dict[str, str] = {}
+        self._keybinding_owners: dict[str, str] = {}
         self._renderer_owners: dict[object, str] = {}
         self._block_renderer_owners: dict[str, str] = {}
         self._subagent_owners: dict[str, str] = {}
@@ -405,6 +428,63 @@ class Registry:
         )
         self.status_segments.sort(key=lambda entry: (entry.priority, entry.name))
 
+    def _add_completer(
+        self,
+        plugin: str,
+        trigger: str,
+        fn: CompleterFunction,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "completer",
+            trigger,
+            plugin,
+            self._completer_owners,
+            replace=replace,
+        )
+        if replace:
+            self.completers[:] = [
+                entry for entry in self.completers if entry.trigger != trigger
+            ]
+        self.completers.append(
+            CompleterRegistration(
+                plugin=plugin,
+                priority=priority,
+                trigger=trigger,
+                fn=fn,
+            )
+        )
+        self.completers.sort(
+            key=lambda entry: (entry.priority, entry.plugin, entry.trigger)
+        )
+
+    def _add_keybinding(
+        self,
+        plugin: str,
+        action: str,
+        handler: KeybindingHandler,
+        default: str | Sequence[str],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "keybinding",
+            action,
+            plugin,
+            self._keybinding_owners,
+            replace=replace,
+        )
+        self.keybindings[action] = KeybindingRegistration(
+            plugin=plugin,
+            priority=priority,
+            action=action,
+            handler=handler,
+            default=default,
+        )
+
     def _add_prompt_fragment(
         self,
         plugin: str,
@@ -428,6 +508,10 @@ __all__ = [
     "BackendRegistration",
     "CommandHandler",
     "CommandRegistration",
+    "CompleterFunction",
+    "CompleterRegistration",
+    "KeybindingHandler",
+    "KeybindingRegistration",
     "MiddlewareRegistration",
     "PromptFragment",
     "ProviderFactory",

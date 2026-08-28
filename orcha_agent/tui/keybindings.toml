@@ -1,0 +1,16 @@
+[bindings]
+submit = ["enter", "c-j"]
+newline = ["escape enter", "escape c-j"]
+queue = "c-q"
+dequeue = "escape up"
+toggle_thinking = "c-t"
+cycle_thinking_level = "s-tab"
+expand_tools = "c-o"
+model_picker = "escape p"
+cycle_model = "c-p"
+history_search = "c-r"
+external_editor = "c-g"
+clear_screen = "c-l"
+interrupt = "c-c"
+exit = "c-d"
+tree = "escape escape"

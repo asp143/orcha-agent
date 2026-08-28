@@ -46,6 +46,7 @@ class Config:
     thinking: str = "summary"
     theme: str = "dark"
     symbols: str = "nerd"
+    composer: str = "box"
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
@@ -274,6 +275,9 @@ def load_config(
         symbols = explicit_symbols
     else:
         parser.error("[ui] symbols must be unicode, nerd, or ascii")
+    composer = ui.get("composer", "box")
+    if composer not in {"box", "claude", "borderless"}:
+        parser.error("[ui] composer must be box, claude, or borderless")
 
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
@@ -295,6 +299,7 @@ def load_config(
         thinking=thinking,
         theme=theme,
         symbols=symbols,
+        composer=composer,
         pricing={
             str(model_name): {
                 str(key): float(value)
