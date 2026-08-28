@@ -44,6 +44,9 @@ class Config:
     statusbar: bool = True
     icons: bool = True
     thinking: str = "summary"
+    theme: str = "dark"
+    symbols: str = "nerd"
+
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
@@ -257,6 +260,21 @@ def load_config(
     thinking = str(ui.get("thinking", "summary"))
     if thinking not in {"summary", "off", "all"}:
         parser.error("[ui] thinking must be summary, off, or all")
+    theme = ui.get("theme", "dark")
+    if not isinstance(theme, str) or not theme.strip():
+        parser.error("[ui] theme must be a non-empty string")
+    explicit_symbols = ui.get("symbols")
+    if explicit_symbols is None:
+        symbols = "nerd" if bool(ui.get("icons", True)) else "ascii"
+    elif isinstance(explicit_symbols, str) and explicit_symbols in {
+        "unicode",
+        "nerd",
+        "ascii",
+    }:
+        symbols = explicit_symbols
+    else:
+        parser.error("[ui] symbols must be unicode, nerd, or ascii")
+
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
@@ -275,6 +293,8 @@ def load_config(
         statusbar=bool(ui.get("statusbar", True)),
         icons=bool(ui.get("icons", True)),
         thinking=thinking,
+        theme=theme,
+        symbols=symbols,
         pricing={
             str(model_name): {
                 str(key): float(value)

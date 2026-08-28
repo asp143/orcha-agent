@@ -342,3 +342,27 @@ output = 75
         "codex:gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5},
         "anthropic:claude-opus-4-1": {"input": 15, "output": 75},
     }
+
+
+def test_ui_theme_and_symbols_parse_with_icon_compatibility(tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit.toml"
+    explicit.write_text(
+        '[ui]\ntheme = "nord"\nsymbols = "unicode"\nicons = false\n'
+    )
+    legacy = tmp_path / "legacy.toml"
+    legacy.write_text('[ui]\nicons = false\n')
+
+    explicit_cfg = _load(tmp_path, user_config_path=explicit)
+    legacy_cfg = _load(tmp_path, user_config_path=legacy)
+
+    assert explicit_cfg.theme == "nord"
+    assert explicit_cfg.symbols == "unicode"
+    assert explicit_cfg.icons is False
+    assert legacy_cfg.symbols == "ascii"
+
+
+def test_ui_theme_and_symbols_have_maintainable_defaults(tmp_path: Path) -> None:
+    cfg = _load(tmp_path)
+
+    assert cfg.theme == "dark"
+    assert cfg.symbols == "nerd"

@@ -1,0 +1,17 @@
+{
+  "name": "Gruvbox",
+  "vars": {
+    "bg": "#282828", "surface": "#3c3836", "surface2": "#504945", "fg": "#ebdbb2", "muted": "#a89984",
+    "accent": "#83a598", "green": "#b8bb26", "red": "#fb4934", "yellow": "#fabd2f", "purple": "#d3869b", "aqua": "#8ec07c", "orange": "#fe8019"
+  },
+  "colors": {
+    "accent": "$accent", "border": "$surface2", "borderAccent": "$orange", "borderMuted": "$muted", "success": "$green", "error": "$red", "warning": "$yellow", "muted": "$muted", "dim": "$muted", "text": "$fg",
+    "thinkingText": "$muted", "selectedBg": "$surface2", "userMessageBg": "$surface", "customMessageBg": "$surface", "toolPendingBg": "$surface", "toolSuccessBg": "$surface", "toolErrorBg": "$surface", "statusLineBg": "$surface",
+    "userMessageText": "$fg", "toolTitle": "$accent", "toolOutput": "$fg", "mdHeading": "$yellow", "mdLink": "$accent", "mdLinkUrl": "$aqua", "mdCode": "$orange", "mdCodeBlock": "$fg", "mdCodeBlockBorder": "$surface2",
+    "mdQuote": "$muted", "mdQuoteBorder": "$orange", "mdHr": "$surface2", "mdListBullet": "$yellow", "toolDiffAdded": "$green", "toolDiffRemoved": "$red", "toolDiffContext": "$muted",
+    "syntaxComment": "$muted", "syntaxKeyword": "$red", "syntaxFunction": "$green", "syntaxVariable": "$fg", "syntaxString": "$aqua", "syntaxNumber": "$purple", "syntaxType": "$yellow", "syntaxOperator": "$orange", "syntaxPunctuation": "$muted",
+    "thinkingOff": "$muted", "thinkingLow": "$aqua", "thinkingMedium": "$accent", "thinkingHigh": "$purple", "thinkingMax": "$red", "bashMode": "$orange", "statusLineSep": "$surface2", "statusLineModel": "$yellow", "statusLinePath": "$accent",
+    "statusLineGitClean": "$green", "statusLineGitDirty": "$orange", "statusLineContext": "$purple", "statusLineCost": "$green", "statusLineSubagents": "$aqua"
+  },
+  "symbols": {"preset": "nerd", "overrides": {}}
+}

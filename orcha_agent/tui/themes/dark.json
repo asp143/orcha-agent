@@ -1,0 +1,32 @@
+{
+  "name": "Dark",
+  "vars": {
+    "bg": "#111827",
+    "surface": "#1f2937",
+    "surface2": "#374151",
+    "fg": "#e5e7eb",
+    "muted": "#9ca3af",
+    "accent": "#60a5fa",
+    "green": "#34d399",
+    "red": "#f87171",
+    "yellow": "#fbbf24",
+    "purple": "#c084fc",
+    "cyan": "#22d3ee"
+  },
+  "colors": {
+    "accent": "$accent", "border": "$surface2", "borderAccent": "$accent", "borderMuted": "$muted",
+    "success": "$green", "error": "$red", "warning": "$yellow", "muted": "$muted", "dim": "$muted", "text": "$fg",
+    "thinkingText": "$muted", "selectedBg": "$surface2", "userMessageBg": "$surface", "customMessageBg": "$surface",
+    "toolPendingBg": "$surface", "toolSuccessBg": "$surface", "toolErrorBg": "$surface", "statusLineBg": "$surface",
+    "userMessageText": "$fg", "toolTitle": "$accent", "toolOutput": "$fg",
+    "mdHeading": "$purple", "mdLink": "$accent", "mdLinkUrl": "$cyan", "mdCode": "$yellow", "mdCodeBlock": "$fg",
+    "mdCodeBlockBorder": "$surface2", "mdQuote": "$muted", "mdQuoteBorder": "$surface2", "mdHr": "$surface2", "mdListBullet": "$accent",
+    "toolDiffAdded": "$green", "toolDiffRemoved": "$red", "toolDiffContext": "$muted",
+    "syntaxComment": "$muted", "syntaxKeyword": "$purple", "syntaxFunction": "$accent", "syntaxVariable": "$fg",
+    "syntaxString": "$green", "syntaxNumber": "$yellow", "syntaxType": "$cyan", "syntaxOperator": "$red", "syntaxPunctuation": "$muted",
+    "thinkingOff": "$muted", "thinkingLow": "$cyan", "thinkingMedium": "$accent", "thinkingHigh": "$purple", "thinkingMax": "$red",
+    "bashMode": "$yellow", "statusLineSep": "$surface2", "statusLineModel": "$accent", "statusLinePath": "$cyan",
+    "statusLineGitClean": "$green", "statusLineGitDirty": "$yellow", "statusLineContext": "$purple", "statusLineCost": "$green", "statusLineSubagents": "$cyan"
+  },
+  "symbols": {"preset": "nerd", "overrides": {}}
+}

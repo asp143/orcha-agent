@@ -1,0 +1,17 @@
+{
+  "name": "Dracula",
+  "vars": {
+    "bg": "#282a36", "surface": "#343746", "surface2": "#44475a", "fg": "#f8f8f2", "muted": "#6272a4",
+    "accent": "#8be9fd", "green": "#50fa7b", "red": "#ff5555", "yellow": "#f1fa8c", "purple": "#bd93f9", "pink": "#ff79c6"
+  },
+  "colors": {
+    "accent": "$accent", "border": "$surface2", "borderAccent": "$purple", "borderMuted": "$muted", "success": "$green", "error": "$red", "warning": "$yellow", "muted": "$muted", "dim": "$muted", "text": "$fg",
+    "thinkingText": "$muted", "selectedBg": "$surface2", "userMessageBg": "$surface", "customMessageBg": "$surface", "toolPendingBg": "$surface", "toolSuccessBg": "$surface", "toolErrorBg": "$surface", "statusLineBg": "$surface",
+    "userMessageText": "$fg", "toolTitle": "$accent", "toolOutput": "$fg", "mdHeading": "$purple", "mdLink": "$pink", "mdLinkUrl": "$accent", "mdCode": "$yellow", "mdCodeBlock": "$fg", "mdCodeBlockBorder": "$surface2",
+    "mdQuote": "$muted", "mdQuoteBorder": "$purple", "mdHr": "$surface2", "mdListBullet": "$pink", "toolDiffAdded": "$green", "toolDiffRemoved": "$red", "toolDiffContext": "$muted",
+    "syntaxComment": "$muted", "syntaxKeyword": "$pink", "syntaxFunction": "$green", "syntaxVariable": "$fg", "syntaxString": "$yellow", "syntaxNumber": "$purple", "syntaxType": "$accent", "syntaxOperator": "$pink", "syntaxPunctuation": "$fg",
+    "thinkingOff": "$muted", "thinkingLow": "$accent", "thinkingMedium": "$green", "thinkingHigh": "$purple", "thinkingMax": "$pink", "bashMode": "$yellow", "statusLineSep": "$surface2", "statusLineModel": "$purple", "statusLinePath": "$accent",
+    "statusLineGitClean": "$green", "statusLineGitDirty": "$yellow", "statusLineContext": "$pink", "statusLineCost": "$green", "statusLineSubagents": "$accent"
+  },
+  "symbols": {"preset": "nerd", "overrides": {}}
+}

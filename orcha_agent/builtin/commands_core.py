@@ -197,6 +197,40 @@ async def _providers(ctx: Any, args: str) -> None:
     ctx.console.print(table)
 
 
+async def _theme(ctx: Any, args: str) -> None:
+    name = args.strip()
+    if not name:
+        ui = getattr(ctx, "ui", None)
+        if ui is None or not hasattr(ui, "show"):
+            ctx.console.error("Theme picker is unavailable.")
+            return
+        await ui.show("theme")
+        return
+    if any(character.isspace() for character in name):
+        ctx.console.error("Usage: /theme <name>")
+        return
+    ui = getattr(ctx, "ui", None)
+    if ui is None or not hasattr(ui, "set_theme"):
+        ctx.console.error("Theme selection is unavailable.")
+        return
+    try:
+        selected = ui.set_theme(name)
+    except (KeyError, ValueError):
+        ctx.console.error(f"Unknown theme: {name}")
+        return
+    except RuntimeError as exc:
+        ctx.console.error(str(exc))
+        return
+    states = getattr(ctx, "plugin_states", None)
+    if isinstance(states, dict):
+        states.setdefault("commands_core", {})["theme"] = name
+        persist = getattr(ctx, "persist_plugin_states", None)
+        if persist is not None:
+            persist()
+    selected_name = getattr(selected, "id", name)
+    ctx.console.print(f"Theme: {selected_name}")
+
+
 def register(api: PluginAPI) -> None:
     api.add_command("help", _help, help="List available slash commands")
     api.add_command("exit", _exit, help="Exit orcha-agent")
@@ -204,3 +238,4 @@ def register(api: PluginAPI) -> None:
     api.add_command("providers", _providers, help="List model providers and availability")
     api.add_command("login", _login, help="Log in to a provider: /login <prefix>")
     api.add_command("logout", _logout, help="Log out of a provider: /logout <prefix>")
+    api.add_command("theme", _theme, help="Switch themes: /theme <name>")

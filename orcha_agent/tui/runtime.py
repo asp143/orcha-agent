@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -38,6 +38,7 @@ from .context import (
 from .frame import Block, Frame, FrameScheduler
 from .blocks import BlockRendererDispatcher, DEFAULT_THEME
 from .transcript import Transcript
+from .theme import Theme, load_themes, select_theme
 from .turn import _run_cancellable_turn
 
 
@@ -109,10 +110,12 @@ class UIFacade:
         show_overlay: Callable[[object], Awaitable[Any]] | None = None,
         notify: Callable[[str], None] | None = None,
         clear: Callable[[], Awaitable[None]] | None = None,
+        set_theme: Callable[[str], Any] | None = None,
     ) -> None:
         self._show_overlay = show_overlay
         self._notify = notify
         self._clear = clear
+        self._set_theme = set_theme
         self.notifications: list[str] = []
         self.thinking_visible = True
         self.tools_expanded = False
@@ -133,6 +136,11 @@ class UIFacade:
     async def clear(self) -> None:
         if self._clear is not None:
             await self._clear()
+    def set_theme(self, name: str) -> Any:
+        if self._set_theme is None:
+            raise RuntimeError("theme selection is unavailable")
+        return self._set_theme(name)
+
 
     def toggle_thinking(self) -> bool:
         self.thinking_visible = not self.thinking_visible
@@ -155,15 +163,26 @@ class ApplicationRuntime:
         input: Any = None,
         output: Any = None,
         console: Console | None = None,
+        theme: Any = DEFAULT_THEME,
+        themes: Mapping[str, Any] | None = None,
     ) -> None:
         self._submit = submit
         self.registry = registry
         self.frame = Frame()
-        self.theme: Any = DEFAULT_THEME
+        self.theme: Any = theme
+        self._themes = dict(themes or {})
+        current_theme_id = str(
+            getattr(theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default")
+        )
+        self._themes.setdefault(current_theme_id, theme)
         self._block_dispatcher = BlockRendererDispatcher(
             registry.block_renderers if registry is not None else {}
         )
-        self.ui = UIFacade(notify=self._notify, clear=self._clear_scrollback)
+        self.ui = UIFacade(
+            notify=self._notify,
+            clear=self._clear_scrollback,
+            set_theme=self._set_theme,
+        )
         self._status = status or (lambda: "")
         self._pending: set[asyncio.Future[Any]] = set()
         self._terminal_pending: set[asyncio.Future[Any]] = set()
@@ -204,6 +223,9 @@ class ApplicationRuntime:
             floats=[],
         )
         kwargs: dict[str, Any] = {}
+        prompt_style = getattr(theme, "pt", None)
+        if prompt_style is not None:
+            kwargs["style"] = prompt_style
         if input is not None:
             kwargs["input"] = input
         if output is not None:
@@ -259,6 +281,15 @@ class ApplicationRuntime:
     def _notify(self, text: str) -> None:
         self.transcript.append_banner(text, level="info")
         self.application.invalidate()
+    def _set_theme(self, name: str) -> Any:
+        selected = select_theme(self._themes, name)
+        self.theme = selected
+        prompt_style = getattr(selected, "pt", None)
+        if prompt_style is not None:
+            self.application.style = prompt_style
+        self.application.invalidate()
+        return selected
+
 
     def _render_block(self, block: Block, width: int, rows: int) -> Any:
         return self._block_dispatcher.render(
@@ -534,6 +565,23 @@ async def run_app(cfg: Config) -> int:
             except Exception as exc:
                 ctx.console.error(f"{type(exc).__name__}: {exc}")
 
+        available_themes = load_themes(
+            cwd=cfg.cwd,
+            trusted=cfg.trust_cwd,
+            warn=ctx.console.warning,
+            symbols=cfg.symbols,
+        )
+        saved_theme = states.get("commands_core", {}).get("theme", cfg.theme)
+        if not isinstance(saved_theme, str):
+            saved_theme = cfg.theme
+        try:
+            active_theme: Theme = select_theme(available_themes, saved_theme)
+        except KeyError:
+            ctx.console.warning(
+                f"Unknown theme '{saved_theme}'; using dark."
+            )
+            active_theme = available_themes["dark"]
+
         history_path = _compat("_history_path", _history_path)()
         history_path.parent.mkdir(parents=True, exist_ok=True)
         runtime_type = _compat("ApplicationRuntime", ApplicationRuntime)
@@ -547,6 +595,8 @@ async def run_app(cfg: Config) -> int:
                 if isinstance(ctx.console, ConsoleOutput)
                 else None
             ),
+            theme=active_theme,
+            themes=available_themes,
         )
         if hasattr(runtime, "transcript"):
             ctx.transcript = runtime.transcript

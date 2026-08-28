@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.styles import Style
 from rich.console import Console
 
 from orcha_agent.core.events import ModelChunk, TurnEnd, TurnStart
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.frame import Block
-
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 
 
@@ -182,3 +183,70 @@ def test_runtime_uses_memoized_registry_block_dispatcher() -> None:
         assert runtime._render_block(value, 80, 3) == "hello:80:3:False"
 
     assert calls == [0]
+
+
+def test_runtime_theme_change_invalidates_only_active_viewport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = SimpleNamespace(id="one", pt=Style.from_dict({"one": "#ffffff"}))
+    second = SimpleNamespace(id="two", pt=Style.from_dict({"two": "#000000"}))
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            theme=first,
+            themes={"one": first, "two": second},
+            input=pipe,
+            output=DummyOutput(),
+        )
+        invalidations: list[None] = []
+        writes: list[list[Block]] = []
+        monkeypatch.setattr(
+            runtime.application,
+            "invalidate",
+            lambda: invalidations.append(None),
+        )
+        monkeypatch.setattr(runtime, "_write_blocks", writes.append)
+
+        selected = runtime.ui.set_theme("two")
+
+    assert selected is second
+    assert runtime.theme is second
+    assert invalidations == [None]
+    assert writes == []
+
+    assert runtime.application.style is second.pt
+
+def test_renderer_cache_is_separated_by_runtime_theme_id() -> None:
+    registry = Registry()
+    calls: list[str] = []
+
+    def render(
+        _block: Block,
+        theme: object,
+        _width: int,
+        _rows: int,
+        _expanded: bool,
+    ) -> str:
+        calls.append(str(getattr(theme, "id")))
+        return calls[-1]
+
+    registry._add_block_renderer("test", "assistant", render)
+    one = SimpleNamespace(id="one")
+    two = SimpleNamespace(id="two")
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            registry=registry,
+            theme=one,
+            themes={"one": one, "two": two},
+            input=pipe,
+            output=DummyOutput(),
+        )
+        block = Block(id="answer", kind="assistant", data={"text": "hello"})
+
+        assert runtime._render_block(block, 80, 3) == "one"
+        runtime.ui.set_theme("two")
+        assert runtime._render_block(block, 80, 3) == "two"
+        assert runtime._render_block(block, 80, 3) == "two"
+
+    assert calls == ["one", "two"]
