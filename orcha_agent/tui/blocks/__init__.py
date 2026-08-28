@@ -97,6 +97,9 @@ class BlockRendererDispatcher:
             dict[tuple[int, int, bool, str], Any],
         ] = {}
 
+    def clear_cache(self) -> None:
+        self._cache.clear()
+
     def render(
         self,
         block: Block,

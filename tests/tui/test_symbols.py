@@ -122,6 +122,23 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
         2,
         False,
     )
+    grouped = render_tool(
+        Block(
+            id="grouped",
+            kind="tool",
+            data={
+                "name": "execute",
+                "calls": [
+                    {"args": {}, "result": "one"},
+                    {"args": {}, "result": "two"},
+                ],
+            },
+        ),
+        theme,
+        80,
+        1,
+        False,
+    )
     thinking = render_thinking(
         Block(
             id="thinking",
@@ -160,11 +177,21 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
     assert success is not None and success.plain.startswith("S ")
     assert error is not None and error.plain.startswith("E ")
     assert folded is not None and folded.plain.startswith("@= ")
+    assert grouped is not None and "execute x2" in grouped.plain
     assert thinking.plain.startswith("B ")
     assert todo is not None and "\nS done\nP wait" in todo.plain
     assert subagents is not None and "\nY worker" in subagents.plain
     assert all(
         rendered.plain.isascii()
-        for rendered in (pending, success, error, folded, thinking, todo, subagents)
+        for rendered in (
+            pending,
+            success,
+            error,
+            folded,
+            grouped,
+            thinking,
+            todo,
+            subagents,
+        )
         if rendered is not None
     )

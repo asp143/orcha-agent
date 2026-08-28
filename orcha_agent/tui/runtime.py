@@ -327,6 +327,7 @@ class ApplicationRuntime:
         themes: Mapping[str, Any],
         selected: Any,
     ) -> Any:
+        self._block_dispatcher.clear_cache()
         self._themes = dict(themes)
         identifier = str(getattr(selected, "id", "default"))
         self._themes.setdefault(identifier, selected)

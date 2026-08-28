@@ -266,6 +266,42 @@ def test_renderer_cache_is_separated_by_runtime_theme_id() -> None:
     assert calls == ["one", "two"]
 
 
+def test_replacing_theme_registry_clears_same_id_renderer_cache() -> None:
+    registry = Registry()
+    calls: list[str] = []
+
+    def render(
+        _block: Block,
+        theme: object,
+        _width: int,
+        _rows: int,
+        _expanded: bool,
+    ) -> str:
+        marker = str(getattr(theme, "marker"))
+        calls.append(marker)
+        return marker
+
+    registry._add_block_renderer("test", "assistant", render)
+    first = SimpleNamespace(id="project", marker="first")
+    second = SimpleNamespace(id="project", marker="second")
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            registry=registry,
+            theme=first,
+            themes={"project": first},
+            input=pipe,
+            output=DummyOutput(),
+        )
+        block = Block(id="answer", kind="assistant", data={"text": "hello"})
+
+        assert runtime._render_block(block, 80, 3) == "first"
+        runtime.replace_themes({"project": second}, second)
+        assert runtime._render_block(block, 80, 3) == "second"
+
+    assert calls == ["first", "second"]
+
+
 def test_active_block_capture_uses_selected_rich_theme() -> None:
     class ThemeProbe:
         def __init__(self) -> None:

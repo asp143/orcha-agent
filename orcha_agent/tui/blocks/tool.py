@@ -190,7 +190,8 @@ def render(
         args = {}
     calls = block.data.get("calls")
     if isinstance(calls, list) and calls:
-        name_label = f"{name} ×{len(calls)}"
+        count_marker = theme_symbol(theme, "sep.count", "×")
+        name_label = f"{name} {count_marker}{len(calls)}"
         detail = ""
         pending = any(isinstance(call, Mapping) and call.get("result") is None for call in calls)
         error = any(isinstance(call, Mapping) and _error(call.get("result")) for call in calls if call.get("result") is not None)
