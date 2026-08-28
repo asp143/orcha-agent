@@ -337,6 +337,32 @@ class Transcript:
         self._commit(block)
         return block
 
+
+    def release_committed(self, blocks: list[Block]) -> None:
+        """Release accumulator references after scrollback owns the blocks."""
+
+        committed = {
+            block.id
+            for block in blocks
+            if block.state is BlockState.COMMITTED
+        }
+        if not committed:
+            return
+        self._source_blocks = {
+            key: block
+            for key, block in self._source_blocks.items()
+            if block.id not in committed
+        }
+        self._tools = {
+            key: block
+            for key, block in self._tools.items()
+            if block.id not in committed
+        }
+        self._read_groups = {
+            key: block
+            for key, block in self._read_groups.items()
+            if block.id not in committed
+        }
     def clear(self) -> None:
         self.frame.blocks.clear()
         self._source_blocks.clear()

@@ -211,6 +211,39 @@ async def test_consecutive_same_source_read_starts_form_one_grouped_block() -> N
     assert frame.blocks[0].state is BlockState.SETTLED
 
 
+
+@pytest.mark.asyncio
+async def test_release_committed_drops_tool_and_source_accumulator_references() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content="answer"),
+            role="main",
+            source_id="main",
+        )
+    )
+    await transcript.handle(
+        ToolCallStart(
+            name="read_file",
+            args={"path": "a.py"},
+            id="read-a",
+            source_id="main",
+        )
+    )
+    await transcript.handle(
+        ToolCallEnd(name="read_file", id="read-a", result="done")
+    )
+    await transcript.handle(TurnEnd(thread_id="thread"))
+    committed = frame.commit_ready()
+
+    transcript.release_committed(committed)
+
+    assert transcript._source_blocks == {}
+    assert transcript._tools == {}
+    assert transcript._read_groups == {}
+
+
 @pytest.mark.asyncio
 async def test_thinking_usage_and_ticker_metrics_flow_through_transcript() -> None:
     frame = Frame()

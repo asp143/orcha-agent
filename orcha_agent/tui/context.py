@@ -553,7 +553,6 @@ class AppContext:
         old_history_model = self.history_model
         old_pending_switch = self._pending_switch_old_thread
         old_rebuild_requested = self.rebuild_requested
-        old_states = deepcopy(self.plugin_states)
         prepare_session_switch = getattr(
             self.ui,
             "prepare_session_switch",
@@ -561,6 +560,7 @@ class AppContext:
         )
         if callable(prepare_session_switch):
             prepare_session_switch()
+        old_states = deepcopy(self.plugin_states)
         self.persist_plugin_states()
         saved_states = self.session.all_plugin_state(saved_session.thread_id)
         for name, state in self.plugin_states.items():

@@ -46,6 +46,7 @@ from orcha_agent.core.events import (
 )
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
+from orcha_agent.core.models import ModelResolver
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
 
@@ -55,7 +56,6 @@ from .complete import ComposerCompleter
 from .composer import Composer
 from .context import (
     AppContext,
-    _model_specs,
     _primary_provider_prefix,
     _session_resolution_error,
     _stored_model,
@@ -943,14 +943,14 @@ class ApplicationRuntime:
         aliases = getattr(self.ctx.cfg, "models", {})
         if not isinstance(aliases, Mapping):
             return []
+        resolver = ModelResolver(self.registry, self.ctx.cfg)
         available: list[str] = []
         for alias in aliases:
-            for spec in _model_specs(alias, aliases):
-                prefix, separator, _model = spec.partition(":")
-                provider = self.registry.providers.get(prefix) if separator else None
-                if provider is not None and provider.available() is None:
-                    available.append(alias)
-                    break
+            try:
+                resolver.resolve(alias, "main")
+            except (RuntimeError, ValueError):
+                continue
+            available.append(alias)
         return available
 
     async def _external_editor(self) -> None:
@@ -1249,6 +1249,7 @@ class ApplicationRuntime:
     def _commit_blocks(self, blocks: list[Block]) -> None:
         async def write_and_release() -> None:
             await run_in_terminal(lambda: self._write_blocks(blocks))
+            self.transcript.release_committed(blocks)
             self.frame.prune_committed(blocks)
             self._block_dispatcher.evict(blocks)
             self.application.invalidate()

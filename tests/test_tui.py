@@ -2011,12 +2011,21 @@ async def test_resume_build_failure_rolls_back_thread_config_agent_and_states(
         plugin_states={"saved": {"approval": {"always_allowed": ["write_file"]}}},
     )
     approval_state = {"always_allowed": ["execute"]}
+    composer_state = {"draft": "before resume"}
     old_graph = object()
     ctx = _context(
         tmp_path,
         agent=old_graph,
         session=session,
-        plugin_states={"approval": approval_state},
+        plugin_states={
+            "approval": approval_state,
+            "composer": composer_state,
+        },
+    )
+    ctx.ui = SimpleNamespace(
+        prepare_session_switch=lambda: composer_state.update(
+            {"draft": "captured before failure"}
+        )
     )
     old_cfg = ctx.cfg
 
@@ -2033,6 +2042,7 @@ async def test_resume_build_failure_rolls_back_thread_config_agent_and_states(
     assert ctx.cfg is old_cfg
     assert ctx.agent is old_graph
     assert approval_state == {"always_allowed": ["execute"]}
+    assert composer_state == {"draft": "captured before failure"}
 
 
 @pytest.mark.asyncio

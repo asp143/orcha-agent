@@ -356,7 +356,10 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_and_plugin_actions_are_headlessly_bound(tmp_path: Path) -> None:
+async def test_provider_and_plugin_actions_are_headlessly_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     registry = Registry()
     registry.providers["able"] = SimpleNamespace(
         capabilities=ProviderCaps(
@@ -376,6 +379,14 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(tmp_path: Path) 
 
     registry._add_keybinding("plugin", "custom", plugin_handler, "c-x")
     ctx = _ctx(tmp_path, registry)
+    class Resolver:
+        def __init__(self, _registry: object, _cfg: object) -> None:
+            pass
+
+        def resolve(self, _alias: str, _role: str) -> object:
+            return object()
+
+    monkeypatch.setattr("orcha_agent.tui.runtime.ModelResolver", Resolver)
     ctx.cfg.model = "first"
     ctx.cfg.models = {"first": "able:test", "second": "able:next"}
     switched: list[str] = []
@@ -594,6 +605,7 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
 @pytest.mark.asyncio
 async def test_thinking_controls_resolve_alias_persist_display_and_rebuild_provider(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = Registry()
     registry.providers["able"] = SimpleNamespace(
@@ -612,6 +624,17 @@ async def test_thinking_controls_resolve_alias_persist_display_and_rebuild_provi
     ctx.cfg.models = {"fast": "able:test", "next": "able:dynamic"}
     ctx.cfg.providers = {"able": {}}
     ctx.plugin_states["render_default"] = {"thinking": "summary"}
+    resolved: list[tuple[str, str]] = []
+
+    class Resolver:
+        def __init__(self, _registry: object, _cfg: object) -> None:
+            pass
+
+        def resolve(self, alias: str, role: str) -> object:
+            resolved.append((alias, role))
+            return object()
+
+    monkeypatch.setattr("orcha_agent.tui.runtime.ModelResolver", Resolver)
     rebuilt: list[str] = []
 
     async def rebuild() -> None:
@@ -641,6 +664,7 @@ async def test_thinking_controls_resolve_alias_persist_display_and_rebuild_provi
         assert runtime.thinking_level == "low"
         assert rebuilt == ["low"]
         assert switched == ["next"]
+        assert resolved == [("fast", "main"), ("next", "main")]
     finally:
         await runtime.scheduler.aclose()
         runtime.application.input.close()
