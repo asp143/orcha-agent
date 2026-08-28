@@ -159,7 +159,7 @@ class PluginAPI:
     def add_status_segment(
         self,
         name: str,
-        render: Callable[[Any], str | None],
+        render: Callable[[Any], Any | None],
         *,
         priority: int = 100,
         replace: bool = False,

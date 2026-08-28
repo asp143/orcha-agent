@@ -13,6 +13,81 @@ from typing import Any, Mapping, Sequence
 DEFAULT_MODEL = "anthropic:claude-opus-5"
 DEFAULT_MEMORY = ("AGENTS.md", "CLAUDE.md")
 
+STATUSLINE_PRESETS = frozenset(
+    {"default", "minimal", "compact", "full", "nerd", "ascii"}
+)
+STATUSLINE_SEPARATORS = frozenset(
+    {"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StatusLineConfig:
+    preset: str = "default"
+    separator: str = "powerline"
+    left: tuple[str, ...] | None = None
+    right: tuple[str, ...] | None = None
+    transparent: bool = False
+
+
+def _statusline_group(
+    value: object,
+    name: str,
+    parser: argparse.ArgumentParser,
+) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        parser.error(f"[ui.statusline] {name} must be a list of segment names")
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        parser.error(
+            f"[ui.statusline] {name} must contain only non-empty segment names"
+        )
+    if not all(
+        item[0].isalnum()
+        and all(char.isalnum() or char in "._-" for char in item)
+        for item in value
+    ):
+        parser.error(
+            f"[ui.statusline] {name} contains an invalid segment name"
+        )
+    normalized = tuple(item.strip() for item in value)
+    if len(set(normalized)) != len(normalized):
+        parser.error(f"[ui.statusline] {name} must not contain duplicate names")
+    return normalized
+
+
+def _statusline_config(
+    value: object,
+    parser: argparse.ArgumentParser,
+) -> StatusLineConfig:
+    if not isinstance(value, Mapping):
+        parser.error("[ui.statusline] must be a TOML table")
+    preset = value.get("preset", "default")
+    if not isinstance(preset, str) or preset not in STATUSLINE_PRESETS:
+        parser.error(
+            "[ui.statusline] preset must be default, minimal, compact, full, "
+            "nerd, or ascii"
+        )
+    separator = value.get("separator", "powerline")
+    if not isinstance(separator, str) or separator not in STATUSLINE_SEPARATORS:
+        parser.error(
+            "[ui.statusline] separator must be powerline, powerline-thin, "
+            "slash, pipe, block, none, or ascii"
+        )
+    transparent = value.get("transparent", False)
+    if not isinstance(transparent, bool):
+        parser.error("[ui.statusline] transparent must be true or false")
+    return StatusLineConfig(
+        preset=preset,
+        separator=separator,
+        left=_statusline_group(value.get("left"), "left", parser),
+        right=_statusline_group(value.get("right"), "right", parser),
+        transparent=transparent,
+    )
+
+
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -47,6 +122,7 @@ class Config:
     theme: str = "dark"
     symbols: str = "nerd"
     composer: str = "box"
+    statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
@@ -278,6 +354,7 @@ def load_config(
     composer = ui.get("composer", "box")
     if composer not in {"box", "claude", "borderless"}:
         parser.error("[ui] composer must be box, claude, or borderless")
+    statusline = _statusline_config(ui.get("statusline", {}), parser)
 
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
@@ -300,6 +377,7 @@ def load_config(
         theme=theme,
         symbols=symbols,
         composer=composer,
+        statusline=statusline,
         pricing={
             str(model_name): {
                 str(key): float(value)

@@ -399,3 +399,49 @@ async def test_session_switch_reloads_project_themes_and_saved_selection(
     assert runtime.theme.name == "Target"
     assert runtime.theme.symbols["status.success"] == "+"
     assert "target" in runtime._themes
+
+
+def test_runtime_owns_themed_statusline_and_keeps_inline_application(tmp_path: Path) -> None:
+    registry = Registry()
+    registry._add_status_segment(
+        "test",
+        "legacy",
+        lambda _ctx: "legacy status",
+    )
+    themes = load_themes(home=tmp_path, cwd=tmp_path, symbols="ascii")
+    ctx = SimpleNamespace(
+        cfg=SimpleNamespace(
+            cwd=tmp_path,
+            model="codex:gpt-5.6-sol",
+            mode="ask",
+            providers={},
+            pricing={},
+            statusbar=True,
+            composer="box",
+            statusline=SimpleNamespace(
+                preset="minimal",
+                separator="ascii",
+                left=("legacy",),
+                right=(),
+                transparent=False,
+            ),
+        ),
+        registry=registry,
+        plugin_states={"statusbar": {}},
+        console=SimpleNamespace(width=40, encoding="ascii"),
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            registry=registry,
+            ctx=ctx,
+            theme=themes["dark"],
+            input=pipe,
+            output=DummyOutput(),
+        )
+        rendered = "".join(text for _style, text in runtime._status())
+
+    assert "legacy status" in rendered
+    assert len(rendered) == runtime.application.output.get_size().columns
+    assert ctx.ui.invalidate == runtime.application.invalidate
+    assert runtime.application.full_screen is False

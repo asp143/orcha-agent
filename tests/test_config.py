@@ -380,3 +380,59 @@ def test_ui_composer_rejects_unknown_shape(tmp_path: Path) -> None:
     config.write_text('[ui]\ncomposer = "floating"\n', encoding="utf-8")
     with pytest.raises(SystemExit):
         _load(tmp_path, user_config_path=config)
+
+
+def test_ui_statusline_defaults_are_maintainable(tmp_path: Path) -> None:
+    statusline = _load(tmp_path).statusline
+    assert statusline.preset == "default"
+    assert statusline.separator == "powerline"
+    assert statusline.left is None
+    assert statusline.right is None
+    assert statusline.transparent is False
+
+
+def test_ui_statusline_groups_and_style_survive_toml_loading(tmp_path: Path) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(
+        """
+[ui.statusline]
+preset = "full"
+separator = "slash"
+left = ["model", "path", "plugin.custom"]
+right = ["context", "cost"]
+transparent = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    statusline = _load(tmp_path, user_config_path=config).statusline
+    assert statusline.preset == "full"
+    assert statusline.separator == "slash"
+    assert statusline.left == ("model", "path", "plugin.custom")
+    assert statusline.right == ("context", "cost")
+    assert statusline.transparent is True
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('preset = "wide"', "preset"),
+        ('separator = "dots"', "separator"),
+        ('left = "model"', "left"),
+        ('right = ["model", 4]', "right"),
+        ('left = [""]', "left"),
+        ('left = ["bad name"]', "left"),
+        ('transparent = "yes"', "transparent"),
+    ],
+)
+def test_ui_statusline_rejects_invalid_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    body: str,
+    message: str,
+) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(f"[ui.statusline]\n{body}\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=config)
+    assert message in capsys.readouterr().err

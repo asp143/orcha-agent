@@ -95,7 +95,7 @@ class StatusSegmentRegistration:
     name: str
     plugin: str
     priority: int
-    render: Callable[[Any], str | None]
+    render: Callable[[Any], Any | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,7 +423,7 @@ class Registry:
         self,
         plugin: str,
         name: str,
-        render: Callable[[Any], str | None],
+        render: Callable[[Any], Any | None],
         *,
         priority: int = 100,
         replace: bool = False,

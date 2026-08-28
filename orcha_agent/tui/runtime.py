@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application, run_in_terminal
-from prompt_toolkit.formatted_text import ANSI, HTML
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
@@ -58,6 +58,7 @@ from .history import SQLiteHistory, history_path
 from .keys import create_key_bindings, load_keybindings
 from .queue import PromptQueue, split_submission
 from .transcript import Transcript
+from .statusline import render_statusline
 from .theme import Theme, load_themes, select_theme
 from .turn import _run_cancellable_turn
 
@@ -114,16 +115,17 @@ def _bindings() -> KeyBindings:
 
 def _bottom_toolbar(ctx: Any) -> Any:
     if not bool(getattr(ctx.cfg, "statusbar", True)):
-        return ""
-    values: list[str] = []
-    for segment in ctx.registry.status_segments:
-        try:
-            value = segment.render(ctx)
-        except Exception:
-            value = f"!{segment.name}"
-        if value:
-            values.append(value)
-    return HTML(" · ".join(values)) if values else ""
+        return []
+    ui = getattr(ctx, "ui", None)
+    theme = getattr(ui, "theme", DEFAULT_THEME)
+    width_source = getattr(ui, "status_width", None)
+    width = width_source() if callable(width_source) else None
+    return render_statusline(
+        ctx,
+        theme,
+        width=width,
+        composer_shape=getattr(ctx.cfg, "composer", "box"),
+    )
 
 
 async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
@@ -248,6 +250,7 @@ class ApplicationRuntime:
         completion_registry = registry or Registry()
         self.frame = Frame()
         self.theme: Any = theme
+        self.composer_shape = composer_shape
         self._themes = dict(themes or {})
         current_theme_id = str(
             getattr(theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default")
@@ -264,7 +267,8 @@ class ApplicationRuntime:
             clear=self._clear_scrollback,
             set_theme=self._set_theme,
         )
-        self._status = status or (lambda: "")
+        self.ui.theme = theme
+        self._status = status or self._status_text
         self._pending: set[asyncio.Future[Any]] = set()
         self._terminal_pending: set[asyncio.Future[Any]] = set()
         self._submit_lock = asyncio.Lock()
@@ -354,6 +358,8 @@ class ApplicationRuntime:
         )
         self.application.ttimeoutlen = 0.1
         self.application.timeoutlen = 0.1
+        self.ui.invalidate = self.application.invalidate
+        self.ui.status_width = lambda: self.application.output.get_size().columns
         self.scheduler = FrameScheduler(
             self.frame,
             commit=self._commit_blocks,
@@ -375,6 +381,16 @@ class ApplicationRuntime:
     def _model_label(self) -> str:
         value = getattr(getattr(self.ctx, "cfg", None), "model", "model")
         return value[0] if isinstance(value, list) and value else str(value)
+
+    def _status_text(self) -> Any:
+        if self.ctx is None:
+            return []
+        return render_statusline(
+            self.ctx,
+            self.theme,
+            width=self.application.output.get_size().columns,
+            composer_shape=self.composer_shape,
+        )
 
     def _composer_state(self) -> dict[str, Any]:
         states = getattr(self.ctx, "plugin_states", None)
@@ -695,6 +711,7 @@ class ApplicationRuntime:
 
     def _apply_theme(self, selected: Any) -> Any:
         self.theme = selected
+        self.ui.theme = selected
         prompt_style = _completion_style(selected)
         if prompt_style is not None:
             self.application.style = prompt_style

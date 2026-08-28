@@ -687,24 +687,21 @@ def test_bottom_toolbar_joins_nonempty_segments_and_isolates_failures(
     def fail(_ctx: AppContext) -> str:
         raise RuntimeError("segment failed")
 
-    api.add_status_segment(
-        "model",
-        lambda _ctx: '<style fg="ansicyan">model</style>',
-        priority=10,
-    )
+    api.add_status_segment("model", lambda _ctx: "model", priority=10)
     api.add_status_segment("broken", fail, priority=20)
     api.add_status_segment("empty", lambda _ctx: "", priority=30)
     api.add_status_segment("missing", lambda _ctx: None, priority=35)
     api.add_status_segment("mode", lambda _ctx: "ask", priority=40)
 
     fragments = to_formatted_text(app_module._bottom_toolbar(ctx))
+    plain = "".join(text for _style, text in fragments)
 
-    assert "".join(text for _style, text in fragments) == (
-        "model · !broken · ask"
-    )
-    model_styles = [style for style, text in fragments if text == "model"]
+    assert plain.index("model") < plain.index("ask") < plain.index("!broken")
+    assert "empty" not in plain
+    assert "<style" not in plain
+    model_styles = [style for style, text in fragments if "model" in text]
     assert len(model_styles) == 1
-    assert "ansicyan" in model_styles[0]
+    assert "class:text" in model_styles[0]
 
 
 @pytest.mark.asyncio
