@@ -1225,10 +1225,13 @@ class ApplicationRuntime:
             )
 
     def _commit_blocks(self, blocks: list[Block]) -> None:
-        self._track(
-            run_in_terminal(lambda: self._write_blocks(blocks)),
-            terminal=True,
-        )
+        async def write_and_release() -> None:
+            await run_in_terminal(lambda: self._write_blocks(blocks))
+            self.frame.prune_committed(blocks)
+            self._block_dispatcher.evict(blocks)
+            self.application.invalidate()
+
+        self._track(write_and_release(), terminal=True)
 
     async def _clear_scrollback(self) -> None:
         self.scheduler.commit_now()

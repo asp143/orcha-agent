@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from orcha_agent.core.events import ModelChunk, ThreadSwitch, TurnEnd, TurnStart
+from orcha_agent.core.events import (
+    ModelChunk,
+    SessionSwitch,
+    ThreadSwitch,
+    TurnEnd,
+    TurnStart,
+)
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 from orcha_agent.tui.statusline import (
     BUILTIN_SEGMENTS,
@@ -27,8 +33,10 @@ from orcha_agent.tui.statusline import (
     path_segment,
     record_turn_end,
     record_turn_start,
+    reset_git_state,
     record_usage,
     reset_accounting,
+    reset_usage_dedup,
     session_segment,
     subagents_segment,
     time_segment,
@@ -64,8 +72,8 @@ def register(api: PluginAPI) -> None:
     if not bool(api.config.get("statusbar", True)):
         return
 
-    api.state["_git_refreshing"] = False
-    api.state["_usage_seen_ids"] = []
+    reset_git_state(api.state)
+    reset_usage_dedup(api.state)
     for priority, (name, render) in enumerate(BUILTIN_SEGMENTS, start=1):
         api.add_status_segment(name, render, priority=priority * 10)
 
@@ -74,6 +82,9 @@ def register(api: PluginAPI) -> None:
 
     async def reset_usage(_event: ThreadSwitch) -> None:
         reset_accounting(api.state)
+
+    async def reset_session(_event: SessionSwitch) -> None:
+        reset_git_state(api.state)
 
     async def turn_started(_event: TurnStart) -> None:
         record_turn_start(api.state)
@@ -87,6 +98,7 @@ def register(api: PluginAPI) -> None:
 
     api.on(ModelChunk, track, priority=10)
     api.on(ThreadSwitch, reset_usage, priority=10)
+    api.on(SessionSwitch, reset_session, priority=10)
     api.on(TurnStart, turn_started, priority=10)
     api.on(TurnEnd, turn_finished, priority=10)
     api.add_command("status", show, help="Show effective status-line segments")

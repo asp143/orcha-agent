@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,7 +11,14 @@ from typing import Any
 import pytest
 
 from orcha_agent.builtin import statusbar
-from orcha_agent.core.events import EventBus, ModelChunk, ThreadSwitch, TurnEnd, TurnStart
+from orcha_agent.core.events import (
+    EventBus,
+    ModelChunk,
+    SessionSwitch,
+    ThreadSwitch,
+    TurnEnd,
+    TurnStart,
+)
 from orcha_agent.core.plugin import PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.statusline import (
@@ -289,6 +298,21 @@ def test_non_utf_output_is_ascii_safe(tmp_path: Path) -> None:
     )
     assert _plain(render_statusline(ctx, _Theme(), width=30)).isascii()
 
+def test_ascii_output_preserves_explicit_slash_separator(tmp_path: Path) -> None:
+    registry = Registry()
+    registry._add_status_segment("test", "one", lambda _ctx: Segment("one", "text"))
+    registry._add_status_segment("test", "two", lambda _ctx: Segment("two", "text"))
+    ctx = _ctx(
+        tmp_path,
+        registry=registry,
+        cfg=_cfg(tmp_path, left=("one", "two"), right=(), separator="slash"),
+        console=_Console(encoding="ascii"),
+    )
+
+    rendered = _plain(render_statusline(ctx, _Theme(), width=24))
+    assert rendered.split("one", 1)[1].split("two", 1)[0].strip() == "/"
+
+
 
 def test_git_parser_counts_staged_unstaged_and_untracked_exactly() -> None:
     assert _parse_git(
@@ -340,6 +364,47 @@ def test_git_refresh_is_nonblocking_cached_and_no_more_frequent_than_two_seconds
     assert len(calls) == 1
 
 
+
+def test_git_worker_discards_old_session_and_counts_all_untracked_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_cwd = tmp_path / "old"
+    new_cwd = tmp_path / "new"
+    old_cwd.mkdir()
+    new_cwd.mkdir()
+    old_started = threading.Event()
+    release_old = threading.Event()
+    calls: list[tuple[list[str], Path]] = []
+
+    def run(command: list[str], *, cwd: Path, **_kwargs: object) -> SimpleNamespace:
+        calls.append((command, cwd))
+        if cwd == old_cwd:
+            old_started.set()
+            release_old.wait(1)
+            return SimpleNamespace(returncode=0, stdout="## old\n")
+        return SimpleNamespace(returncode=0, stdout="## new\n?? one/file.txt\n?? two/file.txt\n")
+
+    monkeypatch.setattr("orcha_agent.tui.statusline.subprocess.run", run)
+    state: dict[str, Any] = {}
+    ctx = _ctx(old_cwd, state=state, cfg=_cfg(old_cwd))
+    ctx.session_id = "old"
+    assert git_segment(ctx) is None
+    assert old_started.wait(1)
+
+    ctx.cfg = _cfg(new_cwd)
+    ctx.session_id = "new"
+    assert git_segment(ctx) is None
+    deadline = time.time() + 1
+    while state.get("_git_text") != "new ?2" and time.time() < deadline:
+        time.sleep(0.005)
+    release_old.set()
+    time.sleep(0.02)
+
+    assert state["_git_text"] == "new ?2"
+    assert all("--untracked-files=all" in command for command, _cwd in calls)
+
+
 def test_git_segment_stays_hidden_outside_repository(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -367,6 +432,7 @@ def test_git_segment_stays_hidden_outside_repository(
 def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     registry = Registry()
     _register_provider(registry)
+    cwd = tmp_path / "parent" / "project"
     state = {
         "input_tokens": 136_000,
         "output_tokens": 12_000,
@@ -377,9 +443,11 @@ def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
         "_git_text": "main",
         "_git_dirty": False,
         "_git_at": time.monotonic(),
+        "_git_scope": ("session-1", str(cwd.resolve())),
+        "_git_generation": 1,
+        "_git_refreshing": False,
         "_last_turn_elapsed": 3.25,
     }
-    cwd = tmp_path / "parent" / "project"
     ctx = _ctx(tmp_path, registry=registry, state=state, cfg=_cfg(cwd))
 
     assert model_segment(ctx).text == "GPT-5.6 Sol · high"
@@ -393,6 +461,54 @@ def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     assert cost_segment(ctx).text == "$1.02"
     assert context_segment(ctx).text == "50.0%/272k"
     assert time_segment(ctx).text == "3.2s"
+
+
+
+@pytest.mark.asyncio
+async def test_statusbar_clears_volatile_git_state_on_load_and_session_switch() -> None:
+    registry = Registry()
+    bus = EventBus()
+    state: dict[str, Any] = {
+        "_git_at": 10_000.0,
+        "_git_text": "stale",
+        "_git_dirty": True,
+        "_git_refreshing": True,
+    }
+    statusbar.register(_api(registry, bus, state))
+    assert "_git_at" not in state
+    assert "_git_text" not in state
+
+    state["_git_at"] = 12.0
+    state["_git_text"] = "old"
+    await bus.emit(SessionSwitch(old="old", new="new"))
+    assert "_git_at" not in state
+    assert "_git_text" not in state
+    assert state["_git_refreshing"] is False
+
+
+@pytest.mark.asyncio
+async def test_usage_dedup_retains_bounded_chunk_identities() -> None:
+    class Chunk:
+        def __init__(self) -> None:
+            self.usage_metadata = {"input_tokens": 10, "output_tokens": 2}
+
+    registry = Registry()
+    bus = EventBus()
+    state: dict[str, Any] = {}
+    statusbar.register(_api(registry, bus, state))
+    chunk = Chunk()
+    reference = weakref.ref(chunk)
+    event = ModelChunk(chunk, role="main", source_id="main")
+    await bus.emit(event)
+    await bus.emit(event)
+    del event
+    del chunk
+    gc.collect()
+
+    assert reference() is not None
+    await bus.emit(ModelChunk(Chunk(), role="main", source_id="main"))
+    assert state["input_tokens"] == 20
+    assert "_usage_seen_ids" not in state
 
 
 @pytest.mark.asyncio

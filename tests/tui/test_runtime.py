@@ -169,6 +169,34 @@ async def test_transcript_print_replays_rich_sep_and_end_semantics() -> None:
     assert actual_stream.getvalue() == expected_stream.getvalue()
 
 
+
+@pytest.mark.asyncio
+async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def immediate(callback: object) -> None:
+        callback()
+
+    monkeypatch.setattr("orcha_agent.tui.runtime.run_in_terminal", immediate)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        block = runtime.frame.add("assistant", {"text": "done"})
+        runtime._render_block(block, 80, 3)
+        runtime.frame.settle(block)
+        ready = runtime.frame.commit_ready()
+
+        runtime._commit_blocks(ready)
+        await runtime._drain_pending()
+
+        assert runtime.frame.blocks == []
+        assert not runtime._block_dispatcher._cache
+        await runtime.scheduler.aclose()
+
+
 def test_runtime_uses_memoized_registry_block_dispatcher() -> None:
     registry = Registry()
     calls: list[int] = []

@@ -106,6 +106,21 @@ class Frame:
             ready.append(block)
         return ready
 
+    def prune_committed(self, blocks: list[Block]) -> None:
+        """Release committed blocks after their scrollback write succeeds."""
+
+        committed = {
+            block.id
+            for block in blocks
+            if block.state is BlockState.COMMITTED
+        }
+        if committed:
+            self.blocks[:] = [
+                block
+                for block in self.blocks
+                if block.id not in committed
+            ]
+
     @staticmethod
     def row_budget(
         *,

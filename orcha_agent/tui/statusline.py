@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,35 @@ DEFAULT_PRICING: dict[str, dict[str, float]] = {
 _GIT_REFRESH_SECONDS = 2.0
 _GIT_TIMEOUT_SECONDS = 1.0
 _GIT_LOCK = threading.Lock()
+_USAGE_TRACKERS: deque[tuple[dict[str, Any], deque[Any]]] = deque(maxlen=16)
+_GIT_VOLATILE = (
+    "_git_at",
+    "_git_text",
+    "_git_dirty",
+    "_git_refreshing",
+    "_git_scope",
+)
+
+
+def reset_git_state(state: dict[str, Any]) -> None:
+    generation = int(state.get("_git_generation", 0)) + 1
+    for key in _GIT_VOLATILE:
+        state.pop(key, None)
+    state["_git_generation"] = generation
+    state["_git_refreshing"] = False
+
+
+def _usage_tracker(state: dict[str, Any]) -> deque[Any]:
+    for tracked_state, chunks in _USAGE_TRACKERS:
+        if tracked_state is state:
+            return chunks
+    chunks: deque[Any] = deque(maxlen=256)
+    _USAGE_TRACKERS.append((state, chunks))
+    return chunks
+
+
+def reset_usage_dedup(state: dict[str, Any]) -> None:
+    _usage_tracker(state).clear()
 
 
 def wrap_segment(value: Segment | str | None) -> Segment | None:
@@ -202,10 +232,16 @@ def _notify_invalidation(ctx: Any) -> None:
         invalidate()
 
 
-def _refresh_git(ctx: Any, state: dict[str, Any], cwd: Path) -> None:
+def _refresh_git(
+    ctx: Any,
+    state: dict[str, Any],
+    cwd: Path,
+    scope: tuple[str, str],
+    generation: int,
+) -> None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
+            ["git", "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -216,6 +252,16 @@ def _refresh_git(ctx: Any, state: dict[str, Any], cwd: Path) -> None:
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         value = None
     with _GIT_LOCK:
+        current_scope = (
+            str(getattr(ctx, "session_id", "")),
+            str(Path(ctx.cfg.cwd).resolve()),
+        )
+        if (
+            current_scope != scope
+            or state.get("_git_scope") != scope
+            or state.get("_git_generation") != generation
+        ):
+            return
         if value is None:
             state.pop("_git_text", None)
             state.pop("_git_dirty", None)
@@ -229,16 +275,27 @@ def _refresh_git(ctx: Any, state: dict[str, Any], cwd: Path) -> None:
 
 def git_segment(ctx: Any) -> Segment | None:
     state = _state(ctx)
+    cwd = Path(ctx.cfg.cwd).resolve()
+    scope = (str(getattr(ctx, "session_id", "")), str(cwd))
+    with _GIT_LOCK:
+        if state.get("_git_scope") != scope:
+            reset_git_state(state)
+            state["_git_scope"] = scope
     now = monotonic()
     cached_at = state.get("_git_at")
-    stale = not isinstance(cached_at, (int, float)) or now - cached_at >= _GIT_REFRESH_SECONDS
+    stale = (
+        not isinstance(cached_at, (int, float))
+        or now < cached_at
+        or now - cached_at >= _GIT_REFRESH_SECONDS
+    )
     if stale:
         with _GIT_LOCK:
             if not state.get("_git_refreshing"):
                 state["_git_refreshing"] = True
+                generation = int(state["_git_generation"])
                 threading.Thread(
                     target=_refresh_git,
-                    args=(ctx, state, Path(ctx.cfg.cwd)),
+                    args=(ctx, state, cwd, scope, generation),
                     name="orcha-status-git",
                     daemon=True,
                 ).start()
@@ -388,13 +445,10 @@ def record_usage(event: Any, state: dict[str, Any]) -> None:
     usage = getattr(event.chunk, "usage_metadata", None)
     if not isinstance(usage, Mapping):
         return
-    chunk_id = id(event.chunk)
-    seen = state.setdefault("_usage_seen_ids", [])
-    if chunk_id in seen:
+    seen = _usage_tracker(state)
+    if any(chunk is event.chunk for chunk in seen):
         return
-    seen.append(chunk_id)
-    if len(seen) > 256:
-        del seen[:-256]
+    seen.append(event.chunk)
 
     input_tokens = int(usage.get("input_tokens", 0))
     output_tokens = int(usage.get("output_tokens", 0))
@@ -425,7 +479,7 @@ def reset_accounting(state: dict[str, Any]) -> None:
     ):
         state[name] = 0
     state["cache_known"] = False
-    state["_usage_seen_ids"] = []
+    reset_usage_dedup(state)
 
 
 def record_turn_start(state: dict[str, Any]) -> None:
@@ -567,8 +621,10 @@ def _symbols(theme: Any, ascii_mode: bool) -> Mapping[str, Any]:
 def _separator(name: str, symbols: Mapping[str, Any], ascii_mode: bool) -> str:
     if name == "none":
         return ""
-    if name == "ascii" or ascii_mode and name in {"slash", "pipe", "block"}:
+    if name == "ascii" or ascii_mode and name in {"pipe", "block"}:
         return "|"
+    if name == "slash":
+        return "/"
     key = {
         "powerline": "sep.right",
         "powerline-thin": "sep.thin",

@@ -29,6 +29,18 @@ def test_blocks_commit_in_creation_order_after_earlier_active_block_settles() ->
         BlockState.COMMITTED,
     ]
 
+def test_prune_committed_removes_only_written_blocks() -> None:
+    frame = Frame()
+    first = frame.add("assistant", {"text": "first"})
+    second = frame.add("assistant", {"text": "second"})
+    frame.settle(first)
+    committed = frame.commit_ready()
+
+    frame.prune_committed(committed)
+
+    assert frame.blocks == [second]
+
+
 
 def test_active_block_updates_revision_and_rejects_mutation_after_settle() -> None:
     block = Block(id="answer", kind="assistant", data={"text": "a"})

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from rich import box
@@ -99,6 +99,20 @@ class BlockRendererDispatcher:
 
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    def evict(self, blocks: Iterable[Block | str]) -> None:
+        """Drop every cached rendering owned by the supplied blocks."""
+
+        block_ids = {
+            block if isinstance(block, str) else block.id
+            for block in blocks
+        }
+        if block_ids:
+            self._cache = {
+                partition: entries
+                for partition, entries in self._cache.items()
+                if partition[0] not in block_ids
+            }
 
     def render(
         self,

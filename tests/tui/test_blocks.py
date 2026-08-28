@@ -309,6 +309,9 @@ def test_dispatcher_memoizes_by_revision_width_expansion_theme_and_budget() -> N
     assert dispatcher.render(value, THEME, 80, 3, False) == "updated:80:3:False"
     assert len(calls) == 3
 
+    dispatcher.evict([value])
+    assert not dispatcher._cache
+
 
 def test_nonzero_execute_artifact_renders_error_state() -> None:
     result = ToolMessage(
