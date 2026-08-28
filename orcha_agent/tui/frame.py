@@ -1,0 +1,235 @@
+"""Transcript block lifecycle and frame scheduling."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from itertools import count
+from typing import Any
+
+
+class BlockState(str, Enum):
+    ACTIVE = "active"
+    SETTLED = "settled"
+    COMMITTED = "committed"
+
+
+@dataclass(slots=True)
+class Block:
+    id: str
+    kind: str
+    state: BlockState = BlockState.ACTIVE
+    revision: int = 0
+    source_id: str | None = None
+    created: float = field(default_factory=time.monotonic)
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def update(
+        self,
+        data: Mapping[str, Any] | None = None,
+        /,
+        **changes: Any,
+    ) -> None:
+        if self.state is not BlockState.ACTIVE:
+            raise RuntimeError(f"cannot update {self.state.value} block {self.id}")
+        if data:
+            self.data.update(data)
+        if changes:
+            self.data.update(changes)
+        self.revision += 1
+
+    def settle(self) -> None:
+        if self.state is BlockState.COMMITTED:
+            raise RuntimeError(f"cannot settle committed block {self.id}")
+        if self.state is BlockState.ACTIVE:
+            self.state = BlockState.SETTLED
+            self.revision += 1
+
+
+@dataclass(frozen=True, slots=True)
+class ViewportItem:
+    block: Block
+    rows: int
+
+
+class Frame:
+    """Ordered transcript blocks with commit and viewport invariants."""
+
+    def __init__(self) -> None:
+        self.blocks: list[Block] = []
+        self._ids = count(1)
+
+    def add(
+        self,
+        kind: str,
+        data: Mapping[str, Any] | None = None,
+        *,
+        source_id: str | None = None,
+        state: BlockState = BlockState.ACTIVE,
+        block_id: str | None = None,
+    ) -> Block:
+        block = Block(
+            id=block_id or f"block-{next(self._ids)}",
+            kind=kind,
+            state=state,
+            source_id=source_id,
+            data=dict(data or {}),
+        )
+        self.blocks.append(block)
+        return block
+
+    add_block = add
+
+    def settle(self, block: Block | str) -> Block:
+        found = self.get(block) if isinstance(block, str) else block
+        found.settle()
+        return found
+
+    def get(self, block_id: str) -> Block:
+        for block in self.blocks:
+            if block.id == block_id:
+                return block
+        raise KeyError(block_id)
+
+    def commit_ready(self) -> list[Block]:
+        ready: list[Block] = []
+        for block in self.blocks:
+            if block.state is BlockState.COMMITTED:
+                continue
+            if block.state is BlockState.ACTIVE:
+                break
+            block.state = BlockState.COMMITTED
+            block.revision += 1
+            ready.append(block)
+        return ready
+
+    @staticmethod
+    def row_budget(
+        *,
+        terminal_rows: int,
+        composer_rows: int,
+        status_rows: int,
+    ) -> int:
+        return max(0, terminal_rows - composer_rows - status_rows)
+
+    @staticmethod
+    def tool_rows(available_rows: int) -> int:
+        return min(3, max(0, available_rows))
+
+    def viewport_plan(self, budget_rows: int) -> list[ViewportItem]:
+        """Allocate rows newest-first, then restore transcript order."""
+        remaining = max(0, budget_rows)
+        planned: list[ViewportItem] = []
+        for block in reversed(self.blocks):
+            if remaining == 0:
+                break
+            if block.state is BlockState.COMMITTED:
+                continue
+            if block.kind == "tool":
+                requested = self.tool_rows(remaining)
+            else:
+                content = block.data.get("text", block.data.get("message", ""))
+                content_rows = max(1, str(content).count("\n") + 1)
+                requested = min(remaining, content_rows)
+            if requested:
+                planned.append(ViewportItem(block, requested))
+                remaining -= requested
+        planned.reverse()
+        return planned
+
+
+class FrameScheduler:
+    """Coalesce scrollback commits, invalidations, and spinner updates."""
+
+    COMMIT_INTERVAL = 0.050
+    INVALIDATE_INTERVAL = 1 / 30
+    SPINNER_INTERVAL = 0.080
+
+    def __init__(
+        self,
+        frame: Frame,
+        *,
+        commit: Callable[[list[Block]], None],
+        invalidate: Callable[[], None],
+    ) -> None:
+        self.frame = frame
+        self._commit = commit
+        self._invalidate = invalidate
+        self._commit_task: asyncio.Task[None] | None = None
+        self._invalidate_task: asyncio.Task[None] | None = None
+        self._spinner_task: asyncio.Task[None] | None = None
+        self._last_invalidation = 0.0
+
+    def commit_now(self) -> None:
+        if self._commit_task is not None and not self._commit_task.done():
+            self._commit_task.cancel()
+        ready = self.frame.commit_ready()
+        if ready:
+            self._commit(ready)
+
+    def request_commit(self) -> None:
+        if self._commit_task is None or self._commit_task.done():
+            self._commit_task = asyncio.create_task(self._flush_later())
+
+    async def _flush_later(self) -> None:
+        await asyncio.sleep(self.COMMIT_INTERVAL)
+        ready = self.frame.commit_ready()
+        if ready:
+            self._commit(ready)
+
+    def request_invalidate(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_invalidation
+        if elapsed >= self.INVALIDATE_INTERVAL:
+            self._last_invalidation = now
+            self._invalidate()
+            return
+        if self._invalidate_task is None or self._invalidate_task.done():
+            self._invalidate_task = asyncio.create_task(
+                self._invalidate_later(self.INVALIDATE_INTERVAL - elapsed)
+            )
+
+    async def _invalidate_later(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        self._last_invalidation = time.monotonic()
+        self._invalidate()
+
+    def render_now(self) -> None:
+        self._last_invalidation = time.monotonic()
+        self._invalidate()
+
+    def start_spinner(self) -> asyncio.Task[None]:
+        if self._spinner_task is None or self._spinner_task.done():
+            self._spinner_task = asyncio.create_task(self._tick_spinners())
+        return self._spinner_task
+
+    async def _tick_spinners(self) -> None:
+        while True:
+            await asyncio.sleep(self.SPINNER_INTERVAL)
+            self.request_invalidate()
+
+    async def aclose(self) -> None:
+        tasks = (
+            self._commit_task,
+            self._invalidate_task,
+            self._spinner_task,
+        )
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in tasks if task is not None),
+            return_exceptions=True,
+        )
+
+
+__all__ = [
+    "Block",
+    "BlockState",
+    "Frame",
+    "FrameScheduler",
+    "ViewportItem",
+]

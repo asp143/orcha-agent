@@ -1,0 +1,365 @@
+"""Model turn and stream processing."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import signal
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langgraph.types import Command
+
+from orcha_agent.core.events import (
+    InterruptRaised,
+    ModelChunk,
+    ToolCallEnd,
+    ToolCallStart,
+    TurnEnd,
+    TurnStart,
+)
+from orcha_agent.core.plugin import Handled, Resolved
+
+from .context import AppContext
+from .transcript import _matches
+async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
+    transcript = getattr(ctx, "transcript", None)
+    if emit:
+        bus = getattr(ctx, "_bus", ctx.bus)
+        handled = await bus.emit(event)
+        if isinstance(handled, Handled):
+            return True
+        if transcript is not None:
+            return True
+    elif transcript is not None:
+        await transcript.handle(event)
+        return True
+    for registration in ctx.registry.renderers:
+        if not _matches(registration.match, event):
+            continue
+        rendered = registration.render(event)
+        if rendered is None:
+            continue
+        if isinstance(event, ModelChunk):
+            ctx.console.print(rendered, end="")
+        else:
+            ctx.console.print(rendered)
+        return True
+    return False
+
+
+def _messages(value: Any) -> list[BaseMessage]:
+    found: list[BaseMessage] = []
+    if isinstance(value, BaseMessage):
+        return [value]
+    if isinstance(value, dict):
+        for item in value.values():
+            found.extend(_messages(item))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found.extend(_messages(item))
+    return found
+
+
+def _model_name(message: BaseMessage, metadata: Any) -> str | None:
+    sources = (
+        metadata,
+        getattr(message, "response_metadata", None),
+        getattr(message, "additional_kwargs", None),
+    )
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        provider = next(
+            (
+                source[key]
+                for key in ("ls_provider", "model_provider", "provider")
+                if isinstance(source.get(key), str) and source[key]
+            ),
+            None,
+        )
+        model = next(
+            (
+                source[key]
+                for key in ("ls_model_name", "model_name", "model")
+                if isinstance(source.get(key), str) and source[key]
+            ),
+            None,
+        )
+        if model is None:
+            continue
+        if provider is not None and ":" not in model:
+            return f"{provider}:{model}"
+        return model
+    return None
+
+
+class _ModelLabelBuffer:
+    """Return a model label only for the first chunk of each response."""
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    def take(self, message: BaseMessage, metadata: Any) -> str | None:
+        model_name = _model_name(message, metadata)
+        if model_name is None:
+            return None
+        identifier = getattr(message, "id", None)
+        if not identifier and isinstance(metadata, Mapping):
+            identifier = metadata.get("run_id")
+        key = str(identifier or model_name)
+        if key in self._seen:
+            return None
+        self._seen.add(key)
+        return model_name
+
+
+@dataclass(slots=True)
+class _PendingToolCall:
+    name: str = ""
+    args: str = ""
+    id: str = ""
+
+
+class _ToolCallBuffer:
+    """Assemble provider tool-call chunks before rendering their arguments."""
+
+    def __init__(self) -> None:
+        self._pending: dict[tuple[str, int | str], _PendingToolCall] = {}
+        self._emitted: set[tuple[str, str]] = set()
+
+    def add(
+        self,
+        message: AIMessage,
+        *,
+        source_id: str = "main",
+    ) -> list[ToolCallStart]:
+        chunks = getattr(message, "tool_call_chunks", ())
+        if not chunks:
+            events: list[ToolCallStart] = []
+            for call in message.tool_calls:
+                identifier = call.get("id") or f"{call['name']}:{len(self._emitted)}"
+                emitted_key = (source_id, identifier)
+                if emitted_key in self._emitted:
+                    continue
+                self._emitted.add(emitted_key)
+                events.append(
+                    ToolCallStart(
+                        name=call["name"],
+                        args=call.get("args", {}),
+                        id=identifier,
+                        source_id=source_id,
+                    )
+                )
+            return events
+
+        completed: list[ToolCallStart] = []
+        for chunk in chunks:
+            chunk_key = chunk.get("index")
+            if chunk_key is None:
+                chunk_key = chunk.get("id") or len(self._pending)
+            key = (source_id, chunk_key)
+            pending = self._pending.setdefault(key, _PendingToolCall())
+            name = chunk.get("name")
+            if name:
+                pending.name += name
+            args = chunk.get("args")
+            if args:
+                pending.args += args
+            identifier = chunk.get("id")
+            if identifier:
+                pending.id = identifier
+            emitted_key = (source_id, pending.id)
+            if not pending.name or not pending.id or emitted_key in self._emitted:
+                continue
+            try:
+                parsed_args = json.loads(pending.args)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(parsed_args, dict):
+                continue
+            self._emitted.add(emitted_key)
+            completed.append(
+                ToolCallStart(
+                    name=pending.name,
+                    args=parsed_args,
+                    id=pending.id,
+                    source_id=source_id,
+                )
+            )
+            self._pending.pop(key, None)
+        return completed
+
+
+async def _message_event(
+    ctx: AppContext,
+    data: Any,
+    tool_calls: _ToolCallBuffer,
+    model_labels: _ModelLabelBuffer,
+    namespace: tuple[str, ...] = (),
+) -> None:
+    if not isinstance(data, tuple) or len(data) != 2:
+        return
+    message, metadata = data
+    if not isinstance(message, BaseMessage):
+        return
+    if isinstance(message, ToolMessage):
+        return
+    source_id = "/".join(str(part) for part in namespace) if namespace else "main"
+    if isinstance(message, AIMessage):
+        for event in tool_calls.add(message, source_id=source_id):
+            await _render(ctx, event)
+    node = metadata.get("langgraph_node", "") if isinstance(metadata, Mapping) else ""
+    agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
+    role = (
+        "subagent"
+        if namespace or agent_type == "subagent" or "subagent" in str(node)
+        else "main"
+    )
+    if getattr(message, "content", None) or getattr(message, "usage_metadata", None):
+        await _render(
+            ctx,
+            ModelChunk(
+                chunk=message,
+                role=role,
+                model_name=model_labels.take(message, metadata),
+                source_id=source_id,
+            ),
+        )
+
+
+async def _updates_event(
+    ctx: AppContext,
+    data: Any,
+    seen_results: set[str],
+    seen_interrupts: set[str],
+) -> Resolved | None:
+    if not isinstance(data, dict):
+        return None
+    interrupts = data.get("__interrupt__", ())
+    if interrupts:
+        interrupt = interrupts[0]
+        interrupt_id = getattr(interrupt, "id", None)
+        if isinstance(interrupt_id, str):
+            if interrupt_id in seen_interrupts:
+                return None
+            seen_interrupts.add(interrupt_id)
+        raw_payload = getattr(interrupt, "value", None)
+        payload = (
+            raw_payload
+            if isinstance(raw_payload, dict)
+            else {"action_requests": [], "value": raw_payload}
+        )
+        warning = "Approval unresolved; rejecting pending actions."
+        try:
+            resolution = await ctx._bus.emit(InterruptRaised(payload=payload))
+        except Exception as exc:
+            warning = (
+                f"Approval handler failed ({type(exc).__name__}); "
+                "rejecting pending actions."
+            )
+            resolution = None
+        if isinstance(resolution, Resolved):
+            return resolution
+        actions = payload.get("action_requests", ())
+        ctx.console.warning(warning)
+        return Resolved(
+            resume_value={
+                "decisions": [{"type": "reject"} for _ in actions],
+            }
+        )
+    for message in _messages(data):
+        if not isinstance(message, ToolMessage) or message.tool_call_id in seen_results:
+            continue
+        seen_results.add(message.tool_call_id)
+        await _render(
+            ctx,
+            ToolCallEnd(name=message.name or "tool", id=message.tool_call_id, result=message),
+        )
+    return None
+
+
+async def _run_turn(ctx: AppContext, text: str) -> None:
+    if not await ctx.ensure_agent():
+        return
+    session_info = ctx.session.get(ctx.session_id)
+    if session_info is not None and session_info.title is None:
+        title = " ".join(text.split())[:80]
+        if title:
+            ctx.session.set_title(ctx.session_id, title)
+    await ctx._bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
+    next_input: Any = {"messages": [{"role": "user", "content": text}]}
+    tool_calls = _ToolCallBuffer()
+    model_labels = _ModelLabelBuffer()
+    seen_results: set[str] = set()
+    seen_interrupts: set[str] = set()
+    cancelled = False
+    try:
+        while True:
+            resolution: Resolved | None = None
+            async for stream_item in ctx.agent.astream(
+                next_input,
+                config=ctx.thread_config,
+                stream_mode=["messages", "updates"],
+                subgraphs=True,
+            ):
+                if len(stream_item) == 3:
+                    namespace, mode, data = stream_item
+                else:
+                    mode, data = stream_item
+                    namespace = ()
+                if mode == "messages":
+                    await _message_event(
+                        ctx,
+                        data,
+                        tool_calls,
+                        model_labels,
+                        namespace,
+                    )
+                elif mode == "updates":
+                    candidate = await _updates_event(
+                        ctx,
+                        data,
+                        seen_results,
+                        seen_interrupts,
+                    )
+                    if candidate is not None:
+                        resolution = candidate
+            if resolution is None:
+                break
+            next_input = Command(resume=resolution.resume_value)
+    except asyncio.CancelledError:
+        cancelled = True
+        ctx.console.warning("interrupted")
+    except Exception as exc:
+        if not await _render(ctx, exc, emit=False):
+            ctx.console.error(f"{type(exc).__name__}: {exc}")
+    finally:
+        try:
+            ctx.capture_turn()
+            if cancelled:
+                ctx.record_exit("signal")
+        finally:
+            ctx.console.print()
+            await ctx._bus.emit(TurnEnd(thread_id=ctx.thread_id))
+            if ctx.rebuild_requested:
+                await ctx.rebuild()
+
+
+async def _run_cancellable_turn(ctx: AppContext, text: str) -> None:
+    task = asyncio.create_task(_run_turn(ctx, text))
+    loop = asyncio.get_running_loop()
+    signal_installed = False
+    try:
+        loop.add_signal_handler(signal.SIGINT, task.cancel)
+        signal_installed = True
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
+    try:
+        await task
+    finally:
+        if signal_installed:
+            loop.remove_signal_handler(signal.SIGINT)
+            signal.signal(signal.SIGINT, signal.default_int_handler)

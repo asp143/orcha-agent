@@ -9,6 +9,7 @@ ProviderFactory: TypeAlias = Callable[[str, Mapping[str, Any]], Any]
 BackendFactory: TypeAlias = Callable[[Any], Any]
 RendererMatch: TypeAlias = str | Callable[[Any], bool]
 Renderer: TypeAlias = Callable[[Any], Any | None]
+BlockRenderer: TypeAlias = Callable[..., Any]
 AvailabilityCheck: TypeAlias = Callable[[], str | None]
 
 
@@ -59,6 +60,13 @@ class RendererRegistration:
     match: RendererMatch
     render: Renderer
     name: str
+
+@dataclass(frozen=True, slots=True)
+class BlockRendererRegistration:
+    plugin: str
+    priority: int
+    kind: str
+    render: BlockRenderer
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +125,7 @@ class Registry:
 
         self.middleware: list[MiddlewareRegistration] = []
         self.renderers: list[RendererRegistration] = []
+        self.block_renderers: list[BlockRendererRegistration] = []
         self.status_segments: list[StatusSegmentRegistration] = []
         self.subagents: list[SubagentRegistration] = []
         self.prompt_fragments: list[PromptFragment] = []
@@ -130,6 +139,7 @@ class Registry:
         self._middleware_owners: dict[str, str] = {}
         self._status_segment_owners: dict[str, str] = {}
         self._renderer_owners: dict[object, str] = {}
+        self._block_renderer_owners: dict[str, str] = {}
         self._subagent_owners: dict[str, str] = {}
 
     @staticmethod
@@ -303,6 +313,38 @@ class Registry:
         )
         self.renderers.sort(key=lambda entry: (entry.priority, entry.plugin, entry.name))
 
+    def _add_block_renderer(
+        self,
+        plugin: str,
+        kind: str,
+        render: BlockRenderer,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "block renderer",
+            kind,
+            plugin,
+            self._block_renderer_owners,
+            replace=replace,
+        )
+        if replace:
+            self.block_renderers[:] = [
+                entry for entry in self.block_renderers if entry.kind != kind
+            ]
+        self.block_renderers.append(
+            BlockRendererRegistration(
+                plugin=plugin,
+                priority=priority,
+                kind=kind,
+                render=render,
+            )
+        )
+        self.block_renderers.sort(
+            key=lambda entry: (entry.priority, entry.plugin, entry.kind)
+        )
+
     def _add_subagent(
         self,
         plugin: str,
@@ -381,6 +423,8 @@ __all__ = [
     "AvailabilityCheck",
     "AuthRegistration",
     "BackendFactory",
+    "BlockRenderer",
+    "BlockRendererRegistration",
     "BackendRegistration",
     "CommandHandler",
     "CommandRegistration",

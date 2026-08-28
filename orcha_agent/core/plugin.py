@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 if TYPE_CHECKING:
     from .auth import AuthFlow
     from .events import Event, EventBus
-    from .registry import Registry, Renderer, RendererMatch
+    from .registry import BlockRenderer, Registry, Renderer, RendererMatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +135,22 @@ class PluginAPI:
         self._registry._add_renderer(
             self.name,
             match,
+            render,
+            priority=priority,
+            replace=replace,
+        )
+
+    def add_block_renderer(
+        self,
+        kind: str,
+        render: BlockRenderer,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_block_renderer(
+            self.name,
+            kind,
             render,
             priority=priority,
             replace=replace,

@@ -1,0 +1,484 @@
+"""Prompt-toolkit input loop and graph stream dispatch."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import sys
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from io import StringIO
+from pathlib import Path
+from typing import Any
+
+from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.formatted_text import ANSI, HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
+from rich.console import Console
+
+from orcha_agent.core.config import Config, is_trusted_cwd
+from orcha_agent.core.events import AppExit, AppStart, Event, EventBus
+from orcha_agent.core.ledger import Ledger, build_context
+from orcha_agent.core.loader import load_plugins
+from orcha_agent.core.registry import Registry
+from orcha_agent.core.session import SessionStore
+
+from .console import ConsoleOutput
+from .context import (
+    AppContext,
+    _session_resolution_error,
+    _stored_model,
+    _uncheckpointed_seed_target,
+)
+from .frame import Block, Frame, FrameScheduler
+from .transcript import Transcript
+from .turn import _run_cancellable_turn
+
+
+
+def _history_path() -> Path:
+    return Path.home() / ".local/share/orcha-agent/history"
+
+
+def _bindings() -> KeyBindings:
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def _accept(event: Any) -> None:
+        event.current_buffer.validate_and_handle()
+
+    @bindings.add("escape", "enter")
+    def _newline(event: Any) -> None:
+        event.current_buffer.insert_text("\n")
+
+    return bindings
+
+
+
+
+
+def _bottom_toolbar(ctx: Any) -> Any:
+    if not bool(getattr(ctx.cfg, "statusbar", True)):
+        return ""
+    values: list[str] = []
+    for segment in ctx.registry.status_segments:
+        try:
+            value = segment.render(ctx)
+        except Exception:
+            value = f"!{segment.name}"
+        if value:
+            values.append(value)
+    return HTML(" · ".join(values)) if values else ""
+
+
+async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
+    """Dispatch slash commands without invoking the model."""
+
+    if not text.startswith("/"):
+        return False
+    command_text = text[1:]
+    name, separator, args = command_text.partition(" ")
+    registration = registry.commands.get(name)
+    if registration is None:
+        ctx.console.error(f"Unknown command: /{name}")
+        return True
+    await registration.handler(ctx, args if separator else "")
+    return True
+
+
+
+
+
+def _compat(name: str, default: Any) -> Any:
+    facade = sys.modules.get("orcha_agent.tui.app")
+    return getattr(facade, name, default) if facade is not None else default
+
+
+class UIFacade:
+    """Minimal stable UI surface for plugins while overlays remain optional."""
+
+    def __init__(
+        self,
+        *,
+        show_overlay: Callable[[object], Awaitable[Any]] | None = None,
+        notify: Callable[[str], None] | None = None,
+    ) -> None:
+        self._show_overlay = show_overlay
+        self._notify = notify
+        self.notifications: list[str] = []
+        self.thinking_visible = True
+        self.tools_expanded = False
+
+    def notify(self, text: str) -> None:
+        self.notifications.append(text)
+        if self._notify is not None:
+            self._notify(text)
+
+    async def show(self, overlay: object) -> Any:
+        if self._show_overlay is None:
+            return None
+        return await self._show_overlay(overlay)
+
+    async def ask(self, questions: object) -> Any:
+        return await self.show(questions)
+
+    def toggle_thinking(self) -> bool:
+        self.thinking_visible = not self.thinking_visible
+        return self.thinking_visible
+
+    def expand_tools(self, expanded: bool) -> None:
+        self.tools_expanded = expanded
+
+
+class ApplicationRuntime:
+    """One inline prompt-toolkit application for a complete TUI session."""
+
+    def __init__(
+        self,
+        submit: Callable[[str], Awaitable[None]],
+        *,
+        registry: Registry | None = None,
+        history: FileHistory | None = None,
+        status: Callable[[], Any] | None = None,
+        input: Any = None,
+        output: Any = None,
+        console: Console | None = None,
+    ) -> None:
+        self._submit = submit
+        self.registry = registry
+        self.frame = Frame()
+        self.ui = UIFacade(notify=self._notify)
+        self._status = status or (lambda: "")
+        self._pending: set[asyncio.Task[None]] = set()
+        self._submit_lock = asyncio.Lock()
+        self._scrollback = console or Console()
+
+        self.buffer = Buffer(
+            history=history,
+            multiline=True,
+            accept_handler=self._accept,
+        )
+        bindings = _bindings()
+
+        @bindings.add("c-d")
+        def _exit(event: Any) -> None:
+            if event.current_buffer.text:
+                event.current_buffer.delete()
+            else:
+                event.app.exit()
+
+        root = FloatContainer(
+            content=HSplit(
+                [
+                    Window(
+                        FormattedTextControl(self._viewport_text),
+                        height=Dimension(min=0),
+                    ),
+                    Window(
+                        BufferControl(buffer=self.buffer),
+                        height=Dimension(min=1, max=8),
+                    ),
+                    Window(
+                        FormattedTextControl(self._status),
+                        height=1,
+                    ),
+                ]
+            ),
+            floats=[],
+        )
+        kwargs: dict[str, Any] = {}
+        if input is not None:
+            kwargs["input"] = input
+        if output is not None:
+            kwargs["output"] = output
+        self.application: Application[None] = Application(
+            layout=Layout(root, focused_element=self.buffer),
+            key_bindings=bindings,
+            full_screen=False,
+            **kwargs,
+        )
+        self.scheduler = FrameScheduler(
+            self.frame,
+            commit=self._commit_blocks,
+            invalidate=self.application.invalidate,
+        )
+        self.transcript = Transcript(
+            self.frame,
+            registry=registry,
+            scheduler=self.scheduler,
+        )
+
+    def _accept(self, buffer: Buffer) -> bool:
+        text = buffer.text.strip()
+        buffer.reset(append_to_history=bool(text))
+        if not text:
+            return False
+        task = asyncio.create_task(self._submit_serially(text))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+        return False
+
+    async def _submit_serially(self, text: str) -> None:
+        async with self._submit_lock:
+            try:
+                await self._submit(text)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                self.transcript.append_banner("interrupted", level="warning")
+            except Exception as exc:
+                self.transcript.append_banner(f"{type(exc).__name__}: {exc}")
+
+    def _notify(self, text: str) -> None:
+        self.transcript.append_banner(text, level="info")
+        self.application.invalidate()
+
+    def _render_block(self, block: Block, width: int, rows: int) -> Any:
+        if self.registry is not None:
+            for registration in self.registry.block_renderers:
+                if registration.kind == block.kind:
+                    return registration.render(
+                        block,
+                        None,
+                        width,
+                        rows,
+                        self.ui.tools_expanded,
+                    )
+        if block.kind == "raw":
+            return block.data.get("renderable", "")
+        return block.data.get("text", block.data.get("message", str(block.data)))
+
+    def _viewport_text(self) -> Any:
+        size = self.application.output.get_size()
+        budget = Frame.row_budget(
+            terminal_rows=size.rows,
+            composer_rows=1,
+            status_rows=1,
+        )
+        rendered: list[str] = []
+        for item in self.frame.viewport_plan(budget):
+            stream = StringIO()
+            console = Console(
+                file=stream,
+                force_terminal=True,
+                width=max(1, size.columns),
+                soft_wrap=True,
+            )
+            console.print(
+                self._render_block(item.block, size.columns, item.rows),
+                end="",
+            )
+            lines = stream.getvalue().splitlines(keepends=True)
+            if len(lines) > item.rows:
+                lines = (
+                    lines[-item.rows :]
+                    if item.block.kind in {"assistant", "thinking"}
+                    else lines[: item.rows]
+                )
+            rendered.append("".join(lines))
+        return ANSI("\n".join(rendered))
+
+    def _commit_blocks(self, blocks: list[Block]) -> None:
+        def write_blocks() -> None:
+            width = self.application.output.get_size().columns
+            for block in blocks:
+                options = block.data.get("options", {}) if block.kind == "raw" else {}
+                self._scrollback.print(
+                    self._render_block(block, width, 10_000),
+                    **options,
+                )
+
+        result = run_in_terminal(write_blocks)
+        if inspect.isawaitable(result):
+            task = asyncio.create_task(result)
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
+
+    async def run(self) -> None:
+        try:
+            await self.application.run_async()
+        except EOFError:
+            pass
+        finally:
+            if self._pending:
+                await asyncio.gather(*tuple(self._pending), return_exceptions=True)
+            await self.scheduler.aclose()
+
+async def run_app(cfg: Config) -> int:
+    """Compose plugins and run the interactive terminal application."""
+
+    store_type = _compat("SessionStore", SessionStore)
+    console_type = _compat("ConsoleOutput", ConsoleOutput)
+    try:
+        store = store_type(cfg.db_path)
+    except Exception as exc:
+        console_type().error(f"Cannot open session database {cfg.db_path}: {exc}")
+        return 1
+    with store:
+        history_model: str | list[str] | None = None
+        pending_switch_old_thread: str | None = None
+        resume_live_thread: str | None = None
+        if cfg.list_sessions:
+            console = console_type()
+            for session in store.list():
+                console.print(f"{session.thread_id}  {session.cwd}  {session.title or ''}")
+            return 0
+        if cfg.resume:
+            try:
+                saved_session = store.resolve_session(cfg.resume)
+            except LookupError as exc:
+                console_type().error(_session_resolution_error(cfg.resume, exc))
+                return 1
+            history_model = _stored_model(saved_session.model)
+            cfg = replace(
+                cfg,
+                cwd=Path(saved_session.cwd),
+                model=(
+                    cfg.model
+                    if cfg.model_overridden
+                    else history_model
+                ),
+                mode=saved_session.mode,
+                trust_cwd=is_trusted_cwd(
+                    saved_session.cwd,
+                    cfg.trusted_dirs,
+                    trust_all=cfg.trust_all_cwd,
+                ),
+            )
+            session_id = saved_session.thread_id
+            resume_live_thread = saved_session.current_thread
+            checkpoint_live = (
+                resume_live_thread is not None
+                and store.checkpoint_exists(resume_live_thread)
+            )
+            if not checkpoint_live:
+                thread_id = _uncheckpointed_seed_target(
+                    store,
+                    session_id,
+                    resume_live_thread,
+                )
+                pending_switch_old_thread = resume_live_thread or thread_id
+                ledger = Ledger(store)
+                ledger.set_position(
+                    session_id,
+                    leaf_id=ledger.leaf(session_id),
+                    thread_id=None,
+                )
+            else:
+                thread_id = resume_live_thread
+        else:
+            created = store.create(
+                cfg.cwd,
+                cfg.model,
+                mode=cfg.mode,
+            )
+            if created.current_thread is None:
+                raise RuntimeError(f"Session {created.thread_id} has no graph thread")
+            session_id = created.thread_id
+            thread_id = created.current_thread
+
+        registry = Registry()
+        bus = EventBus()
+        states = store.all_plugin_state(session_id)
+        holder: dict[str, AppContext] = {}
+
+        def request_rebuild() -> None:
+            if "ctx" in holder:
+                holder["ctx"].request_rebuild()
+
+        loader = _compat("load_plugins", load_plugins)
+        records = loader(registry, bus, cfg, states, request_rebuild)
+        ctx = AppContext(
+            cfg=cfg,
+            registry=registry,
+            bus=bus,
+            session=store,
+            plugins=records,
+            plugin_states=states,
+            console=console_type(),
+            thread_id=thread_id,
+            session_id=session_id,
+            history_model=history_model,
+        )
+        ctx._pending_switch_old_thread = pending_switch_old_thread
+        holder["ctx"] = ctx
+        if cfg.resume and resume_live_thread is not None and store.checkpoint_exists(
+            resume_live_thread
+        ):
+            ctx.recover_checkpoint(session_id, resume_live_thread)
+            context = build_context(ctx.ledger.path(session_id))
+            pending_interrupt = store.checkpoint_has_pending_interrupt(
+                resume_live_thread
+            )
+            if context.dangling and not pending_interrupt:
+                old_thread = ctx.thread_id
+                ctx.ledger.set_position(
+                    session_id,
+                    leaf_id=ctx.ledger.leaf(session_id),
+                    thread_id=None,
+                )
+                ctx.thread_id = store.next_thread_id(session_id)
+                ctx._pending_switch_old_thread = old_thread
+        async def submit(text: str) -> None:
+            try:
+                if not text.startswith("/"):
+                    first_word = text.split(maxsplit=1)[0]
+                    if first_word in registry.commands:
+                        ctx.console.warning(f"Did you mean /{text}?")
+                        return
+                command_dispatch = _compat("dispatch_command", dispatch_command)
+                if await command_dispatch(registry, ctx, text):
+                    if ctx.rebuild_requested:
+                        await ctx.rebuild()
+                    if ctx.exit_requested:
+                        runtime.application.exit()
+                    return
+                await _run_cancellable_turn(ctx, text)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                ctx.console.warning("interrupted")
+            except Exception as exc:
+                ctx.console.error(f"{type(exc).__name__}: {exc}")
+
+        history_path = _compat("_history_path", _history_path)()
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_type = _compat("ApplicationRuntime", ApplicationRuntime)
+        runtime = runtime_type(
+            submit,
+            registry=registry,
+            history=FileHistory(str(history_path)),
+            status=lambda: _bottom_toolbar(ctx),
+            console=(
+                ctx.console.console
+                if isinstance(ctx.console, ConsoleOutput)
+                else None
+            ),
+        )
+        if hasattr(runtime, "transcript"):
+            ctx.transcript = runtime.transcript
+            ctx.ui = runtime.ui
+            bus.on(
+                Event,
+                runtime.transcript.handle,
+                plugin="<tui>",
+                priority=10_000,
+            )
+            if isinstance(ctx.console, ConsoleOutput):
+                ctx.console = ConsoleOutput(
+                    ctx.console.console,
+                    transcript=runtime.transcript,
+                )
+        await bus.emit(AppStart(ctx=ctx))
+        if ctx._reseed_pending() and ctx.agent is not None:
+            await ctx.ensure_agent()
+        if ctx.rebuild_requested:
+            await ctx.rebuild()
+        if cfg.resume:
+            ctx._warn_interrupted_resume()
+        await runtime.run()
+        ctx.persist_plugin_states()
+        ctx.record_exit("normal")
+        await bus.emit(AppExit())
+        return 0
