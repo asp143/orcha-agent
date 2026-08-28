@@ -54,6 +54,7 @@ EXPECTED_COMMANDS = {
     "resume",
     "sessions",
     "status",
+    "theme",
     "thinking",
     "tree",
 }
