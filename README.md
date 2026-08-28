@@ -206,9 +206,11 @@ overrides:
 Colors accept `#rrggbb`, palette indexes `0` through `255`, `$variable`
 references, or `""` for the terminal default. Missing color tokens produce a
 warning and inherit from `dark`; unknown tokens or invalid files are skipped
-with a warning. Select the `nerd`, `unicode`, or `ascii` preset with
-`[ui] symbols`; theme `symbols.overrides` still apply. Non-UTF output
-automatically falls back from `nerd` or `unicode` to `ascii`.
+with a warning. Theme files may choose a `symbols.preset`; an explicit
+`[ui] symbols` value (`nerd`, `unicode`, or `ascii`) overrides it. Setting
+`icons=false` without an explicit preset forces the ASCII compatibility
+preset. Theme `symbols.overrides` still apply when the terminal can encode
+them; non-UTF output falls back to safe `ascii` symbols.
 
 `/theme` opens a live-preview picker; `Esc` restores the prior theme and
 `Enter` saves the selection with the session. `/theme <name>` switches
@@ -254,12 +256,14 @@ remainder through the local shell in the working directory with a 60-second
 timeout. `Ctrl+G` edits the current draft with `$VISUAL` or `$EDITOR`.
 
 Prompt history is stored in `~/.local/share/orcha-agent/history.db` with
-SQLite FTS5 search. `Ctrl+R` opens the searchable history overlay and returns
-the selected prompt to the composer. Slash-command completion starts at `/`;
-`@` completes project paths, and bare path completion is also available.
-Completion honors the root `.gitignore`, does not follow directory symlinks,
-and excludes `.git`, `.env*`, and `Credentials`; `Tab` accepts menu choices.
-Plugins may add completion triggers.
+SQLite FTS5 search and is rebound to the active working directory and session
+after `/resume`. `Ctrl+R` opens the searchable history overlay and returns the
+selected prompt to the composer. Slash-command completion starts at `/`; `@`
+completes project paths, while bare path completion indexes only after an
+explicit `Tab`. Completion honors anchored rules, nested `.gitignore` files,
+and negated descendants, does not follow directory symlinks, and excludes
+`.git`, `.env*`, and `Credentials`. `Tab` accepts menu choices. Plugins may
+add completion triggers.
 
 While a turn streams, submitting or pressing `Ctrl+Q` queues prompts. A
 submission made entirely of `->`/`=>` lines, or a consecutive `1.`/`2.` (or
@@ -272,8 +276,9 @@ restores the queued prompts as editable `->` lines. With the default tree
 binding, double `Esc` or `Shift+Esc` opens the conversation tree from an idle,
 empty composer. `Ctrl+C` clears a draft, otherwise cancels a streaming turn,
 otherwise exits on a second press within one second. `Ctrl+D` exits
-immediately and saves the current draft and queue; they are restored when
-orcha starts with `--resume <session-id>`, not by in-app `/resume`.
+immediately and saves the current draft and queue. Draft, queue, thinking
+level, path completion, and history scope are restored both when orcha starts
+with `--resume <session-id>` and after in-app `/resume`.
 
 ### Overlays and session chrome
 
@@ -306,9 +311,10 @@ interrupt the session.
 
 Model reasoning streams before the answer. `thinking="summary"` shows the
 main agent only, `off` hides it, and `all` includes subagents. `/thinking
-off|on` changes display for the current session. Its saved display state is
-restored when orcha starts with `--resume <session-id>`, not by in-app
-`/resume`.
+off|on` and `Ctrl+T` change display for the current session. The saved display
+mode restores both at startup with `--resume <session-id>` and after in-app
+`/resume`. `Shift+Tab` cycles the provider-gated inference level through
+`off`, `low`, `medium`, `high`, and `max`.
 
 ## Plugins
 
