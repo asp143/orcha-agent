@@ -169,7 +169,29 @@ See `examples/plugins/hello.py` for a complete external plugin.
 
 `/help`, `/clear`, `/new`, `/exit`, `/plugins`, `/providers`, `/login <prefix>`,
 `/logout <prefix>`, `/tree [--all]`, `/branch <id-prefix>`, `/fork`,
-`/export [path]`, `/sessions`, `/resume <prefix>`, `/compact`, `/model <spec>`,
+`/export [--force] [path]`, `/sessions`, `/resume <prefix>`, `/compact`,
+`/model <spec>`,
 `/mode <name>`, and `/thinking on|off`.
 
 `/clear` resets the current session history, while `/new` starts a fresh session.
+
+### Export format
+
+`/export` writes compact version-3 JSONL: a session header followed by every
+ledger entry across all branches. The destination is created exclusively by
+default, so an existing file is never overwritten; a leading `--force`
+replaces it. The optional path is the remaining raw command text and may
+contain spaces.
+
+Unknown entry payload fields are normally flattened into the entry envelope.
+If the payload contains any reserved key (`type`, `id`, `parentId`,
+`timestamp`, `opaqueWrapped`, or `opaquePayload`), the export instead writes
+the envelope metadata plus exactly:
+
+```json
+{"opaqueWrapped":true,"opaquePayload":{"original":"payload"}}
+```
+
+For an unknown entry type, import unwraps this exact marker-and-payload pair.
+This preserves the original object losslessly even when its keys collide with
+envelope metadata, without mistaking ordinary unknown fields for a wrapper.

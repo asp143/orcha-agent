@@ -1,13 +1,18 @@
 import json
 import re
+import stat
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, message_to_dict
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    ToolMessage,
+    message_to_dict,
+)
 from rich.console import Console
 
 from orcha_agent.builtin import commands_core, commands_model, commands_session
@@ -736,13 +741,30 @@ async def test_tree_all_renders_every_entry_id_and_payload_kind(
 
 
 @pytest.mark.asyncio
-async def test_branch_resolves_a_unique_prefix_before_delegating(
+async def test_branch_from_user_message_delegates_latest_assistant_reply(
     session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
 ) -> None:
     ctx, _output, session, ledger = session_command_context
     target = ledger.append(
         session.thread_id,
         MessageEntry(message=message_to_dict(HumanMessage(content="branch here"))),
+    )
+    ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="first reply"))),
+    )
+    ledger.branch(session.thread_id, target.id)
+    latest_reply = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="latest reply"))),
+    )
+    ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content="later question"))),
+    )
+    ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="later answer"))),
     )
     branched: list[str] = []
 
@@ -753,7 +775,83 @@ async def test_branch_resolves_a_unique_prefix_before_delegating(
     registry = Registry()
     commands_session.register(_api(registry, EventBus()))
 
-    assert await dispatch_command(registry, ctx, f"/branch {target.id[:4]}") is True
+    assert await dispatch_command(registry, ctx, f"/branch {target.id[:8]}") is True
+    assert branched == [latest_reply.id]
+
+
+@pytest.mark.asyncio
+async def test_branch_from_user_message_delegates_final_assistant_of_tool_turn(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, _output, session, ledger = session_command_context
+    target = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content="use a tool"))),
+    )
+    ledger.append(
+        session.thread_id,
+        MessageEntry(
+            message=message_to_dict(
+                AIMessage(
+                    content="calling tool",
+                    tool_calls=[
+                        {"id": "call-1", "name": "lookup", "args": {"query": "x"}}
+                    ],
+                )
+            )
+        ),
+    )
+    ledger.append(
+        session.thread_id,
+        MessageEntry(
+            message=message_to_dict(
+                ToolMessage(content="tool result", tool_call_id="call-1")
+            )
+        ),
+    )
+    final_reply = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="final answer"))),
+    )
+    branched: list[str] = []
+
+    async def branch(entry_id: str) -> None:
+        branched.append(entry_id)
+
+    ctx.branch = branch
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert await dispatch_command(registry, ctx, f"/branch {target.id[:8]}") is True
+    exact_command = f"/branch --exact {target.id[:8]}"
+    assert await dispatch_command(registry, ctx, exact_command) is True
+    assert branched == [final_reply.id, target.id]
+
+
+@pytest.mark.asyncio
+async def test_branch_exact_delegates_the_resolved_entry(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, _output, session, ledger = session_command_context
+    target = ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(HumanMessage(content="branch here"))),
+    )
+    ledger.append(
+        session.thread_id,
+        MessageEntry(message=message_to_dict(AIMessage(content="existing reply"))),
+    )
+    branched: list[str] = []
+
+    async def branch(entry_id: str) -> None:
+        branched.append(entry_id)
+
+    ctx.branch = branch
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    command = f"/branch --exact {target.id[:8]}"
+    assert await dispatch_command(registry, ctx, command) is True
     assert branched == [target.id]
 
 
@@ -785,21 +883,31 @@ async def test_branch_reports_ambiguous_and_missing_prefixes_without_mutation(
     commands_session.register(_api(registry, EventBus()))
     leaf_before = ledger.leaf(session.thread_id)
 
-    assert await dispatch_command(registry, ctx, f"/branch {prefix}") is True
-    ambiguous_output = output.getvalue()
-    assert "ambiguous" in ambiguous_output.lower()
-    assert all(candidate in ambiguous_output for candidate in sorted(candidates))
-    assert branched == []
-    assert ledger.leaf(session.thread_id) == leaf_before
+    for exact in (False, True):
+        option = "--exact " if exact else ""
+        assert (
+            await dispatch_command(registry, ctx, f"/branch {option}{prefix}") is True
+        )
+        ambiguous_output = output.getvalue()
+        assert "ambiguous" in ambiguous_output.lower()
+        assert all(candidate in ambiguous_output for candidate in sorted(candidates))
+        assert branched == []
+        assert ledger.leaf(session.thread_id) == leaf_before
 
-    _clear_output(output)
-    missing_prefix = "not-a-ledger-id"
-    assert await dispatch_command(registry, ctx, f"/branch {missing_prefix}") is True
-    missing_output = output.getvalue().lower()
-    assert missing_prefix in missing_output
-    assert "unknown" in missing_output or "not found" in missing_output
-    assert branched == []
-    assert ledger.leaf(session.thread_id) == leaf_before
+        _clear_output(output)
+        missing_prefix = "not-a-ledger-id"
+        assert (
+            await dispatch_command(
+                registry, ctx, f"/branch {option}{missing_prefix}"
+            )
+            is True
+        )
+        missing_output = output.getvalue().lower()
+        assert missing_prefix in missing_output
+        assert "unknown" in missing_output or "not found" in missing_output
+        assert branched == []
+        assert ledger.leaf(session.thread_id) == leaf_before
+        _clear_output(output)
 
 
 @pytest.mark.asyncio
@@ -831,7 +939,7 @@ async def test_zero_argument_session_commands_delegate_once(
 
 
 @pytest.mark.asyncio
-async def test_export_uses_default_and_explicit_paths(
+async def test_export_default_uses_absolute_cwd_path_and_private_mode(
     session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -846,16 +954,121 @@ async def test_export_uses_default_and_explicit_paths(
     monkeypatch.chdir(tmp_path)
 
     assert await dispatch_command(registry, ctx, "/export") is True
+
     default_path = tmp_path / f"{session.thread_id}.jsonl"
-    assert default_path.is_file()
-    assert json.loads(default_path.read_text().splitlines()[0])["id"] == session.thread_id
-    assert str(default_path.name) in output.getvalue()
-    _clear_output(output)
-    explicit_path = tmp_path / "chosen-session.jsonl"
-    assert await dispatch_command(registry, ctx, f"/export {explicit_path}") is True
-    assert explicit_path.is_file()
-    assert json.loads(explicit_path.read_text().splitlines()[0])["id"] == session.thread_id
-    assert str(explicit_path) in output.getvalue()
+    header = json.loads(default_path.read_text().splitlines()[0])
+    assert header["id"] == session.thread_id
+    assert stat.S_IMODE(default_path.stat().st_mode) == 0o600
+    assert str(default_path.resolve()) in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_expands_home_directory(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, output, session, _ledger = session_command_context
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert await dispatch_command(registry, ctx, "/export ~/saved-session.jsonl") is True
+
+    exported = home / "saved-session.jsonl"
+    assert json.loads(exported.read_text().splitlines()[0])["id"] == session.thread_id
+    assert stat.S_IMODE(exported.stat().st_mode) == 0o600
+    assert str(exported.resolve()) in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_accepts_an_unquoted_path_containing_spaces(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, output, session, _ledger = session_command_context
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    monkeypatch.chdir(tmp_path)
+
+    command = "/export saved session with spaces.jsonl"
+    assert await dispatch_command(registry, ctx, command) is True
+
+    exported = tmp_path / "saved session with spaces.jsonl"
+    assert json.loads(exported.read_text().splitlines()[0])["id"] == session.thread_id
+    assert stat.S_IMODE(exported.stat().st_mode) == 0o600
+    assert str(exported.resolve()) in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_refuses_to_replace_an_existing_file_without_force(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+) -> None:
+    ctx, output, _session, _ledger = session_command_context
+    exported = tmp_path / "existing.jsonl"
+    exported.write_text("keep this content\n")
+    exported.chmod(0o640)
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert await dispatch_command(registry, ctx, f"/export {exported}") is True
+
+    assert exported.read_text() == "keep this content\n"
+    assert stat.S_IMODE(exported.stat().st_mode) == 0o640
+    rendered = output.getvalue().lower()
+    assert "exist" in rendered
+    assert "--force" in rendered
+
+
+@pytest.mark.asyncio
+async def test_export_force_replaces_an_existing_file_securely(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+) -> None:
+    ctx, output, session, _ledger = session_command_context
+    exported = tmp_path / "existing.jsonl"
+    exported.write_text("replace this content\n")
+    exported.chmod(0o644)
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert (
+        await dispatch_command(registry, ctx, f"/export --force {exported}") is True
+    )
+
+    header = json.loads(exported.read_text().splitlines()[0])
+    assert header["id"] == session.thread_id
+    assert stat.S_IMODE(exported.stat().st_mode) == 0o600
+    assert str(exported.resolve()) in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_export_force_refuses_a_symlink_without_touching_its_target(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+    tmp_path: Path,
+) -> None:
+    ctx, output, _session, _ledger = session_command_context
+    target = tmp_path / "target.jsonl"
+    target.write_text("target must remain unchanged\n")
+    target.chmod(0o640)
+    exported = tmp_path / "export.jsonl"
+    exported.symlink_to(target)
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+
+    assert (
+        await dispatch_command(registry, ctx, f"/export --force {exported}") is True
+    )
+
+    assert exported.is_symlink()
+    assert target.read_text() == "target must remain unchanged\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert "symlink" in output.getvalue().lower()
+
 
 @pytest.mark.asyncio
 async def test_resume_delegates_the_supplied_session_prefix() -> None:
@@ -884,7 +1097,9 @@ async def test_resume_delegates_the_supplied_session_prefix() -> None:
         pytest.param("/new extra", id="new"),
         pytest.param("/clear extra", id="clear"),
         pytest.param("/compact extra", id="compact"),
-        pytest.param("/export one two", id="export"),
+        pytest.param("/export --bogus", id="export-unknown-option"),
+        pytest.param("/export path.jsonl --force", id="export-option-order"),
+        pytest.param("/export --force --force", id="export-repeated-option"),
         pytest.param("/sessions extra", id="sessions"),
         pytest.param("/resume one two", id="resume"),
     ],

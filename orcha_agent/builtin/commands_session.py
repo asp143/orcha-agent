@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -184,10 +185,14 @@ async def _tree(ctx: Any, args: str) -> None:
 
 async def _branch(ctx: Any, args: str) -> None:
     parts = args.split()
-    if len(parts) != 1:
-        ctx.console.error("Usage: /branch <id-prefix>")
+    exact = bool(parts and parts[0] == "--exact")
+    if (exact and len(parts) != 2) or (not exact and len(parts) != 1):
+        ctx.console.error("Usage: /branch [--exact] <id-prefix>")
         return
-    prefix = parts[0]
+    prefix = parts[-1]
+    if prefix.startswith("-"):
+        ctx.console.error("Usage: /branch [--exact] <id-prefix>")
+        return
     try:
         entry = ctx.ledger.resolve(ctx.session_id, prefix)
     except AmbiguousEntry as error:
@@ -198,6 +203,35 @@ async def _branch(ctx: Any, args: str) -> None:
     except EntryNotFound:
         ctx.console.error(f"Unknown entry ID: {prefix}")
         return
+
+    if (
+        not exact
+        and isinstance(entry, MessageEntry)
+        and _message_role(entry) == "user"
+    ):
+        owner_by_id: dict[str, str | None] = {}
+        reply = None
+        for candidate in ctx.ledger.all(ctx.session_id):
+            role = (
+                _message_role(candidate)
+                if isinstance(candidate, MessageEntry)
+                else None
+            )
+            if role == "user":
+                owner = candidate.id
+            else:
+                owner = (
+                    owner_by_id.get(candidate.parent_id)
+                    if candidate.parent_id is not None
+                    else None
+                )
+            owner_by_id[candidate.id] = owner
+            if owner == entry.id and role == "assistant":
+                reply = candidate
+        if reply is None:
+            ctx.console.error(f"No assistant reply found for user entry: {prefix}")
+            return
+        entry = reply
     await ctx.branch(entry.id)
 
 
@@ -253,12 +287,37 @@ async def _compact(ctx: Any, args: str) -> None:
 
 
 async def _export(ctx: Any, args: str) -> None:
-    parts = args.split()
-    if len(parts) > 1:
-        ctx.console.error("Usage: /export [path]")
+    raw = args.strip()
+    first_and_path = raw.split(maxsplit=1)
+    force = bool(first_and_path and first_and_path[0] == "--force")
+    if force:
+        raw = first_and_path[1].strip() if len(first_and_path) == 2 else ""
+    tokens = raw.split()
+    if (tokens and tokens[0].startswith("-")) or "--force" in tokens:
+        ctx.console.error("Usage: /export [--force] [path]")
         return
-    path = Path(parts[0]) if parts else Path(f"./{ctx.session_id}.jsonl")
-    output = export_session(ctx.session, ctx.session_id, path)
+
+    path = (
+        Path(raw).expanduser()
+        if raw
+        else Path.cwd() / f"{ctx.session_id}.jsonl"
+    )
+    try:
+        output = export_session(
+            ctx.session, ctx.session_id, path, force=force
+        ).resolve()
+    except FileExistsError:
+        ctx.console.error(
+            f"Export destination already exists: {path}. "
+            "Use --force to replace it."
+        )
+        return
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            ctx.console.error(f"Refusing to export through symlink: {path}")
+        else:
+            ctx.console.error(f"Unable to export session to {path}: {error}")
+        return
     ctx.console.print(f"Exported session to {output}")
 
 
@@ -267,12 +326,18 @@ def register(api: PluginAPI) -> None:
         "tree", _tree, help="Show the current session tree: /tree [--all]"
     )
     api.add_command(
-        "branch", _branch, help="Branch from a ledger entry: /branch <id-prefix>"
+        "branch",
+        _branch,
+        help="Branch from a ledger entry: /branch [--exact] <id-prefix>",
     )
     api.add_command("fork", _fork, help="Fork the current session")
     api.add_command("new", _new, help="Start a new session")
     api.add_command("clear", _clear, help="Clear the current conversation")
     api.add_command("compact", _compact, help="Compact the current conversation")
-    api.add_command("export", _export, help="Export the current session: /export [path]")
+    api.add_command(
+        "export",
+        _export,
+        help="Export the current session: /export [--force] [path]",
+    )
     api.add_command("sessions", _sessions, help="List saved sessions")
     api.add_command("resume", _resume, help="Resume a saved session: /resume <session-id>")
