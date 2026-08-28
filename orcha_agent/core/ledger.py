@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import sqlite3
 from collections.abc import Iterable, Mapping
@@ -23,6 +24,8 @@ from .models import filter_foreign_blocks
 
 if TYPE_CHECKING:
     from .session import SessionStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -118,6 +121,12 @@ _ENTRY_TYPES: dict[str, type[Entry]] = {
     "custom": CustomEntry,
 }
 
+class _KeepCurrentThread:
+    __slots__ = ()
+
+
+_KEEP = _KeepCurrentThread()
+
 
 def _entry_type_and_payload(entry: Entry) -> tuple[str, dict[str, Any]]:
     if isinstance(entry, MessageEntry):
@@ -161,38 +170,102 @@ def _decode_entry(
 ) -> Entry:
     common = {"id": id, "parent_id": parent_id, "ts": ts}
     if entry_type == "message":
-        return MessageEntry(message=payload["message"], **common)
+        message = payload["message"]
+        if not isinstance(message, Mapping):
+            raise TypeError("Message entry message must be an object")
+        return MessageEntry(message=dict(message), **common)
     if entry_type == "model_change":
-        return ModelChangeEntry(model=payload["model"], **common)
+        model = payload["model"]
+        if not (
+            isinstance(model, str)
+            or (
+                isinstance(model, list)
+                and all(isinstance(candidate, str) for candidate in model)
+            )
+        ):
+            raise TypeError(
+                "Model change entry model must be a string or list of strings"
+            )
+        return ModelChangeEntry(model=model, **common)
     if entry_type == "mode_change":
-        return ModeChangeEntry(mode=payload["mode"], **common)
+        mode = payload["mode"]
+        if not isinstance(mode, str):
+            raise TypeError("Mode change entry mode must be a string")
+        return ModeChangeEntry(mode=mode, **common)
     if entry_type == "compaction":
+        summary = payload["summary"]
+        first_kept_id = payload.get("first_kept_id")
+        tokens_before = payload.get("tokens_before")
+        if not isinstance(summary, str):
+            raise TypeError("Compaction entry summary must be a string")
+        if first_kept_id is not None and not isinstance(first_kept_id, str):
+            raise TypeError(
+                "Compaction entry first_kept_id must be a string or null"
+            )
+        if tokens_before is not None and (
+            not isinstance(tokens_before, int) or isinstance(tokens_before, bool)
+        ):
+            raise TypeError(
+                "Compaction entry tokens_before must be an integer or null"
+            )
         return CompactionEntry(
-            summary=payload["summary"],
-            first_kept_id=payload.get("first_kept_id"),
-            tokens_before=payload.get("tokens_before"),
+            summary=summary,
+            first_kept_id=first_kept_id,
+            tokens_before=tokens_before,
             **common,
         )
     if entry_type == "reset_boundary":
         return ResetBoundaryEntry(**common)
     if entry_type == "custom":
-        return CustomEntry(
-            custom_type=payload["custom_type"], data=payload["data"], **common
-        )
+        custom_type = payload["custom_type"]
+        if not isinstance(custom_type, str):
+            raise TypeError("Custom entry custom_type must be a string")
+        return CustomEntry(custom_type=custom_type, data=payload["data"], **common)
     return OpaqueEntry(entry_type=entry_type, payload=dict(payload), **common)
 
 
 def _entry_from_row(row: sqlite3.Row) -> Entry:
-    payload = json.loads(row["payload"])
-    if not isinstance(payload, dict):
-        raise ValueError(f"Ledger payload for {row['id']} is not an object")
-    return _decode_entry(
-        row["type"],
-        payload,
-        id=row["id"],
-        parent_id=row["parent_id"],
-        ts=row["ts"],
-    )
+    entry_type = row["type"]
+    raw_payload = row["payload"]
+    common = {
+        "id": row["id"],
+        "parent_id": row["parent_id"],
+        "ts": row["ts"],
+    }
+    try:
+        if not isinstance(entry_type, str):
+            raise TypeError("Ledger entry type is not a string")
+        if not isinstance(raw_payload, (str, bytes, bytearray)):
+            raise TypeError("Ledger payload is not JSON text")
+        payload = json.loads(raw_payload)
+        if not isinstance(payload, dict):
+            raise TypeError("Ledger payload is not an object")
+        return _decode_entry(entry_type, payload, **common)
+    except Exception as error:
+        if isinstance(raw_payload, (bytes, bytearray)):
+            diagnostic_payload = bytes(raw_payload).decode(
+                "utf-8", errors="backslashreplace"
+            )
+        elif isinstance(raw_payload, str):
+            diagnostic_payload = raw_payload
+        else:
+            diagnostic_payload = repr(raw_payload)
+        logger.warning(
+            "Recovering corrupt ledger entry "
+            "session_id=%r entry_id=%r type=%r: %s",
+            row["session_id"],
+            row["id"],
+            entry_type,
+            error,
+        )
+        return OpaqueEntry(
+            entry_type=f"corrupt:{entry_type}",
+            payload={
+                "raw_payload": diagnostic_payload,
+                "error": f"{type(error).__name__}: {error}",
+            },
+            **common,
+        )
 
 
 def _timestamp() -> str:
@@ -274,11 +347,25 @@ class Ledger:
             )
         return appended
 
-    def append(self, session_id: str, entry: Entry) -> Entry:
-        return self.append_many(session_id, [entry])[0]
+    def append(
+        self,
+        session_id: str,
+        entry: Entry,
+        *,
+        thread_id: str | None | _KeepCurrentThread = _KEEP,
+    ) -> Entry:
+        return self.append_many(
+            session_id,
+            [entry],
+            thread_id=thread_id,
+        )[0]
 
     def append_many(
-        self, session_id: str, entries: Iterable[Entry]
+        self,
+        session_id: str,
+        entries: Iterable[Entry],
+        *,
+        thread_id: str | None | _KeepCurrentThread = _KEEP,
     ) -> list[Entry]:
         batch = list(entries)
         if not batch:
@@ -288,31 +375,167 @@ class Ledger:
             connection.execute("BEGIN")
             try:
                 appended = self._append_in_transaction(session_id, batch)
+                if thread_id is not _KEEP:
+                    if thread_id is not None:
+                        thread = connection.execute(
+                            """
+                            SELECT 1 FROM threads
+                            WHERE session_id = ? AND thread_id = ?
+                            """,
+                            (session_id, thread_id),
+                        ).fetchone()
+                        if thread is None:
+                            raise EntryNotFound(thread_id)
+                    connection.execute(
+                        """
+                        UPDATE sessions
+                        SET current_thread = ?
+                        WHERE thread_id = ?
+                        """,
+                        (thread_id, session_id),
+                    )
                 connection.commit()
             except BaseException:
                 connection.rollback()
                 raise
         return appended
 
-    def append_for_reseed(self, session_id: str, entry: Entry) -> Entry:
-        """Append an entry and mark its session as awaiting a seeded thread."""
+    def set_position(
+        self,
+        session_id: str,
+        *,
+        leaf_id: str | None,
+        thread_id: str | None,
+        discard_entry_id: str | None = None,
+    ) -> None:
+        """Atomically select a ledger leaf and active graph thread."""
         with self.store.saver.lock:
             connection = self.store._connection
             connection.execute("BEGIN")
             try:
-                appended = self._append_in_transaction(session_id, [entry])
-                connection.execute(
-                    "UPDATE sessions SET current_thread = NULL WHERE thread_id = ?",
+                session = connection.execute(
+                    "SELECT 1 FROM sessions WHERE thread_id = ?",
                     (session_id,),
+                ).fetchone()
+                if session is None:
+                    raise EntryNotFound(session_id)
+                if leaf_id is not None:
+                    leaf = connection.execute(
+                        """
+                        SELECT 1 FROM entries
+                        WHERE session_id = ? AND id = ?
+                        """,
+                        (session_id, leaf_id),
+                    ).fetchone()
+                    if leaf is None:
+                        raise EntryNotFound(leaf_id)
+                if thread_id is not None:
+                    thread = connection.execute(
+                        """
+                        SELECT 1 FROM threads
+                        WHERE session_id = ? AND thread_id = ?
+                        """,
+                        (session_id, thread_id),
+                    ).fetchone()
+                    if thread is None:
+                        raise EntryNotFound(thread_id)
+
+                if discard_entry_id is not None:
+                    if discard_entry_id == leaf_id:
+                        raise ValueError("Cannot discard the restored leaf")
+                    discard = connection.execute(
+                        """
+                        SELECT seq FROM entries
+                        WHERE session_id = ? AND id = ?
+                        """,
+                        (session_id, discard_entry_id),
+                    ).fetchone()
+                    if discard is None:
+                        raise EntryNotFound(discard_entry_id)
+                    newest = connection.execute(
+                        """
+                        SELECT id FROM entries
+                        WHERE session_id = ?
+                        ORDER BY seq DESC
+                        LIMIT 1
+                        """,
+                        (session_id,),
+                    ).fetchone()
+                    child = connection.execute(
+                        """
+                        SELECT 1 FROM entries
+                        WHERE session_id = ? AND parent_id = ?
+                        LIMIT 1
+                        """,
+                        (session_id, discard_entry_id),
+                    ).fetchone()
+                    if newest is None or newest["id"] != discard_entry_id:
+                        raise ValueError("Can only discard the newest entry")
+                    if child is not None:
+                        raise ValueError("Cannot discard an entry with children")
+                    connection.execute(
+                        """
+                        DELETE FROM entries
+                        WHERE session_id = ? AND id = ?
+                        """,
+                        (session_id, discard_entry_id),
+                    )
+
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET leaf_id = ?, current_thread = ?
+                    WHERE thread_id = ?
+                    """,
+                    (leaf_id, thread_id, session_id),
                 )
                 connection.commit()
             except BaseException:
                 connection.rollback()
                 raise
-        return appended[0]
 
-    def branch_for_reseed(self, session_id: str, entry_id: str) -> None:
-        """Move the leaf and mark its session as awaiting a seeded thread."""
+    def capture(
+        self,
+        session_id: str,
+        thread_id: str,
+        entries: Iterable[Entry],
+        *,
+        captured: int,
+        captured_message_ids: Iterable[str],
+    ) -> list[Entry]:
+        """Append a turn and replace its graph-thread capture cursor atomically."""
+        if captured < 0:
+            raise ValueError("captured must be non-negative")
+        message_ids = tuple(captured_message_ids)
+        encoded_message_ids = self.store._encode_captured_message_ids(message_ids)
+        batch = list(entries)
+        with self.store.saver.lock:
+            connection = self.store._connection
+            connection.execute("BEGIN")
+            try:
+                appended = self._append_in_transaction(session_id, batch)
+                cursor = connection.execute(
+                    """
+                    UPDATE threads
+                    SET captured = ?, captured_message_ids = ?
+                    WHERE thread_id = ? AND session_id = ?
+                    """,
+                    (
+                        captured,
+                        encoded_message_ids,
+                        thread_id,
+                        session_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise EntryNotFound(thread_id)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return appended
+
+    def branch(self, session_id: str, entry_id: str) -> None:
         with self.store.saver.lock:
             connection = self.store._connection
             connection.execute("BEGIN")
@@ -336,84 +559,6 @@ class Ledger:
                 connection.rollback()
                 raise
 
-    def restore_position(
-        self,
-        session_id: str,
-        *,
-        leaf_id: str | None,
-        thread_id: str | None,
-    ) -> None:
-        """Atomically restore a session leaf and active graph thread."""
-        with self.store.saver.lock:
-            connection = self.store._connection
-            connection.execute("BEGIN")
-            try:
-                connection.execute(
-                    """
-                    UPDATE sessions
-                    SET leaf_id = ?, current_thread = ?
-                    WHERE thread_id = ?
-                    """,
-                    (leaf_id, thread_id, session_id),
-                )
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-
-    def capture(
-        self,
-        session_id: str,
-        thread_id: str,
-        entries: Iterable[Entry],
-        *,
-        message_count: int,
-    ) -> list[Entry]:
-        """Append a turn and advance its graph-thread capture cursor atomically."""
-        if message_count < 0:
-            raise ValueError("message_count must be non-negative")
-        batch = list(entries)
-        with self.store.saver.lock:
-            connection = self.store._connection
-            connection.execute("BEGIN")
-            try:
-                appended = self._append_in_transaction(session_id, batch)
-                cursor = connection.execute(
-                    """
-                    UPDATE threads
-                    SET captured = captured + ?
-                    WHERE thread_id = ? AND session_id = ?
-                    """,
-                    (message_count, thread_id, session_id),
-                )
-                if cursor.rowcount != 1:
-                    raise EntryNotFound(thread_id)
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-        return appended
-
-    def branch(self, session_id: str, entry_id: str) -> None:
-        with self.store.saver.lock:
-            connection = self.store._connection
-            connection.execute("BEGIN")
-            try:
-                exists = connection.execute(
-                    "SELECT 1 FROM entries WHERE session_id = ? AND id = ?",
-                    (session_id, entry_id),
-                ).fetchone()
-                if exists is None:
-                    raise EntryNotFound(entry_id)
-                connection.execute(
-                    "UPDATE sessions SET leaf_id = ? WHERE thread_id = ?",
-                    (entry_id, session_id),
-                )
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
-
     def leaf(self, session_id: str) -> str | None:
         with self.store.saver.lock:
             row = self.store._connection.execute(
@@ -425,7 +570,7 @@ class Ledger:
         with self.store.saver.lock:
             row = self.store._connection.execute(
                 """
-                SELECT id, parent_id, type, ts, payload
+                SELECT session_id, id, parent_id, type, ts, payload
                 FROM entries WHERE session_id = ? AND id = ?
                 """,
                 (session_id, entry_id),
@@ -436,7 +581,7 @@ class Ledger:
         with self.store.saver.lock:
             rows = self.store._connection.execute(
                 """
-                SELECT id, parent_id, type, ts, payload
+                SELECT session_id, id, parent_id, type, ts, payload
                 FROM entries
                 WHERE session_id = ?
                   AND substr(id, 1, length(?)) = ?
@@ -487,7 +632,7 @@ class Ledger:
                 leaf_id = leaf
             rows = connection.execute(
                 """
-                SELECT id, parent_id, type, ts, payload
+                SELECT session_id, id, parent_id, type, ts, payload
                 FROM entries WHERE session_id = ?
                 """,
                 (session_id,),
@@ -498,7 +643,7 @@ class Ledger:
         with self.store.saver.lock:
             rows = self.store._connection.execute(
                 """
-                SELECT id, parent_id, type, ts, payload
+                SELECT session_id, id, parent_id, type, ts, payload
                 FROM entries WHERE session_id = ? ORDER BY seq
                 """,
                 (session_id,),
@@ -522,7 +667,7 @@ class Ledger:
                     raise EntryNotFound(new_session_id)
                 rows = connection.execute(
                     """
-                    SELECT id, parent_id, type, ts, payload
+                    SELECT session_id, id, parent_id, type, ts, payload
                     FROM entries WHERE session_id = ?
                     """,
                     (session_id,),
@@ -587,8 +732,9 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
             ),
             None,
         )
-        if marker_at is not None:
-            return path[marker_at + 1 :], entry.summary
+        if marker_at is None:
+            return path[compact_at + 1 :], entry.summary
+        return path[marker_at + 1 :], entry.summary
     return path, None
 
 

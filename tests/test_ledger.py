@@ -1,6 +1,8 @@
+import errno
 import json
 import re
 import sqlite3
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -138,6 +140,110 @@ def test_branch_creates_divergent_paths_without_deleting_the_old_branch(
     assert ledger.get(session_id, original.id) == original
     assert ledger.count(session_id) == 3
     assert ledger.leaf(session_id) == alternate.id
+
+
+def test_set_position_updates_leaf_and_active_thread(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    root = ledger.append(session_id, _message(HumanMessage(content="root")))
+    child = ledger.append(session_id, _message(AIMessage(content="child")))
+    replacement_thread = store.create_thread(session_id)
+
+    ledger.set_position(
+        session_id,
+        leaf_id=root.id,
+        thread_id=replacement_thread.thread_id,
+    )
+
+    session = store.get(session_id)
+    assert session is not None
+    assert ledger.leaf(session_id) == root.id
+    assert session.current_thread == replacement_thread.thread_id
+    assert ledger.get(session_id, child.id) == child
+
+
+def test_set_position_rollback_discards_newest_orphan_and_restores_position(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    original_thread = store.get(session_id)
+    assert original_thread is not None
+    root = ledger.append(session_id, _message(HumanMessage(content="root")))
+    rollback_entry = ledger.append(
+        session_id,
+        ResetBoundaryEntry(),
+    )
+    pending_thread = store.create_thread(session_id)
+    store.set_current_thread(session_id, pending_thread.thread_id)
+
+    ledger.set_position(
+        session_id,
+        leaf_id=root.id,
+        thread_id=original_thread.current_thread,
+        discard_entry_id=rollback_entry.id,
+    )
+
+    restored = store.get(session_id)
+    assert restored is not None
+    assert ledger.leaf(session_id) == root.id
+    assert restored.current_thread == original_thread.current_thread
+    assert ledger.get(session_id, rollback_entry.id) is None
+    assert ledger.all(session_id) == [root]
+
+
+def test_set_position_rejects_discarding_an_older_orphan_atomically(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    root = ledger.append(session_id, _message(HumanMessage(content="root")))
+    older_orphan = ledger.append(
+        session_id,
+        _message(AIMessage(content="abandoned")),
+    )
+    ledger.branch(session_id, root.id)
+    newest = ledger.append(session_id, _message(AIMessage(content="active")))
+    pending_thread = store.create_thread(session_id)
+    store.set_current_thread(session_id, pending_thread.thread_id)
+
+    with pytest.raises(ValueError):
+        ledger.set_position(
+            session_id,
+            leaf_id=root.id,
+            thread_id=f"{session_id}.0",
+            discard_entry_id=older_orphan.id,
+        )
+
+    unchanged = store.get(session_id)
+    assert unchanged is not None
+    assert ledger.leaf(session_id) == newest.id
+    assert unchanged.current_thread == pending_thread.thread_id
+    assert ledger.get(session_id, older_orphan.id) == older_orphan
+    assert ledger.all(session_id) == [root, older_orphan, newest]
+
+
+def test_set_position_rejects_discarding_the_restored_leaf_atomically(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    leaf = ledger.append(session_id, _message(HumanMessage(content="kept")))
+    pending_thread = store.create_thread(session_id)
+    store.set_current_thread(session_id, pending_thread.thread_id)
+
+    with pytest.raises(ValueError):
+        ledger.set_position(
+            session_id,
+            leaf_id=leaf.id,
+            thread_id=f"{session_id}.0",
+            discard_entry_id=leaf.id,
+        )
+
+    unchanged = store.get(session_id)
+    assert unchanged is not None
+    assert ledger.leaf(session_id) == leaf.id
+    assert unchanged.current_thread == pending_thread.thread_id
+    assert ledger.get(session_id, leaf.id) == leaf
+    assert ledger.all(session_id) == [leaf]
 
 
 def test_get_leaf_all_and_count_report_persisted_entries(
@@ -314,6 +420,34 @@ def test_build_context_with_first_kept_id_starts_after_that_entry() -> None:
     assert context.messages == [
         HumanMessage(content="[Conversation summary]\nEarlier work was summarized."),
         HumanMessage(content="retained after marker"),
+    ]
+    assert context.compacted is True
+
+
+def test_build_context_uses_latest_compaction_when_its_kept_marker_is_missing() -> None:
+    path = [
+        _message(HumanMessage(content="discarded by older"), id="00000001"),
+        CompactionEntry(
+            id="00000002",
+            summary="Older summary must not win.",
+            first_kept_id=None,
+        ),
+        _message(HumanMessage(content="between compactions"), id="00000003"),
+        CompactionEntry(
+            id="00000004",
+            summary="Latest summary is authoritative.",
+            first_kept_id="missing-entry",
+        ),
+        _message(HumanMessage(content="after latest"), id="00000005"),
+    ]
+
+    context = build_context(path)
+
+    assert context.messages == [
+        HumanMessage(
+            content="[Conversation summary]\nLatest summary is authoritative."
+        ),
+        HumanMessage(content="after latest"),
     ]
     assert context.compacted is True
 
@@ -537,6 +671,76 @@ def test_opaque_entries_round_trip_through_ledger_without_affecting_context(
     assert ledger.all(session_id) == [human, opaque, assistant]
 
 
+@pytest.mark.parametrize(
+    ("stored_type", "stored_payload"),
+    [
+        pytest.param("custom", "{not-json", id="malformed-json"),
+        pytest.param("mode_change", "[]", id="non-object-payload"),
+        pytest.param("message", "{}", id="known-type-missing-field"),
+        pytest.param(
+            "message",
+            '{"message":null}',
+            id="known-type-invalid-field",
+        ),
+    ],
+)
+def test_corrupt_rows_decode_to_export_compatible_opaque_entries(
+    ledger_session: tuple[Ledger, SessionStore, str],
+    tmp_path: Path,
+    stored_type: str,
+    stored_payload: str,
+) -> None:
+    ledger, store, session_id = ledger_session
+    root = ledger.append(session_id, _message(HumanMessage(content="root")))
+    corrupt = ledger.append(
+        session_id,
+        OpaqueEntry(entry_type="placeholder", payload={"valid": True}),
+    )
+    store._connection.execute(
+        """
+        UPDATE entries
+        SET type = ?, payload = ?
+        WHERE session_id = ? AND id = ?
+        """,
+        (stored_type, stored_payload, session_id, corrupt.id),
+    )
+    store._connection.commit()
+
+    recovered = ledger.get(session_id, corrupt.id)
+
+    assert isinstance(recovered, OpaqueEntry)
+    assert (recovered.id, recovered.parent_id, recovered.ts) == (
+        corrupt.id,
+        corrupt.parent_id,
+        corrupt.ts,
+    )
+    assert recovered.entry_type not in {
+        "message",
+        "model_change",
+        "mode_change",
+        "compaction",
+        "reset_boundary",
+        "custom",
+    }
+    all_entries = ledger.all(session_id)
+    path_entries = ledger.path(session_id)
+    assert [entry.id for entry in all_entries] == [root.id, corrupt.id]
+    assert [entry.id for entry in path_entries] == [root.id, corrupt.id]
+    assert isinstance(all_entries[-1], OpaqueEntry)
+    assert isinstance(path_entries[-1], OpaqueEntry)
+
+    export_path = tmp_path / f"{stored_type}.jsonl"
+    export_session(store, session_id, export_path)
+    export_text = export_path.read_text(encoding="utf-8")
+    exported = [json.loads(line) for line in export_text.splitlines()]
+    corrupt_envelope = exported[-1]
+    assert corrupt_envelope["id"] == corrupt.id
+    assert corrupt_envelope["parentId"] == corrupt.parent_id
+    assert corrupt_envelope["timestamp"] == corrupt.ts
+    assert corrupt_envelope["type"] == recovered.entry_type
+    assert isinstance(entry_from_envelope(corrupt_envelope), OpaqueEntry)
+
+
 def test_opaque_envelope_round_trip_preserves_reserved_payload_fields() -> None:
     entry = OpaqueEntry(
         id="deadbeef",
@@ -692,3 +896,73 @@ def test_export_session_round_trips_source_ledger_context_and_entry_order(
         rebuilt_context = build_context(ledger.path(rebuilt.thread_id))
 
     assert rebuilt_context == source_context
+
+
+def test_export_session_creates_a_private_file_exclusively(
+    ledger_session: tuple[Ledger, SessionStore, str],
+    tmp_path: Path,
+) -> None:
+    _, store, session_id = ledger_session
+    export_path = tmp_path / "private.jsonl"
+
+    export_session(store, session_id, export_path)
+
+    assert stat.S_IMODE(export_path.stat().st_mode) == 0o600
+
+
+def test_export_session_refuses_to_overwrite_an_existing_file(
+    ledger_session: tuple[Ledger, SessionStore, str],
+    tmp_path: Path,
+) -> None:
+    _, store, session_id = ledger_session
+    export_path = tmp_path / "existing.jsonl"
+    export_path.write_text("keep me", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        export_session(store, session_id, export_path)
+
+    assert export_path.read_text(encoding="utf-8") == "keep me"
+
+
+def test_export_session_force_truncates_an_existing_regular_file(
+    ledger_session: tuple[Ledger, SessionStore, str],
+    tmp_path: Path,
+) -> None:
+    _, store, session_id = ledger_session
+    export_path = tmp_path / "existing.jsonl"
+    export_path.write_text("stale trailing data\n" * 100, encoding="utf-8")
+    session = store.get(session_id)
+    assert session is not None
+
+    export_session(store, session_id, export_path, force=True)
+
+    export_text = export_path.read_text(encoding="utf-8")
+    records = [json.loads(line) for line in export_text.splitlines()]
+    assert records == [
+        {
+            "type": "session",
+            "version": 3,
+            "id": session_id,
+            "timestamp": session.created,
+            "cwd": session.cwd,
+            "title": None,
+            "parentSession": None,
+        }
+    ]
+
+
+def test_export_session_force_refuses_to_follow_a_symlink(
+    ledger_session: tuple[Ledger, SessionStore, str],
+    tmp_path: Path,
+) -> None:
+    _, store, session_id = ledger_session
+    target = tmp_path / "target.jsonl"
+    target.write_text("keep target", encoding="utf-8")
+    export_path = tmp_path / "export.jsonl"
+    export_path.symlink_to(target)
+
+    with pytest.raises(OSError) as error:
+        export_session(store, session_id, export_path, force=True)
+
+    assert error.value.errno == errno.ELOOP
+    assert target.read_text(encoding="utf-8") == "keep target"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -114,7 +115,11 @@ def entry_from_envelope(envelope: Mapping[str, Any]) -> Entry:
 
 
 def export_session(
-    store: SessionStore, session_id: str, path: str | Path
+    store: SessionStore,
+    session_id: str,
+    path: str | Path,
+    *,
+    force: bool = False,
 ) -> Path:
     """Export all branches of a session as compact version-3 JSONL."""
     session = store.get(session_id)
@@ -134,10 +139,21 @@ def export_session(
         header,
         *(entry_to_envelope(entry) for entry in Ledger(store).all(session_id)),
     ]
-    output = Path(path)
     text = "\n".join(
         json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         for record in records
     )
-    output.write_text(f"{text}\n", encoding="utf-8")
-    return output
+
+    output = Path(path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+    flags |= os.O_TRUNC if force else os.O_EXCL
+    descriptor = os.open(output, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(f"{text}\n")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return output.resolve()
