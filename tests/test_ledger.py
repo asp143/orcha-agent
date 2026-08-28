@@ -682,6 +682,11 @@ def test_opaque_entries_round_trip_through_ledger_without_affecting_context(
             '{"message":null}',
             id="known-type-invalid-field",
         ),
+        pytest.param(
+            "message",
+            '{"message":{}}',
+            id="nested-invalid-message",
+        ),
     ],
 )
 def test_corrupt_rows_decode_to_export_compatible_opaque_entries(

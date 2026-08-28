@@ -173,7 +173,9 @@ def _decode_entry(
         message = payload["message"]
         if not isinstance(message, Mapping):
             raise TypeError("Message entry message must be an object")
-        return MessageEntry(message=dict(message), **common)
+        serialized_message = dict(message)
+        messages_from_dict([serialized_message])
+        return MessageEntry(message=serialized_message, **common)
     if entry_type == "model_change":
         model = payload["model"]
         if not (
