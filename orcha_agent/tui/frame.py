@@ -224,9 +224,30 @@ class FrameScheduler:
             self._spinner_task = asyncio.create_task(self._tick_spinners())
         return self._spinner_task
 
+    def tick_spinners(self, *, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        for block in self.frame.blocks:
+            if (
+                block.state is not BlockState.ACTIVE
+                or block.kind not in {"thinking", "tool"}
+            ):
+                continue
+            changes: dict[str, Any] = {
+                "spinner_frame": (int(block.data.get("spinner_frame", 0)) + 1) % 8,
+            }
+            elapsed = max(0.0, current - block.created)
+            if block.kind == "tool":
+                changes["elapsed"] = elapsed
+            else:
+                tokens = int(block.data.get("reasoning_tokens", 0))
+                changes["tokens_per_second"] = tokens / elapsed if elapsed else 0.0
+            block.update(changes)
+
+
     async def _tick_spinners(self) -> None:
         while True:
             await asyncio.sleep(self.SPINNER_INTERVAL)
+            self.tick_spinners()
             self.request_invalidate()
 
     async def aclose(self) -> None:

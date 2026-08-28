@@ -209,3 +209,52 @@ async def test_consecutive_same_source_read_starts_form_one_grouped_block() -> N
         {"id": "read-b", "args": {"path": "b.py"}, "result": "b"},
     ]
     assert frame.blocks[0].state is BlockState.SETTLED
+
+
+@pytest.mark.asyncio
+async def test_thinking_usage_and_ticker_metrics_flow_through_transcript() -> None:
+    frame = Frame()
+    scheduler = FrameScheduler(
+        frame,
+        commit=lambda _blocks: None,
+        invalidate=lambda: None,
+    )
+    transcript = Transcript(frame, scheduler=scheduler)
+
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                content=[
+                    {
+                        "type": "reasoning",
+                        "summary": [{"text": "inspect constraints"}],
+                    }
+                ],
+            ),
+            role="main",
+            source_id="main",
+        )
+    )
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(
+                content="",
+                usage_metadata={
+                    "input_tokens": 1,
+                    "output_tokens": 8,
+                    "total_tokens": 9,
+                    "output_token_details": {"reasoning": 8},
+                },
+            ),
+            role="main",
+            source_id="main",
+        )
+    )
+    thinking = frame.blocks[0]
+    scheduler.tick_spinners(now=thinking.created + 2.0)
+
+    assert thinking.data["reasoning_tokens"] == 8
+    assert thinking.data["spinner_frame"] == 1
+    assert thinking.data["tokens_per_second"] == 4.0
+    assert thinking.revision == 3
+    await scheduler.aclose()

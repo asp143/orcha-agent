@@ -1,4 +1,4 @@
-                                     <ESC>[1;4;38;2;205;214;244mResult<ESC>[0m                                     
+                                     <ESC>[1;4;38;2;205;214;244mResult<ESC>[0m<SP:37>
 
 <ESC>[35m▌ <ESC>[0m<ESC>[35mDeterministic output<ESC>[0m<ESC>[35m                                                        <ESC>[0m
 

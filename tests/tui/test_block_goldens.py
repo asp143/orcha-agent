@@ -206,6 +206,18 @@ SAMPLES = (
 )
 
 
+def _encode_trailing_spaces(value: str) -> str:
+    encoded: list[str] = []
+    for line in value.splitlines(keepends=True):
+        body = line[:-1] if line.endswith("\n") else line
+        newline = "\n" if line.endswith("\n") else ""
+        trailing = len(body) - len(body.rstrip(" "))
+        if trailing:
+            body = f"{body[:-trailing]}<SP:{trailing}>"
+        encoded.append(f"{body}{newline}")
+    return "".join(encoded)
+
+
 def _capture(sample: Sample, theme: dict[str, Any], width: int) -> str:
     output = StringIO()
     console = Console(
@@ -215,6 +227,7 @@ def _capture(sample: Sample, theme: dict[str, Any], width: int) -> str:
         color_system="truecolor",
         no_color=False,
         width=width,
+        height=200,
         legacy_windows=False,
     )
     renderable = DEFAULT_RENDERERS[sample.block.kind](
@@ -228,7 +241,8 @@ def _capture(sample: Sample, theme: dict[str, Any], width: int) -> str:
         console.print("<hidden>")
     else:
         console.print(renderable)
-    return output.getvalue().replace("\x1b", "<ESC>")
+    captured = output.getvalue().replace("\x1b", "<ESC>")
+    return _encode_trailing_spaces(captured)
 
 
 @pytest.mark.parametrize("width", [80, 120])
@@ -250,3 +264,13 @@ def test_block_golden(
         golden.parent.mkdir(parents=True, exist_ok=True)
         golden.write_text(actual)
     assert golden.read_text() == actual
+
+
+def test_width_sensitive_goldens_are_distinct() -> None:
+    sample = next(sample for sample in SAMPLES if sample.name == "user")
+
+    assert _capture(sample, ANSI_THEME, 80) != _capture(sample, ANSI_THEME, 120)
+    assert (
+        GOLDEN_DIR.joinpath("user.ansi.80.txt").read_text()
+        != GOLDEN_DIR.joinpath("user.ansi.120.txt").read_text()
+    )

@@ -3,8 +3,10 @@ from __future__ import annotations
 from io import StringIO
 
 import pytest
+from langchain_core.messages import ToolMessage
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 
 from orcha_agent.tui.blocks import BlockRendererDispatcher
 from orcha_agent.tui.blocks.assistant import render as render_assistant
@@ -129,7 +131,7 @@ def test_visible_thinking_renders_italic_markdown() -> None:
     [
         (3, "output line", None),
         (2, "╭─ execute · pytest -q", "output line"),
-        (1, "execute · pytest -q · 1.2s", "output line"),
+        (1, "execute · pytest -q · exit 0 · 1.2s", "output line"),
         (0, "", "execute"),
     ],
 )
@@ -168,8 +170,8 @@ def test_tool_preview_caps_lines_and_characters_until_expanded() -> None:
         result={"stdout": output, "exit_code": 3},
     )
 
-    collapsed = plain(render_tool(value, THEME, 5000, 3, False), 5000)
-    expanded = plain(render_tool(value, THEME, 5000, 3, True), 5000)
+    collapsed = plain(render_tool(value, THEME, 5000, 100, False), 5000)
+    expanded = plain(render_tool(value, THEME, 5000, 100, True), 5000)
 
     assert "x" * 4000 in collapsed
     assert "x" * 4001 not in collapsed
@@ -177,7 +179,7 @@ def test_tool_preview_caps_lines_and_characters_until_expanded() -> None:
     assert "line 20" not in collapsed
     assert "[Ctrl+O] expand" in collapsed
     assert "line 24" in expanded
-    assert "Exit code: 3" in expanded
+    assert "exit 3" in expanded
     assert "[Ctrl+O] expand" not in expanded
 
 
@@ -193,7 +195,7 @@ def test_grouped_read_files_share_one_card() -> None:
         ),
         THEME,
         80,
-        3,
+        20,
         False,
     )
     output = plain(rendered)
@@ -306,3 +308,105 @@ def test_dispatcher_memoizes_by_revision_width_expansion_theme_and_budget() -> N
     value.update(text="updated")
     assert dispatcher.render(value, THEME, 80, 3, False) == "updated:80:3:False"
     assert len(calls) == 3
+
+
+def test_nonzero_execute_artifact_renders_error_state() -> None:
+    result = ToolMessage(
+        content="command failed",
+        name="execute",
+        tool_call_id="execute-1",
+        artifact={"exit_code": 7},
+        status="success",
+    )
+
+    output = plain(
+        render_tool(
+            block(
+                "tool",
+                name="execute",
+                args={"command": "false"},
+                result=result,
+            ),
+            THEME,
+            80,
+            3,
+            False,
+        )
+    )
+
+    assert "✘ execute · false" in output
+    assert "exit 7" in output
+
+
+def test_full_tool_card_fits_allocated_rows() -> None:
+    rendered = render_tool(
+        block(
+            "tool",
+            name="read_file",
+            args={"path": "a.py"},
+            result="one line",
+        ),
+        THEME,
+        80,
+        3,
+        False,
+    )
+    output = plain(rendered)
+
+    assert len(output.splitlines()) == 3
+    assert output.splitlines()[-1].startswith("╰")
+
+
+def test_grouped_reads_and_diffs_share_collapsed_preview_caps() -> None:
+    grouped = block(
+        "tool",
+        name="read_file",
+        calls=[
+            {
+                "args": {"path": f"{index}.py"},
+                "result": "x" * 4100 if index == 0 else f"line {index}",
+            }
+            for index in range(25)
+        ],
+    )
+    diff = block(
+        "tool",
+        name="edit_file",
+        args={"file_path": "demo.py"},
+        result={
+            "diff": "@@ -1,25 +1,25 @@\n"
+            + "\n".join(f" context {index}" for index in range(25))
+        },
+    )
+
+    grouped_collapsed = plain(render_tool(grouped, THEME, 5000, 100, False), 5000)
+    grouped_expanded = plain(render_tool(grouped, THEME, 5000, 100, True), 5000)
+    diff_collapsed = plain(render_tool(diff, THEME, 100, 100, False), 100)
+    diff_expanded = plain(render_tool(diff, THEME, 100, 100, True), 100)
+
+    assert "x" * 4001 not in grouped_collapsed
+    assert "20.py" not in grouped_collapsed
+    assert "24.py" in grouped_expanded
+    assert "context 20" not in diff_collapsed
+    assert "context 24" in diff_expanded
+
+
+def test_subagent_assistant_is_dim_and_indented_two_columns() -> None:
+    rendered = render_assistant(
+        block("assistant", text="subagent answer", subagent=True),
+        THEME,
+        80,
+        20,
+        False,
+    )
+
+    assert isinstance(rendered, Padding)
+    assert (rendered.top, rendered.right, rendered.bottom, rendered.left) == (
+        0,
+        2,
+        0,
+        2,
+    )
+    assert isinstance(rendered.renderable, Markdown)
+    assert "dim" in str(rendered.renderable.style)
+    assert plain(rendered).startswith("  subagent answer")

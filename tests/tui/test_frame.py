@@ -105,3 +105,34 @@ async def test_all_spinners_share_one_ticker_task() -> None:
     await asyncio.sleep(0.09)
     assert ticks
     await scheduler.aclose()
+
+
+def test_shared_ticker_advances_pending_tool_and_thinking_state() -> None:
+    frame = Frame()
+    tool = frame.add("tool", {"name": "execute"})
+    thinking = frame.add(
+        "thinking",
+        {"text": "plan", "reasoning_tokens": 20},
+    )
+    tool.created = 10.0
+    thinking.created = 10.0
+    scheduler = FrameScheduler(
+        frame,
+        commit=lambda _blocks: None,
+        invalidate=lambda: None,
+    )
+
+    scheduler.tick_spinners(now=12.0)
+
+    assert tool.data == {
+        "name": "execute",
+        "spinner_frame": 1,
+        "elapsed": 2.0,
+    }
+    assert thinking.data == {
+        "text": "plan",
+        "reasoning_tokens": 20,
+        "spinner_frame": 1,
+        "tokens_per_second": 10.0,
+    }
+    assert tool.revision == thinking.revision == 1

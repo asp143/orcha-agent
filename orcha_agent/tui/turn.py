@@ -7,6 +7,7 @@ import json
 import signal
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -123,6 +124,55 @@ class _PendingToolCall:
     id: str = ""
 
 
+class _FileDiffCapture:
+    """Capture local file state around Deepagents write/edit tool calls."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self._pending: dict[str, tuple[str, str, Path]] = {}
+
+    def _path(self, value: object) -> Path | None:
+        if not isinstance(value, str) or not value:
+            return None
+        candidate = self.root / value.lstrip("/")
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(self.root)
+        except ValueError:
+            return None
+        return resolved
+
+    def start(self, event: ToolCallStart) -> None:
+        if event.name not in {"edit_file", "write_file"}:
+            return
+        display_path = event.args.get("file_path", event.args.get("path"))
+        path = self._path(display_path)
+        if path is None:
+            return
+        try:
+            before = path.read_text() if path.is_file() else ""
+        except (OSError, UnicodeError):
+            return
+        self._pending[event.id] = (str(display_path), before, path)
+
+    def finish(self, message: ToolMessage) -> ToolMessage:
+        pending = self._pending.pop(message.tool_call_id, None)
+        if pending is None or message.status == "error":
+            return message
+        display_path, before, path = pending
+        try:
+            after = path.read_text()
+        except (OSError, UnicodeError):
+            return message
+        if before == after:
+            return message
+        artifact = message.artifact if isinstance(message.artifact, Mapping) else {}
+        existing_data = artifact.get("data")
+        data = dict(existing_data) if isinstance(existing_data, Mapping) else {}
+        data.update(path=display_path, before=before, after=after)
+        return message.model_copy(update={"artifact": {**artifact, "data": data}})
+
+
 class _ToolCallBuffer:
     """Assemble provider tool-call chunks before rendering their arguments."""
 
@@ -199,6 +249,8 @@ async def _message_event(
     tool_calls: _ToolCallBuffer,
     model_labels: _ModelLabelBuffer,
     namespace: tuple[str, ...] = (),
+    *,
+    file_diffs: _FileDiffCapture | None = None,
 ) -> None:
     if not isinstance(data, tuple) or len(data) != 2:
         return
@@ -210,6 +262,8 @@ async def _message_event(
     source_id = "/".join(str(part) for part in namespace) if namespace else "main"
     if isinstance(message, AIMessage):
         for event in tool_calls.add(message, source_id=source_id):
+            if file_diffs is not None:
+                file_diffs.start(event)
             await _render(ctx, event)
     node = metadata.get("langgraph_node", "") if isinstance(metadata, Mapping) else ""
     agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
@@ -235,6 +289,8 @@ async def _updates_event(
     data: Any,
     seen_results: set[str],
     seen_interrupts: set[str],
+    *,
+    file_diffs: _FileDiffCapture | None = None,
 ) -> Resolved | None:
     if not isinstance(data, dict):
         return None
@@ -274,9 +330,10 @@ async def _updates_event(
         if not isinstance(message, ToolMessage) or message.tool_call_id in seen_results:
             continue
         seen_results.add(message.tool_call_id)
+        result = file_diffs.finish(message) if file_diffs is not None else message
         await _render(
             ctx,
-            ToolCallEnd(name=message.name or "tool", id=message.tool_call_id, result=message),
+            ToolCallEnd(name=message.name or "tool", id=message.tool_call_id, result=result),
         )
     return None
 
@@ -295,6 +352,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     model_labels = _ModelLabelBuffer()
     seen_results: set[str] = set()
     seen_interrupts: set[str] = set()
+    file_diffs = _FileDiffCapture(Path(ctx.cfg.cwd))
     cancelled = False
     try:
         while True:
@@ -317,6 +375,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                         tool_calls,
                         model_labels,
                         namespace,
+                        file_diffs=file_diffs,
                     )
                 elif mode == "updates":
                     candidate = await _updates_event(
@@ -324,6 +383,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                         data,
                         seen_results,
                         seen_interrupts,
+                        file_diffs=file_diffs,
                     )
                     if candidate is not None:
                         resolution = candidate

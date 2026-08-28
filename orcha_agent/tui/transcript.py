@@ -49,6 +49,22 @@ def _thinking_text(part: Mapping[str, Any]) -> str:
     return ""
 
 
+def _reasoning_tokens(chunk: Any) -> int | None:
+    usage = getattr(chunk, "usage_metadata", None)
+    if not isinstance(usage, Mapping):
+        return None
+    details = usage.get("output_token_details")
+    sources = (details, usage)
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("reasoning", "reasoning_tokens"):
+            value = source.get(key)
+            if isinstance(value, (int, float)):
+                return max(0, int(value))
+    return None
+
+
 class Transcript:
     """Event sink that owns source-aware accumulated transcript state."""
 
@@ -264,6 +280,8 @@ class Transcript:
         source_id = str(event.source_id or event.role)
         value = getattr(event.chunk, "content", event.chunk)
         parts = value if isinstance(value, (list, tuple)) else (value,)
+        thinking_seen = False
+        usage_tokens = _reasoning_tokens(event.chunk)
         for part in parts:
             if isinstance(part, Mapping) and part.get("type") in {"reasoning", "thinking"}:
                 content = _thinking_text(part)
@@ -274,8 +292,27 @@ class Transcript:
             if not content:
                 continue
             block = self._source_block(source_id, kind, event.role)
-            block.update(text=f"{block.data['text']}{content}")
+            accumulated = f"{block.data['text']}{content}"
+            changes: dict[str, Any] = {"text": accumulated}
+            if kind == "thinking":
+                thinking_seen = True
+                changes["reasoning_tokens"] = (
+                    usage_tokens
+                    if usage_tokens is not None
+                    else max(1, (len(accumulated) + 3) // 4)
+                )
+            block.update(changes)
+        if usage_tokens is not None:
+            thinking = self._source_blocks.get((source_id, "thinking"))
+            if (
+                thinking is not None
+                and thinking.data.get("reasoning_tokens") != usage_tokens
+            ):
+                thinking.update(reasoning_tokens=usage_tokens)
+            thinking_seen = thinking is not None
         if self.scheduler is not None:
+            if thinking_seen:
+                self.scheduler.start_spinner()
             self.scheduler.request_invalidate()
 
     def print(self, *objects: Any, **kwargs: Any) -> Block:
