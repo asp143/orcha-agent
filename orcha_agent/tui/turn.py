@@ -173,6 +173,23 @@ class _FileDiffCapture:
         return message.model_copy(update={"artifact": {**artifact, "data": data}})
 
 
+def _start_file_diff_capture(
+    ctx: Any,
+    event: ToolCallStart,
+    capture: _FileDiffCapture | None,
+) -> _FileDiffCapture | None:
+    if event.name not in {"edit_file", "write_file"}:
+        return capture
+    if capture is None:
+        cfg = getattr(ctx, "cfg", None)
+        cwd = getattr(cfg, "cwd", None)
+        if cwd is None:
+            return None
+        capture = _FileDiffCapture(Path(cwd))
+    capture.start(event)
+    return capture
+
+
 class _ToolCallBuffer:
     """Assemble provider tool-call chunks before rendering their arguments."""
 
@@ -251,19 +268,18 @@ async def _message_event(
     namespace: tuple[str, ...] = (),
     *,
     file_diffs: _FileDiffCapture | None = None,
-) -> None:
+) -> _FileDiffCapture | None:
     if not isinstance(data, tuple) or len(data) != 2:
-        return
+        return file_diffs
     message, metadata = data
     if not isinstance(message, BaseMessage):
-        return
+        return file_diffs
     if isinstance(message, ToolMessage):
-        return
+        return file_diffs
     source_id = "/".join(str(part) for part in namespace) if namespace else "main"
     if isinstance(message, AIMessage):
         for event in tool_calls.add(message, source_id=source_id):
-            if file_diffs is not None:
-                file_diffs.start(event)
+            file_diffs = _start_file_diff_capture(ctx, event, file_diffs)
             await _render(ctx, event)
     node = metadata.get("langgraph_node", "") if isinstance(metadata, Mapping) else ""
     agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
@@ -282,6 +298,7 @@ async def _message_event(
                 source_id=source_id,
             ),
         )
+    return file_diffs
 
 
 async def _updates_event(
@@ -352,7 +369,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     model_labels = _ModelLabelBuffer()
     seen_results: set[str] = set()
     seen_interrupts: set[str] = set()
-    file_diffs = _FileDiffCapture(Path(ctx.cfg.cwd))
+    file_diffs: _FileDiffCapture | None = None
     cancelled = False
     try:
         while True:
@@ -369,7 +386,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                     mode, data = stream_item
                     namespace = ()
                 if mode == "messages":
-                    await _message_event(
+                    file_diffs = await _message_event(
                         ctx,
                         data,
                         tool_calls,

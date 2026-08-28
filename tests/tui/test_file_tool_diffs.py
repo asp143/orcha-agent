@@ -99,3 +99,14 @@ async def test_real_file_tool_message_reaches_unified_diff_renderer(
     assert "+++ /demo.py" in rendered
     assert "old" in rendered
     assert "new" in rendered
+
+
+def test_non_filesystem_turn_context_does_not_require_cfg() -> None:
+    ctx = SimpleNamespace()
+    event = ToolCallStart(
+        name="execute",
+        args={"command": "true"},
+        id="execute-1",
+    )
+
+    assert turn._start_file_diff_capture(ctx, event, None) is None
