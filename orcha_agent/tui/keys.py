@@ -47,13 +47,17 @@ def _binding_values(value: object) -> tuple[str, ...] | None:
     return None
 
 
-def _valid(binding: str) -> bool:
+def _canonical(binding: str) -> tuple[str, ...]:
     parts = binding.split()
     if not parts:
-        return False
+        raise ValueError("binding cannot be empty")
+    parsed = (_parse_key(part) for part in parts)
+    return tuple(str(getattr(key, "value", key)) for key in parsed)
+
+
+def _valid(binding: str) -> bool:
     try:
-        for part in parts:
-            _parse_key(part)
+        _canonical(binding)
     except ValueError:
         return False
     return True
@@ -125,20 +129,26 @@ def load_keybindings(
         definition_order.remove(action)
         definition_order.append(action)
 
-    owners: dict[str, str] = {}
+    owners: dict[tuple[str, ...], tuple[str, str]] = {}
     resolved: dict[str, list[str]] = {action: [] for action in definition_order}
     for action in definition_order:
         for binding in effective[action]:
-            previous = owners.get(binding)
-            if previous is not None and previous != action:
-                resolved[previous] = [
-                    candidate for candidate in resolved[previous] if candidate != binding
+            canonical = _canonical(binding)
+            previous = owners.get(canonical)
+            if previous is not None:
+                previous_action, previous_binding = previous
+                if previous_action == action:
+                    continue
+                resolved[previous_action] = [
+                    candidate
+                    for candidate in resolved[previous_action]
+                    if candidate != previous_binding
                 ]
                 warn(
-                    f"Keybinding conflict for {binding!r}: {previous} and {action}; "
-                    f"{action} wins"
+                    f"Keybinding conflict for {binding!r}: "
+                    f"{previous_action} and {action}; {action} wins"
                 )
-            owners[binding] = action
+            owners[canonical] = (action, binding)
             resolved[action].append(binding)
     return {action: tuple(resolved[action]) for action in effective}
 

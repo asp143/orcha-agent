@@ -166,3 +166,28 @@ def test_every_default_action_has_a_valid_effective_binding() -> None:
     effective = load_keybindings(user_path=Path("/path/that/does/not/exist"))
     assert set(effective) == set(DEFAULT_BINDINGS)
     assert all(effective[action] for action in DEFAULT_BINDINGS)
+
+
+def test_key_conflicts_use_prompt_toolkit_canonical_sequences(tmp_path: Path) -> None:
+    user = tmp_path / "keybindings.toml"
+    user.write_text('[bindings]\nqueue = "c-m"\n', encoding="utf-8")
+    warnings: list[str] = []
+
+    effective = load_keybindings(user_path=user, warn=warnings.append)
+
+    assert "enter" not in effective["submit"]
+    assert effective["submit"] == ("c-j",)
+    assert effective["queue"] == ("c-m",)
+    assert any("submit" in warning and "queue" in warning for warning in warnings)
+
+
+def test_plugin_must_explicitly_replace_core_key_action() -> None:
+    registry = Registry()
+    api = _api(registry)
+    handler = lambda *_args: None
+
+    with pytest.raises(ValueError, match="replace=True"):
+        api.add_keybinding("submit", handler, default="c-y")
+
+    api.add_keybinding("submit", handler, default="c-y", replace=True)
+    assert registry.keybindings["submit"].handler is handler

@@ -13,6 +13,25 @@ BlockRenderer: TypeAlias = Callable[..., Any]
 AvailabilityCheck: TypeAlias = Callable[[], str | None]
 CompleterFunction: TypeAlias = Callable[[Any], Any]
 KeybindingHandler: TypeAlias = Callable[[Any, Any], Any]
+CORE_KEY_ACTIONS = frozenset(
+    {
+        "submit",
+        "newline",
+        "queue",
+        "dequeue",
+        "toggle_thinking",
+        "cycle_thinking_level",
+        "expand_tools",
+        "model_picker",
+        "cycle_model",
+        "history_search",
+        "external_editor",
+        "clear_screen",
+        "interrupt",
+        "exit",
+        "tree",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +179,9 @@ class Registry:
         self._middleware_owners: dict[str, str] = {}
         self._status_segment_owners: dict[str, str] = {}
         self._completer_owners: dict[str, str] = {}
-        self._keybinding_owners: dict[str, str] = {}
+        self._keybinding_owners: dict[str, str] = {
+            action: "<core>" for action in CORE_KEY_ACTIONS
+        }
         self._renderer_owners: dict[object, str] = {}
         self._block_renderer_owners: dict[str, str] = {}
         self._subagent_owners: dict[str, str] = {}

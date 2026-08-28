@@ -20,9 +20,11 @@ from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.history import History
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
@@ -58,6 +60,35 @@ from .queue import PromptQueue, split_submission
 from .transcript import Transcript
 from .theme import Theme, load_themes, select_theme
 from .turn import _run_cancellable_turn
+
+
+def _completion_style(theme: Any) -> Any:
+    base = getattr(theme, "pt", None)
+    colors = getattr(theme, "colors", None)
+    if base is None or not isinstance(colors, Mapping):
+        return base
+
+    def color(token: str) -> str:
+        value = base.get_attrs_for_style_str(f"class:{token.lower()}").color
+        return f"#{value}" if value and not value.startswith("#") else value
+
+    menu = Style.from_dict(
+        {
+            "completion-menu.completion": (
+                f"fg:{color('text')} bg:{color('statusLineBg')}"
+            ),
+            "completion-menu.completion.current": (
+                f"fg:{color('text')} bg:{color('selectedBg')}"
+            ),
+            "completion-menu.meta.completion": (
+                f"fg:{color('muted')} bg:{color('statusLineBg')}"
+            ),
+            "completion-menu.meta.completion.current": (
+                f"fg:{color('text')} bg:{color('selectedBg')}"
+            ),
+        }
+    )
+    return merge_styles([base, menu])
 
 
 def _history_path() -> Path:
@@ -245,6 +276,7 @@ class ApplicationRuntime:
             ctx.ui = self.ui
             ctx.queue = self.queue
         self.streaming = False
+        self._shutting_down = False
         self._active_turn: asyncio.Task[Any] | None = None
         self._last_escape = 0.0
         self._last_interrupt = 0.0
@@ -298,10 +330,16 @@ class ApplicationRuntime:
                     ),
                 ]
             ),
-            floats=[],
+            floats=[
+                Float(
+                    xcursor=True,
+                    ycursor=True,
+                    content=CompletionsMenu(max_height=8, scroll_offset=1),
+                )
+            ],
         )
         kwargs: dict[str, Any] = {}
-        prompt_style = getattr(theme, "pt", None)
+        prompt_style = _completion_style(theme)
         if prompt_style is not None:
             kwargs["style"] = prompt_style
         if input is not None:
@@ -481,9 +519,14 @@ class ApplicationRuntime:
             self._last_interrupt = now
 
     def _exit(self, event: Any) -> None:
+        self._shutting_down = True
+        state = self._composer_state()
         text = event.current_buffer.text
         if text:
-            self._composer_state()["draft"] = text
+            state["draft"] = text
+        if self.queue:
+            state["queue"] = list(self.queue.items)
+        if text or self.queue:
             self._persist_state()
         if self.streaming:
             self._abort_turn()
@@ -624,6 +667,8 @@ class ApplicationRuntime:
                     self._active_turn = None
                     self.streaming = False
                     self.application.invalidate()
+                if self._shutting_down:
+                    break
                 current = self.queue.pop()
 
     def _notify(self, text: str) -> None:
@@ -638,7 +683,7 @@ class ApplicationRuntime:
 
     def _apply_theme(self, selected: Any) -> Any:
         self.theme = selected
-        prompt_style = getattr(selected, "pt", None)
+        prompt_style = _completion_style(selected)
         if prompt_style is not None:
             self.application.style = prompt_style
         self.application.invalidate()
@@ -724,7 +769,7 @@ class ApplicationRuntime:
         width = max(1, size.columns)
         budget = Frame.row_budget(
             terminal_rows=size.rows,
-            composer_rows=self._composer_height(width) + self.composer.chrome_lines,
+            composer_rows=self.composer.height_for_width(width),
             status_rows=1,
         )
         rendered: list[str] = []

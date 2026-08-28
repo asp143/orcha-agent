@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer
 from prompt_toolkit.filters import Condition
@@ -50,7 +51,10 @@ class Composer:
         self.control = BufferControl(buffer=self.buffer)
         self.input_window = Window(
             self.control,
-            height=Dimension(min=1, max=8),
+            height=lambda: Dimension.exact(
+                self.text_rows(self._content_width(self._current_width()))
+            ),
+            dont_extend_height=True,
             wrap_lines=True,
             right_margins=[ScrollbarMargin(display_arrows=False)],
         )
@@ -111,7 +115,21 @@ class Composer:
                     Window(width=1, char="│", style=lambda: self.border_style),
                 ]
             )
-        return HSplit([top, middle, bottom])
+        return HSplit(
+            [top, middle, bottom],
+            height=lambda: Dimension.exact(
+                self.height_for_width(self._current_width())
+            ),
+        )
+
+    def _current_width(self) -> int:
+        app = get_app_or_none()
+        if app is None:
+            return 80
+        return max(1, app.output.get_size().columns)
+
+    def _content_width(self, width: int) -> int:
+        return max(1, width - (2 if self.shape in {"box", "claude"} else 0))
 
     def text_rows(self, width: int) -> int:
         width = max(1, width)
@@ -122,7 +140,7 @@ class Composer:
         return min(8, max(1, rows))
 
     def height_for_width(self, width: int) -> int:
-        return self.text_rows(width) + self.chrome_lines
+        return self.text_rows(self._content_width(width)) + self.chrome_lines
 
 
 __all__ = ["Composer"]

@@ -15,6 +15,8 @@ from orcha_agent.tui.composer import Composer
 from orcha_agent.tui.history import SQLiteHistory
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 from orcha_agent.tui.theme import load_themes
+from prompt_toolkit.layout.dimension import to_dimension
+from prompt_toolkit.layout.menus import CompletionsMenu
 
 
 def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
@@ -433,3 +435,82 @@ async def test_ctrl_d_aborts_streaming_turn_before_exit() -> None:
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(cancelled.wait(), 1)
         await asyncio.wait_for(task, 1)
+
+
+def test_completion_menu_float_uses_theme_selection_style(tmp_path: Path) -> None:
+    theme = load_themes(home=tmp_path)["dark"]
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            theme=theme,
+            themes={theme.id: theme},
+            input=pipe,
+            output=DummyOutput(),
+        )
+        root = runtime.application.layout.container
+        assert len(root.floats) == 1
+        assert isinstance(root.floats[0].content, CompletionsMenu)
+        selected = runtime.application.style.get_attrs_for_style_str(
+            "class:completion-menu.completion.current"
+        )
+        assert selected.bgcolor is not None
+
+
+@pytest.mark.parametrize("shape", ["box", "claude", "borderless"])
+def test_composer_container_has_exact_dynamic_content_height(
+    tmp_path: Path,
+    shape: str,
+) -> None:
+    theme = load_themes(home=tmp_path)["dark"]
+    composer = Composer(shape=shape, theme=theme)
+    composer.buffer.text = "one\ntwo"
+
+    dimension = to_dimension(composer.container.height)
+
+    expected = composer.height_for_width(80)
+    assert (dimension.min, dimension.preferred, dimension.max) == (
+        expected,
+        expected,
+        expected,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ctrl_d_preserves_draft_and_queue_without_dispatching_queue(
+    tmp_path: Path,
+) -> None:
+    submitted: list[str] = []
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    ctx = _ctx(tmp_path)
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        task = asyncio.create_task(runtime.run())
+        await asyncio.sleep(0)
+        pipe.send_text("active")
+        pipe.send_bytes(b"\r")
+        await asyncio.wait_for(started.wait(), 1)
+        runtime.queue.extend(["queued one", "queued two"])
+        pipe.send_text("draft")
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(cancelled.wait(), 1)
+        await asyncio.wait_for(task, 1)
+
+    assert submitted == ["active"]
+    assert ctx.plugin_states["composer"]["draft"] == "draft"
+    assert ctx.plugin_states["composer"]["queue"] == ["queued one", "queued two"]
