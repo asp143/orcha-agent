@@ -9,6 +9,8 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from orcha_agent.core.events import ModelChunk, TurnEnd, TurnStart
+from orcha_agent.core.registry import Registry
+from orcha_agent.tui.frame import Block
 
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 
@@ -150,3 +152,33 @@ async def test_transcript_print_replays_rich_sep_and_end_semantics() -> None:
         await runtime.scheduler.aclose()
 
     assert actual_stream.getvalue() == expected_stream.getvalue()
+
+
+def test_runtime_uses_memoized_registry_block_dispatcher() -> None:
+    registry = Registry()
+    calls: list[int] = []
+
+    def render(
+        block: Block,
+        _theme: object,
+        width: int,
+        rows: int,
+        expanded: bool,
+    ) -> str:
+        calls.append(block.revision)
+        return f"{block.data['text']}:{width}:{rows}:{expanded}"
+
+    registry._add_block_renderer("test", "assistant", render)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            registry=registry,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        value = Block(id="answer", kind="assistant", data={"text": "hello"})
+
+        assert runtime._render_block(value, 80, 3) == "hello:80:3:False"
+        assert runtime._render_block(value, 80, 3) == "hello:80:3:False"
+
+    assert calls == [0]

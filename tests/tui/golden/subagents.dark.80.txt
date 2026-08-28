@@ -1,0 +1,3 @@
+<ESC>[1;38;2;137;180;250mSubagents<ESC>[0m
+<ESC>[1;38;2;137;180;250m✻ Research · running<ESC>[0m
+<ESC>[1;38;2;137;180;250m✻ Review · idle<ESC>[0m

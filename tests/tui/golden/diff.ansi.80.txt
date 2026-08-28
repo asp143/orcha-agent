@@ -1,0 +1,9 @@
+<ESC>[90m--- demo.py<ESC>[0m
+<ESC>[90m+++ demo.py<ESC>[0m
+<ESC>[36m@@ -1,3 +1,3 @@<ESC>[0m
+<ESC>[90m001   <ESC>[0m<ESC>[94;49mdef<ESC>[0m<ESC>[90;49m <ESC>[0m<ESC>[92;49mrun<ESC>[0m<ESC>[49m():<ESC>[0m
+
+<ESC>[31m002 - <ESC>[0m<ESC>[7;31m·<ESC>[0m<ESC>[7;31m·<ESC>[0m<ESC>[31mreturn<ESC>[0m<ESC>[31m <ESC>[0m<ESC>[31m'<ESC>[0m<ESC>[7;31mold<ESC>[0m<ESC>[31m'<ESC>[0m
+<ESC>[32m002 + <ESC>[0m<ESC>[7;32m→<ESC>[0m<ESC>[32mreturn<ESC>[0m<ESC>[32m <ESC>[0m<ESC>[32m'<ESC>[0m<ESC>[7;32mnew<ESC>[0m<ESC>[32m'<ESC>[0m
+<ESC>[90m003   <ESC>[0m<ESC>[49mcontext<ESC>[0m
+

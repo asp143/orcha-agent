@@ -1,0 +1,5 @@
+<ESC>[36;40m+-<ESC>[0m<ESC>[1;36;40m ✻ read_file · orcha_agent/tui/runtime.py <ESC>[0m<ESC>[36;40m----------------------------------<ESC>[0m<ESC>[36;40m-+<ESC>[0m
+<ESC>[36;40m|<ESC>[0m<ESC>[40m <ESC>[0m<ESC>[37;40m{<ESC>[0m<ESC>[40m                                                                           <ESC>[0m<ESC>[40m <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m|<ESC>[0m<ESC>[40m <ESC>[0m<ESC>[37;40m  "path": "orcha_agent/tui/runtime.py"<ESC>[0m<ESC>[40m                                      <ESC>[0m<ESC>[40m <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m|<ESC>[0m<ESC>[40m <ESC>[0m<ESC>[37;40m}<ESC>[0m<ESC>[40m                                                                           <ESC>[0m<ESC>[40m <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m+------------------------------------------------------------------------------+<ESC>[0m

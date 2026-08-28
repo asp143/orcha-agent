@@ -91,6 +91,7 @@ def assert_registry_empty(registry: Registry) -> None:
     assert not registry.modes
     assert not registry.middleware
     assert not registry.renderers
+    assert not registry.block_renderers
     assert not registry.subagents
     assert not registry.prompt_fragments
 
@@ -162,7 +163,17 @@ def test_loading_builtins_registers_expected_plugins_and_features(
     assert set(registry.modes) == EXPECTED_MODES
     assert set(registry.providers) == EXPECTED_PROVIDERS
     assert set(registry.commands) == EXPECTED_COMMANDS
-    assert registry.renderers
+    assert {entry.kind for entry in registry.block_renderers} == {
+        "assistant",
+        "banner",
+        "diff",
+        "marker",
+        "subagents",
+        "thinking",
+        "todo",
+        "tool",
+        "user",
+    }
 
 
 def test_anthropic_adaptive_thinking_config_is_normalized(

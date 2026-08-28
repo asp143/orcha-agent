@@ -1,0 +1,1 @@
+<ESC>[1;3;38;2;127;132;156mInspect<ESC>[0m<ESC>[3;38;2;127;132;156m the renderer.<ESC>[0m                                                           

@@ -64,6 +64,7 @@ class Transcript:
         self.scheduler = scheduler
         self._source_blocks: dict[tuple[str, str], Block] = {}
         self._tools: dict[str, Block] = {}
+        self._read_groups: dict[str, Block] = {}
 
     def _commit(self, block: Block, *, immediate: bool = False) -> None:
         block.settle()
@@ -126,6 +127,7 @@ class Transcript:
                     prior.settle()
             self._source_blocks.clear()
             self._tools.clear()
+            self._read_groups.clear()
             if self._legacy(event):
                 return
             block = self.frame.add(
@@ -143,29 +145,10 @@ class Transcript:
             self._model_chunk(event)
             return
         if isinstance(event, ToolCallStart):
-            block = self.frame.add(
-                "tool",
-                {"name": event.name, "args": event.args, "id": event.id},
-                source_id=event.source_id,
-            )
-            self._tools[event.id] = block
-            if self.scheduler is not None:
-                self.scheduler.start_spinner()
-                self.scheduler.request_invalidate()
+            self._tool_start(event)
             return
         if isinstance(event, ToolCallEnd):
-            block = self._tools.get(event.id)
-            if block is None:
-                block = self.frame.add(
-                    "tool",
-                    {"name": event.name, "args": {}, "id": event.id},
-                )
-                self._tools[event.id] = block
-            block.update(result=event.result)
-            block.settle()
-            if self.scheduler is not None:
-                self.scheduler.request_commit()
-                self.scheduler.request_invalidate()
+            self._tool_end(event)
             return
         if isinstance(event, ThreadSwitch):
             labels = {
@@ -195,12 +178,77 @@ class Transcript:
         if isinstance(event, BaseException):
             self.append_banner(f"{type(event).__name__}: {event}")
 
+    def _tool_start(self, event: ToolCallStart) -> None:
+        source = str(event.source_id or "main")
+        block = self._read_groups.get(source) if event.name == "read_file" else None
+        can_group = (
+            block is not None
+            and block.state is BlockState.ACTIVE
+            and bool(self.frame.blocks)
+            and self.frame.blocks[-1] is block
+        )
+        if can_group:
+            calls = block.data.get("calls")
+            if not isinstance(calls, list):
+                calls = [
+                    {
+                        "id": block.data["id"],
+                        "args": block.data.get("args", {}),
+                    }
+                ]
+            block.update(
+                calls=[
+                    *calls,
+                    {"id": event.id, "args": event.args},
+                ]
+            )
+        else:
+            block = self.frame.add(
+                "tool",
+                {"name": event.name, "args": event.args, "id": event.id},
+                source_id=event.source_id,
+            )
+            if event.name == "read_file":
+                self._read_groups[source] = block
+        self._tools[event.id] = block
+        if self.scheduler is not None:
+            self.scheduler.start_spinner()
+            self.scheduler.request_invalidate()
+
+    def _tool_end(self, event: ToolCallEnd) -> None:
+        block = self._tools.get(event.id)
+        if block is None:
+            block = self.frame.add(
+                "tool",
+                {"name": event.name, "args": {}, "id": event.id},
+            )
+            self._tools[event.id] = block
+        calls = block.data.get("calls")
+        if isinstance(calls, list):
+            updated = [
+                {**call, "result": event.result}
+                if call.get("id") == event.id
+                else call
+                for call in calls
+            ]
+            block.update(calls=updated)
+            complete = all("result" in call for call in updated)
+        else:
+            block.update(result=event.result)
+            complete = True
+        if complete:
+            block.settle()
+            if self.scheduler is not None:
+                self.scheduler.request_commit()
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+
     def _source_block(self, source_id: str, kind: str, role: str) -> Block:
         key = (source_id, kind)
         block = self._source_blocks.get(key)
         if block is not None:
             return block
-        data: dict[str, Any] = {"text": ""}
+        data: dict[str, Any] = {"text": "", "role": role}
         if kind == "assistant":
             data.update(role=role, subagent=role == "subagent" or role.startswith("subagent:"))
         block = self.frame.add(kind, data, source_id=source_id)
@@ -246,6 +294,7 @@ class Transcript:
         self.frame.blocks.clear()
         self._source_blocks.clear()
         self._tools.clear()
+        self._read_groups.clear()
 
 
 __all__ = ["Transcript"]

@@ -36,6 +36,7 @@ from .context import (
     _uncheckpointed_seed_target,
 )
 from .frame import Block, Frame, FrameScheduler
+from .blocks import BlockRendererDispatcher, DEFAULT_THEME
 from .transcript import Transcript
 from .turn import _run_cancellable_turn
 
@@ -158,6 +159,10 @@ class ApplicationRuntime:
         self._submit = submit
         self.registry = registry
         self.frame = Frame()
+        self.theme: Any = DEFAULT_THEME
+        self._block_dispatcher = BlockRendererDispatcher(
+            registry.block_renderers if registry is not None else {}
+        )
         self.ui = UIFacade(notify=self._notify, clear=self._clear_scrollback)
         self._status = status or (lambda: "")
         self._pending: set[asyncio.Future[Any]] = set()
@@ -256,19 +261,13 @@ class ApplicationRuntime:
         self.application.invalidate()
 
     def _render_block(self, block: Block, width: int, rows: int) -> Any:
-        if self.registry is not None:
-            for registration in self.registry.block_renderers:
-                if registration.kind == block.kind:
-                    return registration.render(
-                        block,
-                        None,
-                        width,
-                        rows,
-                        self.ui.tools_expanded,
-                    )
-        if block.kind == "raw":
-            return block.data.get("renderable", "")
-        return block.data.get("text", block.data.get("message", str(block.data)))
+        return self._block_dispatcher.render(
+            block,
+            self.theme,
+            width,
+            rows,
+            self.ui.tools_expanded,
+        )
 
     def _composer_height(self, width: int) -> int:
         width = max(1, width)
@@ -295,10 +294,9 @@ class ApplicationRuntime:
             else:
                 console.print(block.data.get("renderable", ""), **options)
             return
-        console.print(
-            self._render_block(block, width, rows),
-            end="" if viewport else "\n",
-        )
+        rendered = self._render_block(block, width, rows)
+        if rendered is not None:
+            console.print(rendered, end="" if viewport else "\n")
 
     def _capture_block(
         self,

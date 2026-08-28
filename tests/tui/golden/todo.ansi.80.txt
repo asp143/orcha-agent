@@ -1,0 +1,3 @@
+<ESC>[1;36mTodo<ESC>[0m
+<ESC>[1;2;36m✔ add renderers<ESC>[0m
+<ESC>[1;36m○ stabilize goldens<ESC>[0m

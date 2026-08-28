@@ -177,3 +177,35 @@ async def test_legacy_renderer_is_adapted_to_a_committed_raw_block() -> None:
     assert frame.blocks[0].kind == "raw"
     assert frame.blocks[0].data["renderable"].plain == "legacy output"
     assert frame.blocks[0].state is BlockState.COMMITTED
+
+
+@pytest.mark.asyncio
+async def test_consecutive_same_source_read_starts_form_one_grouped_block() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(
+        ToolCallStart(
+            name="read_file",
+            args={"path": "a.py"},
+            id="read-a",
+            source_id="researcher",
+        )
+    )
+    await transcript.handle(
+        ToolCallStart(
+            name="read_file",
+            args={"path": "b.py"},
+            id="read-b",
+            source_id="researcher",
+        )
+    )
+    await transcript.handle(ToolCallEnd(name="read_file", id="read-a", result="a"))
+    await transcript.handle(ToolCallEnd(name="read_file", id="read-b", result="b"))
+
+    assert len(frame.blocks) == 1
+    assert frame.blocks[0].data["calls"] == [
+        {"id": "read-a", "args": {"path": "a.py"}, "result": "a"},
+        {"id": "read-b", "args": {"path": "b.py"}, "result": "b"},
+    ]
+    assert frame.blocks[0].state is BlockState.SETTLED
