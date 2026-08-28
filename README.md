@@ -70,7 +70,6 @@ subagent_model = "fast"
 summarizer_model = "fast"
 mode = "ask"
 backend = "local_shell"
-banner = true
 
 [models]
 fast = "anthropic:claude-haiku-4-5"
@@ -82,8 +81,6 @@ disabled = []
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
 
-Disable the startup banner with `[core] banner=false` or
-`ORCHA_NO_BANNER=1`.
 
 ## Trust model
 
@@ -105,52 +102,214 @@ uv run orcha --trust-cwd
 Project plugins execute Python with the same filesystem and shell access as
 orcha, so do not trust repositories you have not reviewed.
 
-## Status bar
+## Terminal UI
 
-The prompt keeps an omp-style session footer updated with the selected model,
-effort, mode, workspace, Git state, context use, cumulative tokens, and
-estimated cost:
+The TUI runs inline rather than taking over the alternate screen. Settled
+messages and tool output are committed to native terminal scrollback; only the
+active transcript blocks, HUD, composer, and status line are redrawn. The
+composer grows to eight wrapped rows and has three shapes: `box` (closed
+frame), `claude` (open prompt rail), and `borderless` (text only).
 
-```text
-󰚩 GPT-5.6 Sol · 󰪣 high · ask · deepagent · feat/pi-agent ?2 +1 · 26.3%/272k · 󰁨 12.4k↑ 3.1k↓ · 󰙺 $0.42
-```
+### UI configuration
 
-Use `/status` to print the same values vertically. Disable the footer or Nerd
-Font icons in user or project configuration:
+These are all supported UI keys and their defaults:
 
 ```toml
 [ui]
-statusbar = false
-icons = false
+theme = "dark"
+symbols = "nerd"
+icons = true
+thinking = "summary"
+composer = "box"
+banner = true
+notify = false
+statusbar = true
 
+[ui.statusline]
+preset = "default"
+separator = "powerline"
+transparent = false
+# left and right are omitted by default; lists override the preset groups.
+```
+
+`theme` is a theme name or `auto`; `symbols` is `nerd`, `unicode`, or `ascii`;
+`thinking` is `summary`, `off`, or `all`; and `composer` is `box`, `claude`,
+or `borderless`. `icons` is retained for compatibility: when `symbols` is
+omitted, `icons=false` selects `ascii` and `icons=true` selects `nerd`.
+Disable the welcome with `banner=false` or `ORCHA_NO_BANNER=1`.
+
+The status line presets and their left/right groups are:
+
+- `default` and `ascii`: `model mode path git` / `subagents context cost`
+- `minimal`: `model path` / `context`
+- `compact`: `mode path git` / `context time`
+- `full` and `nerd`: `model mode path git session` /
+  `subagents tokens cache cost context time`
+
+Available built-in segments are `model`, `mode`, `path`, `git`, `session`,
+`subagents`, `tokens`, `cache`, `cost`, `context`, and `time`; plugins may add
+more. Separators are `powerline`, `powerline-thin`, `slash`, `pipe`, `block`,
+`none`, and `ascii`; the `ascii` preset also forces ASCII-safe output.
+Override either group, remove status backgrounds, or both:
+
+```toml
+[ui.statusline]
+preset = "compact"
+separator = "pipe"
+left = ["model", "mode", "path", "git"]
+right = ["tokens", "context", "cost"]
+transparent = true
+```
+
+`/status` prints the effective visible segments vertically when the status
+line is enabled. Pricing overrides still use the top-level pricing table:
+
+```toml
 [pricing."codex:gpt-5.6-sol"]
 input = 5
 output = 30
 cache_read = 0.5
 ```
 
+### Themes and symbols
 
-## Thinking display
+Built-in themes are `dark`, `light`, `ansi`, `dracula`, `nord`, and
+`gruvbox`. `theme="auto"` chooses light or dark from `COLORFGBG`, defaulting
+to dark when the terminal background cannot be determined. User themes are
+JSON files in `~/.config/orcha-agent/themes/`. Project themes in
+`./.orcha-agent/themes/` load only for a trusted working directory and take
+precedence over user themes with the same filename.
 
-Model reasoning streams before the answer in dim italic text. Main-agent reasoning
-is shown by default; subagent reasoning is opt-in:
+A theme can define variables, any subset of color tokens, and symbol
+overrides:
 
-```toml
-[ui]
-thinking = "summary"  # default; main agent only
-# thinking = "off"    # hide all reasoning
-# thinking = "all"    # include subagent reasoning
+```json
+{
+  "name": "Ocean",
+  "vars": {
+    "blue": "#5fafff",
+    "terminal": ""
+  },
+  "colors": {
+    "accent": "$blue",
+    "statusLineBg": "$terminal"
+  },
+  "symbols": {
+    "preset": "unicode",
+    "overrides": {
+      "icon.model": "M",
+      "status.success": "ok"
+    }
+  }
+}
 ```
 
-Each reasoning block starts with `󰟶 thinking`, or `[thinking]` when
-`[ui] icons=false`. `/thinking off` hides reasoning for the current session;
-`/thinking on` restores main-agent summaries. The toggle is saved with the
-session and restored by `/resume`.
+Colors accept `#rrggbb`, palette indexes `0` through `255`, `$variable`
+references, or `""` for the terminal default. Missing color tokens produce a
+warning and inherit from `dark`; unknown tokens or invalid files are skipped
+with a warning. `[ui].symbols` takes precedence over a theme's symbol preset,
+while theme overrides still apply. Non-UTF output automatically falls back
+from `nerd` or `unicode` to `ascii`.
 
-Codex requests automatic reasoning summaries at the configured
-`[providers.codex] reasoning_effort` or `medium`. OpenAI requests automatic
-summaries when `[providers.openai] reasoning_effort` is set. Anthropic
-requests adaptive summarized thinking while display is on.
+`/theme` opens a live-preview picker; `Esc` restores the prior theme and
+`Enter` saves the selection with the session. `/theme <name>` switches
+directly.
+
+### Keybindings
+
+Override bindings in `~/.config/orcha-agent/keybindings.toml`. A value may be
+one key sequence or a list; spaces form chords such as `escape p`. The full
+default action map is:
+
+```toml
+[bindings]
+submit = ["enter", "c-j"]
+newline = ["escape enter", "escape c-j"]
+queue = "c-q"
+dequeue = "escape up"
+toggle_thinking = "c-t"
+cycle_thinking_level = "s-tab"
+expand_tools = "c-o"
+model_picker = "escape p"
+cycle_model = "c-p"
+history_search = "c-r"
+external_editor = "c-g"
+clear_screen = "c-l"
+interrupt = "c-c"
+exit = "c-d"
+tree = "escape escape"
+```
+
+Plugins extend the action map with `PluginAPI.add_keybinding(...)` before
+user overrides are applied. If two actions claim the same sequence, the last
+definition wins and the TUI warns which action lost it; invalid or unknown
+user entries also warn instead of replacing a working binding. `/keys` prints
+the effective map, including plugin actions and conflict resolution.
+
+### Composer, history, and queue
+
+`Enter` submits. A trailing `\` turns that keypress into a newline, while
+`Esc Enter` inserts a newline directly. In dot mode, a prompt containing only
+`.` submits `keep going`. In bash mode, a prompt beginning with `!` runs the
+remainder through the local shell in the working directory with a 60-second
+timeout. `Ctrl+G` edits the current draft with `$VISUAL` or `$EDITOR`.
+
+Prompt history is stored in `~/.local/share/orcha-agent/history.db` with
+SQLite FTS5 search. `Ctrl+R` opens the searchable history overlay and returns
+the selected prompt to the composer. Slash-command completion starts at `/`;
+`@` completes project paths, and bare path completion is also available.
+Completion honors the root `.gitignore`, does not follow directory symlinks,
+and excludes `.git`, `.env*`, and `Credentials`; `Tab` accepts menu choices.
+Plugins may add completion triggers.
+
+While a turn streams, submitting or pressing `Ctrl+Q` queues prompts. A
+submission made entirely of `->`/`=>` lines, or a consecutive `1.`/`2.` (or
+`1)`/`2)`) numbered list, expands into a FIFO batch; otherwise multiline text
+remains one prompt. `Esc Up` pulls the newest queued prompt back into the
+composer, and the queue runs sequentially after the active turn.
+
+`Esc` first closes completion. During streaming it cancels the turn and
+restores the queued prompts as editable `->` lines; when idle with an empty
+composer, a double `Esc` opens the conversation tree. `Ctrl+C` clears a
+draft, otherwise cancels a streaming turn, otherwise exits on a second press
+within one second. `Ctrl+D` exits immediately, saving the current draft and
+queue so the session can restore them.
+
+### Overlays and session chrome
+
+Pickers accept fuzzy filter text, arrows/Page Up/Page Down to move, `Enter`
+to select, and `Esc` to cancel.
+
+| Overlay | Trigger | Result |
+| --- | --- | --- |
+| Model | `/model` or `escape p` | Shows registered models and provider availability, then switches to the selection. |
+| Session | `/sessions` or `/resume` | Shows saved-session age, directory, and entry count, then resumes the selection. |
+| Tree | `/tree` or double `Esc` | Shows the ledger hierarchy and branches at the selected entry. |
+| Theme | `/theme` | Live-previews themes and persists the accepted selection; cancellation rolls back. |
+| Approval | A tool approval interrupt | Previews shell commands, edits, or arguments and returns `approve`, `reject`, or `always` (`Y`, `N`, or `A`). |
+| Ask | A plugin calls `await ctx.ui.ask(questions)` | Returns `{"kind":"submit","results":[...]}` with each answer's `id`, `selectedOptions`, and optional `customInput`. |
+| History | `Ctrl+R` | Full-text searches prompt history and returns a selection to the composer. |
+| Help | `/help` | Shows the effective command and keybinding reference; `Enter` or `Esc` closes it. |
+
+The responsive welcome block shows the active model, mode, working directory,
+recent sessions, trust/provider/plugin hints, and a rotating tip. During a
+turn, a compact HUD above the composer shows up to seven todo items, running
+subagents, and queued prompts. The terminal title tracks the session and adds
+a spinner while working or a waiting marker for approval.
+
+With `[ui] notify=true`, turn completion and approval requests notify only
+after more than five seconds without a keypress. The TUI prefers
+`notify-send` and falls back to terminal OSC 9 notifications; failures never
+interrupt the session.
+
+### Thinking display
+
+Model reasoning streams before the answer. `thinking="summary"` shows the
+main agent only, `off` hides it, and `all` includes subagents. `/thinking
+off|on` or `Ctrl+T` changes display for the current session; `Shift+Tab`
+cycles supported model effort through `off`, `low`, `medium`, `high`, and
+`max`. These settings and the current draft are restored when a session is
+resumed.
 
 ## Plugins
 
@@ -167,13 +326,21 @@ See `examples/plugins/hello.py` for a complete external plugin.
 
 ## Commands
 
-`/help`, `/clear`, `/new`, `/exit`, `/plugins`, `/providers`, `/login <prefix>`,
-`/logout <prefix>`, `/tree [--all]`, `/branch <id-prefix>`, `/fork`,
-`/export [--force] [path]`, `/sessions`, `/resume <prefix>`, `/compact`,
-`/model <spec>`,
-`/mode <name>`, and `/thinking on|off`.
+Interactive pickers are used by `/help`, `/theme`, `/model`, `/sessions`,
+`/resume`, and `/tree` when no explicit argument is supplied. Direct forms
+remain available:
 
-`/clear` resets the current session history, while `/new` starts a fresh session.
+- session: `/clear`, `/new`, `/sessions`, `/resume [session-id]`,
+  `/tree [--all]`, `/branch [--exact] <id-prefix>`, `/fork`, `/compact`, and
+  `/export [--force] [path]`
+- model and UI: `/model [provider:model[,provider:model...]]`, `/mode <name>`,
+  `/thinking on|off`, `/theme [name]`, `/keys`, and `/status`
+- providers and runtime: `/providers [prefix]`, `/plugins`,
+  `/login <prefix> [browser|device|paste]`, `/logout <prefix>`, `/help`,
+  and `/exit`
+
+`/clear` resets the current session history, while `/new` starts a fresh
+session.
 
 ### Export format
 
