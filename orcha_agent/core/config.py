@@ -121,7 +121,7 @@ class Config:
     icons: bool = True
     thinking: str = "summary"
     theme: str = "dark"
-    symbols: str = "nerd"
+    symbols: str | None = None
     composer: str = "box"
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
 
@@ -342,8 +342,8 @@ def load_config(
     if not isinstance(theme, str) or not theme.strip():
         parser.error("[ui] theme must be a non-empty string")
     explicit_symbols = ui.get("symbols")
-    if explicit_symbols is None:
-        symbols = "nerd" if bool(ui.get("icons", True)) else "ascii"
+    if "symbols" not in ui:
+        symbols = None if bool(ui.get("icons", True)) else "ascii"
     elif isinstance(explicit_symbols, str) and explicit_symbols in {
         "unicode",
         "nerd",
@@ -353,7 +353,11 @@ def load_config(
     else:
         parser.error("[ui] symbols must be unicode, nerd, or ascii")
     composer = ui.get("composer", "box")
-    if composer not in {"box", "claude", "borderless"}:
+    if not isinstance(composer, str) or composer not in {
+        "box",
+        "claude",
+        "borderless",
+    }:
         parser.error("[ui] composer must be box, claude, or borderless")
     statusline = _statusline_config(ui.get("statusline", {}), parser)
     if "banner" in ui and not isinstance(ui["banner"], bool):

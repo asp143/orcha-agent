@@ -457,9 +457,6 @@ class ApplicationRuntime:
             registry=registry,
             scheduler=self.scheduler,
         )
-        for notification in self._early_notifications:
-            self.transcript.append_banner(notification, level="info")
-        self._early_notifications.clear()
         self.ui.subagents = []
         self.ui.todos = []
         self._refresh_title()
@@ -523,17 +520,28 @@ class ApplicationRuntime:
             )
         return blocks
 
+    @staticmethod
+    def _clip_visual_rows(value: str, rows: int = 8) -> str:
+        return "\n".join(value.rstrip("\n").splitlines()[:rows])
+
     def _hud_text(self) -> Any:
         width = max(1, self.application.output.get_size().columns)
         rendered = [
-            self._capture_block(block, width, 8, force_terminal=True).rstrip("\n")
+            self._clip_visual_rows(
+                self._capture_block(
+                    block,
+                    width,
+                    8,
+                    force_terminal=True,
+                )
+            )
             for block in self._hud_blocks()
         ]
         return ANSI("\n".join(value for value in rendered if value))
 
     def _hud_height(self) -> int:
         value = self._hud_text().value
-        return min(24, len(value.splitlines())) if value else 0
+        return len(value.splitlines()) if value else 0
 
     async def handle_presentation(self, event: Event) -> None:
         if isinstance(event, TurnStart):
@@ -1096,6 +1104,12 @@ class ApplicationRuntime:
         if application is not None:
             application.invalidate()
 
+    def flush_early_notifications(self) -> None:
+        for notification in self._early_notifications:
+            self.transcript.append_banner(notification, level="info")
+        self._early_notifications.clear()
+        self.application.invalidate()
+
     def _apply_theme(self, selected: Any) -> Any:
         self.theme = selected
         self.ui.theme = selected
@@ -1474,6 +1488,8 @@ async def run_app(cfg: Config) -> int:
                     transcript=runtime.transcript,
                 )
         await bus.emit(AppStart(ctx=ctx))
+        if hasattr(runtime, "flush_early_notifications"):
+            runtime.flush_early_notifications()
         if ctx._reseed_pending() and ctx.agent is not None:
             await ctx.ensure_agent()
         if ctx.rebuild_requested:

@@ -281,7 +281,12 @@ def load_theme_file(
         id=identifier,
         name=name,
         colors=colors,
-        symbols=resolve_symbols(preset, overrides, encoding=encoding),
+        symbols=resolve_symbols(
+            preset,
+            overrides,
+            encoding=encoding,
+            warn=warn,
+        ),
     )
 
 

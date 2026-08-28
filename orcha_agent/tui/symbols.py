@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from rich import box
@@ -96,6 +96,15 @@ def _supports_unicode(encoding: str | None) -> bool:
         return False
     return True
 
+def _encodable(value: str, encoding: str | None) -> bool:
+    if encoding is None:
+        return True
+    try:
+        value.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
 
 def _rich_box(values: Mapping[str, Any], prefix: str, *, ascii: bool) -> box.Box:
     top_left = values[f"{prefix}.topLeft"]
@@ -126,6 +135,7 @@ def resolve_symbols(
     overrides: Mapping[str, object] | None = None,
     *,
     encoding: str | None = None,
+    warn: Callable[[str], None] = lambda _message: None,
 ) -> dict[str, Any]:
     """Resolve a preset plus validated overrides and Rich box adapters."""
 
@@ -142,6 +152,12 @@ def resolve_symbols(
             raise ValueError(f"symbol override {key} must be a non-empty string")
         if key.startswith(("boxRound.", "boxSharp.")) and len(value) != 1:
             raise ValueError(f"symbol override {key} must be one character")
+        if not _encodable(value, encoding):
+            warn(
+                f"symbol override {key} cannot be encoded as "
+                f"{encoding or 'the terminal encoding'}; using ascii preset"
+            )
+            continue
         values[key] = value
     ascii_preset = selected == "ascii"
     if any(key.startswith("boxRound.") for key in (overrides or {})):

@@ -36,7 +36,15 @@ def _context(tmp_path: Path, *, enabled: bool = True, symbols: str = "unicode") 
         session=SimpleNamespace(list=lambda: []),
         session_id="current",
         plugins=[],
-        registry=SimpleNamespace(providers={"anthropic": object()}),
+        registry=SimpleNamespace(
+            providers={
+                "anthropic": SimpleNamespace(
+                    available=lambda: None,
+                    env_keys=(),
+                )
+            },
+            auth={},
+        ),
     )
 
 
@@ -70,6 +78,26 @@ async def test_welcome_is_the_first_immediately_committed_block(tmp_path: Path) 
     assert ctx.transcript.frame.blocks[0].state.value == "committed"
     assert len(ctx.transcript.frame.blocks[0].data["sessions"]) == 4
     assert len(ctx.transcript.frame.blocks[0].data["hints"]) == 4
+
+def test_welcome_provider_hint_requires_actual_readiness(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    provider = ctx.registry.providers["anthropic"]
+
+    provider.available = lambda: "optional package missing"
+    assert "provider unavailable" in banner.build_welcome(ctx)["hints"][2]
+
+    provider.available = lambda: None
+    provider.env_keys = ("ORCHA_TEST_MISSING_KEY",)
+    assert "provider unavailable" in banner.build_welcome(ctx)["hints"][2]
+
+    provider.env_keys = ()
+    ctx.registry.auth["anthropic"] = SimpleNamespace(
+        flow=SimpleNamespace(status=lambda: "not logged in")
+    )
+    assert "provider unavailable" in banner.build_welcome(ctx)["hints"][2]
+
+    ctx.registry.auth.clear()
+    assert "provider ready" in banner.build_welcome(ctx)["hints"][2]
 
 
 @pytest.mark.asyncio

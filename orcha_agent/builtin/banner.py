@@ -7,7 +7,8 @@ import random
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
-from typing import Any, Iterable
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from orcha_agent.core.events import AppStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
@@ -136,6 +137,37 @@ def _recent_sessions(ctx: Any, *, ascii_only: bool, now: datetime) -> list[str]:
     return [*slots, *([""] * (4 - len(slots)))]
 
 
+def _provider_prefix(ctx: Any, model: str) -> str:
+    spec: object = model.split(",", 1)[0]
+    aliases = getattr(getattr(ctx, "cfg", None), "models", {})
+    seen: set[str] = set()
+    while isinstance(spec, str) and isinstance(aliases, Mapping):
+        target = aliases.get(spec)
+        if target is None or spec in seen:
+            break
+        seen.add(spec)
+        spec = target[0] if isinstance(target, list) and target else target
+    return spec.split(":", 1)[0] if isinstance(spec, str) and ":" in spec else "default"
+
+
+def _provider_ready(ctx: Any, prefix: str) -> bool:
+    registry = getattr(ctx, "registry", None)
+    providers = getattr(registry, "providers", {})
+    provider = providers.get(prefix)
+    if provider is None:
+        return False
+    try:
+        if provider.available() is not None:
+            return False
+    except Exception:
+        return False
+    env_keys = getattr(provider, "env_keys", ())
+    if env_keys and not any(os.environ.get(key) for key in env_keys):
+        return False
+    auth = getattr(registry, "auth", {}).get(prefix)
+    return auth is None or auth.flow.status() != "not logged in"
+
+
 def _hints(ctx: Any, model: str, *, ascii_only: bool) -> list[str]:
     cfg = getattr(ctx, "cfg", None)
     trusted = bool(getattr(cfg, "trust_cwd", False))
@@ -144,10 +176,8 @@ def _hints(ctx: Any, model: str, *, ascii_only: bool) -> list[str]:
     plugins = getattr(ctx, "plugins", ()) or ()
     loaded = sum(1 for plugin in plugins if getattr(plugin, "error", None) is None)
     plugin_hint = f"{loaded} plugin{'s' if loaded != 1 else ''} loaded"
-    provider = model.split(":", 1)[0] if ":" in model else "default"
-    providers = getattr(getattr(ctx, "registry", None), "providers", {})
-    configured = not providers or provider in providers
-    provider_hint = f"{provider} provider {'ready' if configured else 'unavailable'}"
+    provider = _provider_prefix(ctx, model)
+    provider_hint = f"{provider} provider {'ready' if _provider_ready(ctx, provider) else 'unavailable'}"
     return [trust, plugin_hint, provider_hint, ""]
 
 

@@ -226,6 +226,73 @@ async def test_runtime_hud_tracks_todos_queue_and_real_subagent_lifecycle() -> N
     await runtime.scheduler.aclose()
 
 
+
+@pytest.mark.asyncio
+async def test_hud_clips_each_section_to_eight_rendered_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _Output()
+    output.get_size = lambda: SimpleNamespace(rows=40, columns=16)
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        output=output,
+        ctx=SimpleNamespace(
+            cfg=SimpleNamespace(
+                cwd=Path.cwd(),
+                notify=False,
+                symbols="ascii",
+                statusbar=True,
+            ),
+            session=SimpleNamespace(get=lambda _session: SimpleNamespace(title="work")),
+            session_id="session",
+            plugin_states={},
+        ),
+    )
+    runtime.set_todos(
+        [{"content": "a very long todo label " * 20, "status": "pending"}]
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_capture_block",
+        lambda *_args, **_kwargs: "\n".join(
+            f"visual row {index}" for index in range(12)
+        ),
+    )
+
+    rendered = runtime._hud_text().value
+
+    assert len(rendered.splitlines()) <= 8
+    assert runtime._hud_height() == len(rendered.splitlines())
+    await runtime.scheduler.aclose()
+
+
+
+@pytest.mark.asyncio
+async def test_startup_warnings_are_replayed_only_after_welcome(tmp_path: Path) -> None:
+    keys = tmp_path / "keys.toml"
+    keys.write_text(
+        '[bindings]\nsubmit = "c-x"\nqueue = "c-x"\n',
+        encoding="utf-8",
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            keybindings_path=keys,
+            input=pipe,
+            output=_Output(),
+        )
+        assert runtime.frame.blocks == []
+
+        runtime.transcript.append_welcome({}, immediate=False)
+        runtime.flush_early_notifications()
+
+        assert [block.kind for block in runtime.frame.blocks] == [
+            "welcome",
+            "banner",
+        ]
+        await runtime.scheduler.aclose()
+
+
 @pytest.mark.asyncio
 async def test_live_hud_changes_invalidate_cached_sections_and_spinner_frames() -> None:
     theme = {

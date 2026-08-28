@@ -57,6 +57,8 @@ class SelectList(Overlay, Generic[T]):
         self._selected: set[int] = set()
         self._on_accept = on_accept
         self._on_change = on_change
+        self._accepting = False
+        self._error: str | None = None
         self.filter = Buffer(multiline=False)
         self.filter.on_text_changed += self._filter_changed
         self.list_control = FormattedTextControl(self._fragments, focusable=False)
@@ -130,6 +132,10 @@ class SelectList(Overlay, Generic[T]):
     def focus_target(self) -> BufferControl:
         return self.filter_control
 
+    @property
+    def accepting(self) -> bool:
+        return self._accepting
+
     def _filtered_pairs(self) -> list[tuple[int, T]]:
         query = self.filter.text
         return [
@@ -162,31 +168,48 @@ class SelectList(Overlay, Generic[T]):
         self._on_change(filtered[self.index][1] if filtered else None)
 
     def _accept(self, value: T | list[T], event: Any) -> None:
+        if self._accepting:
+            return
         if self._on_accept is None:
             self.resolve(value)
             return
+        self._accepting = True
+        self._error = None
+        event.app.invalidate()
         try:
             result = self._on_accept(value)
-        except Exception:
+        except Exception as exc:
+            self._accept_failed(exc, event)
             return
         if not inspect.isawaitable(result):
+            self._accepting = False
             self.resolve(value if result is None else result)
             return
 
         async def complete() -> None:
             try:
                 accepted = await result
-            except Exception:
+            except Exception as exc:
+                self._accept_failed(exc, event)
                 return
+            self._accepting = False
             self.resolve(value if accepted is None else accepted)
 
         event.app.create_background_task(complete())
 
+    def _accept_failed(self, exc: Exception, event: Any) -> None:
+        self._accepting = False
+        self._error = f"{type(exc).__name__}: {exc}"
+        event.app.invalidate()
+
     def _fragments(self) -> StyleAndTextTuples:
         filtered = self._filtered_pairs()
-        if not filtered:
-            return [("class:overlay.empty", f"  {self.empty_text}\n")]
         fragments: StyleAndTextTuples = []
+        if self._error is not None:
+            fragments.append(("class:error", f"  {self._error}\n"))
+        if not filtered:
+            fragments.append(("class:overlay.empty", f"  {self.empty_text}\n"))
+            return fragments
         for visible, (original, item) in enumerate(filtered):
             current = visible == self.index
             if current:

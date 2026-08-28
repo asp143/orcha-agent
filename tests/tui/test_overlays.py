@@ -90,6 +90,33 @@ async def test_select_list_filters_pages_and_returns_multiselect() -> None:
     assert "◉" in picker.render_text()
 
 
+
+@pytest.mark.asyncio
+async def test_select_list_reports_async_action_failures_and_reenables_accept() -> None:
+    attempts: list[str] = []
+
+    async def fail(value: str | list[str]) -> None:
+        attempts.append(str(value))
+        raise RuntimeError("provider switch failed")
+
+    tasks: list[asyncio.Task[Any]] = []
+    event = SimpleNamespace(
+        app=SimpleNamespace(
+            create_background_task=lambda awaitable: tasks.append(
+                asyncio.create_task(awaitable)
+            ),
+            invalidate=lambda: None,
+        )
+    )
+    picker = SelectList("Pick", ["one"], on_accept=fail)
+
+    picker._accept("one", event)
+    await tasks.pop()
+
+    assert attempts == ["one"]
+    assert picker.accepting is False
+    assert "RuntimeError: provider switch failed" in picker.render_text()
+
 def _api(name: str, registry: Registry, bus: EventBus) -> PluginAPI:
     return PluginAPI(
         name=name,

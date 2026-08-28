@@ -53,6 +53,23 @@ def test_non_utf_terminal_forces_ascii_symbols() -> None:
 
     assert symbols["icon.model"] == SYMBOL_PRESETS["ascii"]["icon.model"]
 
+def test_non_ascii_overrides_are_discarded_after_ascii_fallback() -> None:
+    warnings: list[str] = []
+    symbols = resolve_symbols(
+        "nerd",
+        {
+            "status.success": "✓",
+            "icon.model": "M",
+        },
+        encoding="ascii",
+        warn=warnings.append,
+    )
+
+    assert symbols["status.success"] == SYMBOL_PRESETS["ascii"]["status.success"]
+    assert symbols["icon.model"] == "M"
+    assert len(warnings) == 1
+    assert "status.success" in warnings[0]
+
 
 def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> None:
     symbols = resolve_symbols(
