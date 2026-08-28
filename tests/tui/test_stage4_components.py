@@ -114,6 +114,75 @@ def test_completer_supports_commands_at_paths_tab_and_plugins(tmp_path: Path) ->
     assert tab[0].text == '"space name.py"'
     assert custom[0].text == "plugin"
 
+def test_bare_path_completion_indexes_only_after_explicit_tab(tmp_path: Path) -> None:
+    registry = Registry()
+    completer = ComposerCompleter(registry, tmp_path)
+    indexed: list[bool] = []
+    completer.path_index.paths = lambda: indexed.append(True) or ("alpha.py",)
+
+    ordinary = list(
+        completer.get_completions(
+            Document("alp"),
+            CompleteEvent(completion_requested=False),
+        )
+    )
+    assert ordinary == []
+    assert indexed == []
+
+    explicit = list(
+        completer.get_completions(
+            Document("alp"),
+            CompleteEvent(completion_requested=True),
+        )
+    )
+    assert [completion.text for completion in explicit] == ["alpha.py"]
+    assert indexed == [True]
+
+
+def test_path_index_applies_anchored_nested_and_negated_gitignore_rules(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".gitignore").write_text(
+        "/root-only.txt\n"
+        "global.log\n"
+        "ignored/**\n"
+        "!ignored/keep/\n"
+        "!ignored/keep/visible.py\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "root-only.txt").write_text("", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "root-only.txt").write_text("", encoding="utf-8")
+    (tmp_path / "nested" / "global.log").write_text("", encoding="utf-8")
+    (tmp_path / "nested" / ".gitignore").write_text(
+        "/nested-only.txt\n*.tmp\n!keep.tmp\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "nested" / "nested-only.txt").write_text("", encoding="utf-8")
+    (tmp_path / "nested" / "deeper").mkdir()
+    (tmp_path / "nested" / "deeper" / "nested-only.txt").write_text(
+        "",
+        encoding="utf-8",
+    )
+    (tmp_path / "nested" / "drop.tmp").write_text("", encoding="utf-8")
+    (tmp_path / "nested" / "keep.tmp").write_text("", encoding="utf-8")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "drop.py").write_text("", encoding="utf-8")
+    (tmp_path / "ignored" / "keep").mkdir()
+    (tmp_path / "ignored" / "keep" / "visible.py").write_text("", encoding="utf-8")
+
+    paths = PathIndex(tmp_path).paths()
+
+    assert "root-only.txt" not in paths
+    assert "nested/root-only.txt" in paths
+    assert "nested/global.log" not in paths
+    assert "nested/nested-only.txt" not in paths
+    assert "nested/deeper/nested-only.txt" in paths
+    assert "nested/drop.tmp" not in paths
+    assert "nested/keep.tmp" in paths
+    assert "ignored/drop.py" not in paths
+    assert "ignored/keep/visible.py" in paths
+
 
 def _api(registry: Registry, name: str = "plugin") -> PluginAPI:
     return PluginAPI(
