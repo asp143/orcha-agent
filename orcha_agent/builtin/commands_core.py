@@ -18,16 +18,14 @@ def _plugin_value(record: object, name: str, default: str = "") -> str:
 
 
 async def _help(ctx: Any, args: str) -> None:
-    if args.strip():
-        ctx.console.error("Usage: /help")
-        return
-    ui = getattr(ctx, "ui", None)
-    if ui is not None and hasattr(ui, "show"):
-        try:
-            await ui.show("help")
-            return
-        except RuntimeError:
-            pass
+    if not args.strip():
+        ui = getattr(ctx, "ui", None)
+        if ui is not None and hasattr(ui, "show"):
+            try:
+                await ui.show("help")
+                return
+            except RuntimeError:
+                pass
     table = Table(title="Commands")
     table.add_column("Command", style="cyan", no_wrap=True)
     table.add_column("Help")

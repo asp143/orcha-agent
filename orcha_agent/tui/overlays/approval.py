@@ -14,13 +14,11 @@ from .select import SelectList
 
 
 def _preview(name: str, args: Mapping[str, Any], description: str | None) -> str:
-    if description:
-        return description
     if name in {"execute", "bash", "shell"}:
         command = args.get("command")
         if isinstance(command, str):
             return f"$ {command}"
-    if name in {"edit", "write_file", "apply_patch"}:
+    if name in {"edit", "edit_file", "write_file", "apply_patch"}:
         before = args.get("old_string") or args.get("before")
         after = args.get("new_string") or args.get("content") or args.get("after")
         if isinstance(before, str) or isinstance(after, str):
@@ -31,6 +29,8 @@ def _preview(name: str, args: Mapping[str, Any], description: str | None) -> str
                 f"+ {line}" for line in after.splitlines()
             )
             return "\n".join(part for part in (old_lines, new_lines) if part)
+    if description:
+        return description
     return json.dumps(dict(args), ensure_ascii=False, indent=2, default=str)
 
 
@@ -49,6 +49,7 @@ class ApprovalOverlay(SelectList[str]):
             tool_args,
             description if isinstance(description, str) else None,
         )
+        self.preview_text = detail
         preview = Window(
             FormattedTextControl(FormattedText([("class:overlay.preview", detail)])),
             height=min(10, max(1, detail.count("\n") + 1)),

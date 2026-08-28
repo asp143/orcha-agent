@@ -11,6 +11,33 @@ class TreeOverlay(SelectList[Any]):
     def __init__(self, ctx: Any) -> None:
         entries = tuple(ctx.ledger.all(ctx.session_id))
         by_id = {entry.id: entry for entry in entries}
+        children: dict[str, list[Any]] = {}
+        roots: list[Any] = []
+        for entry in entries:
+            parent_id = getattr(entry, "parent_id", None)
+            if isinstance(parent_id, str) and parent_id in by_id:
+                children.setdefault(parent_id, []).append(entry)
+            else:
+                roots.append(entry)
+
+        ordered: list[Any] = []
+        visited: set[str] = set()
+
+        def append_branch(root: Any) -> None:
+            stack = [root]
+            while stack:
+                entry = stack.pop()
+                if entry.id in visited:
+                    continue
+                visited.add(entry.id)
+                ordered.append(entry)
+                stack.extend(reversed(children.get(entry.id, ())))
+
+        for root in roots:
+            append_branch(root)
+        for entry in entries:
+            append_branch(entry)
+        entries = tuple(ordered)
         leaf = ctx.ledger.leaf(ctx.session_id)
 
         def depth(entry: Any) -> int:

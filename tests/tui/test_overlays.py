@@ -582,3 +582,116 @@ async def test_ctrl_r_real_history_overlay_inserts_without_submitting(tmp_path: 
         assert submitted == []
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
+
+
+def test_approval_preview_prefers_specialized_tool_rendering() -> None:
+    execute = ApprovalOverlay(
+        {
+            "name": "execute",
+            "args": {"command": "printf ok"},
+            "description": "middleware summary",
+        }
+    )
+    edit = ApprovalOverlay(
+        {
+            "name": "edit",
+            "args": {"old_string": "before", "new_string": "after"},
+            "description": "middleware summary",
+        }
+    )
+    edit_file = ApprovalOverlay(
+        {
+            "name": "edit_file",
+            "args": {"old_string": "old", "new_string": "new"},
+            "description": "middleware summary",
+        }
+    )
+    generic = ApprovalOverlay(
+        {
+            "name": "custom_tool",
+            "args": {"value": 1},
+            "description": "middleware summary",
+        }
+    )
+
+    assert execute.preview_text == "$ printf ok"
+    assert edit.preview_text == "- before\n+ after"
+    assert edit_file.preview_text == "- old\n+ new"
+    assert generic.preview_text == "middleware summary"
+
+
+def test_tree_overlay_orders_entries_depth_first_by_parent_hierarchy() -> None:
+    entries = [
+        SimpleNamespace(id="root", parent_id=None),
+        SimpleNamespace(id="grandchild", parent_id="child-a"),
+        SimpleNamespace(id="child-a", parent_id="root"),
+        SimpleNamespace(id="child-b", parent_id="root"),
+    ]
+    ctx = SimpleNamespace(
+        ledger=SimpleNamespace(
+            all=lambda _session_id: entries,
+            leaf=lambda _session_id: "grandchild",
+        ),
+        session_id="session",
+        branch=lambda _value: asyncio.sleep(0),
+    )
+
+    overlay = TreeOverlay(ctx)
+
+    assert [entry.id for entry in overlay.filtered_items] == [
+        "root",
+        "child-a",
+        "grandchild",
+        "child-b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_select_list_scrolls_long_navigation_to_selected_row() -> None:
+    picker = SelectList("Long list", [f"item-{index:02d}" for index in range(40)])
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
+        )
+        task = asyncio.create_task(runtime.run())
+        shown = asyncio.create_task(runtime.ui.show(picker))
+        await asyncio.sleep(0.02)
+        pipe.send_bytes(b"\x1b[6~" * 4)
+        await asyncio.sleep(0.05)
+
+        info = picker.list_window.render_info
+        assert info is not None
+        assert picker.index == 32
+        assert info.vertical_scroll <= picker.index
+        assert picker.index < info.vertical_scroll + info.window_height
+
+        pipe.send_bytes(b"\x1b")
+        assert await asyncio.wait_for(shown, 1) is None
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_help_arguments_preserve_printed_command_table() -> None:
+    shown: list[str] = []
+    printed: list[object] = []
+    errors: list[str] = []
+
+    async def show(name: str) -> None:
+        shown.append(name)
+
+    ctx = SimpleNamespace(
+        ui=UIFacade(show_overlay=show),
+        console=SimpleNamespace(print=printed.append, error=errors.append),
+        registry=SimpleNamespace(
+            commands={"help": SimpleNamespace(help="Show command reference")}
+        ),
+    )
+
+    await _help(ctx, "commands")
+
+    assert shown == []
+    assert errors == []
+    assert len(printed) == 1
+    assert printed[0].title == "Commands"
+    assert printed[0].row_count == 1

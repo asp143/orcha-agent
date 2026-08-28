@@ -67,7 +67,8 @@ class SelectList(Overlay, Generic[T]):
         ]
         if prefix is not None:
             body_parts.extend([prefix, Window(char="─", height=1, style="class:overlay.divider")])
-        body_parts.append(Window(self.list_control, always_hide_cursor=True))
+        self.list_window = Window(self.list_control, always_hide_cursor=True)
+        body_parts.append(self.list_window)
         bindings = KeyBindings()
 
         @bindings.add("up")
@@ -188,6 +189,8 @@ class SelectList(Overlay, Generic[T]):
         fragments: StyleAndTextTuples = []
         for visible, (original, item) in enumerate(filtered):
             current = visible == self.index
+            if current:
+                fragments.append(("[SetCursorPosition]", ""))
             if self.multi:
                 marker = "◉" if original in self._selected else "○"
             else:
