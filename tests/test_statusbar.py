@@ -59,6 +59,7 @@ def test_adapter_registers_every_builtin_as_explicit_segments(tmp_path: Path) ->
     assert "status" in registry.commands
     assert {entry.event_type.__name__ for entry in bus.handlers} == {
         "ModelChunk",
+        "SessionSwitch",
         "ThreadSwitch",
         "TurnStart",
         "TurnEnd",
