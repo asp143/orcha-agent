@@ -116,6 +116,7 @@ class Config:
     login_prefix: str | None = None
     login_mode: str = "auto"
     banner: bool = True
+    notify: bool = False
     statusbar: bool = True
     icons: bool = True
     thinking: str = "summary"
@@ -355,6 +356,12 @@ def load_config(
     if composer not in {"box", "claude", "borderless"}:
         parser.error("[ui] composer must be box, claude, or borderless")
     statusline = _statusline_config(ui.get("statusline", {}), parser)
+    if "banner" in ui and not isinstance(ui["banner"], bool):
+        parser.error("[ui] banner must be true or false")
+    if "notify" in ui and not isinstance(ui["notify"], bool):
+        parser.error("[ui] notify must be true or false")
+    banner = ui.get("banner", core.get("banner", True))
+    notify = ui.get("notify", False)
 
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
@@ -370,7 +377,8 @@ def load_config(
         command=args.command or "repl",
         login_prefix=getattr(args, "prefix", None),
         login_mode=getattr(args, "login_mode", "auto"),
-        banner=bool(core.get("banner", True)),
+        banner=bool(banner),
+        notify=bool(notify),
         statusbar=bool(ui.get("statusbar", True)),
         icons=bool(ui.get("icons", True)),
         thinking=thinking,

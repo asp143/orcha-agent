@@ -172,6 +172,8 @@ class FrameScheduler:
         *,
         commit: Callable[[list[Block]], None],
         invalidate: Callable[[], None],
+        spinning: Callable[[], bool] | None = None,
+        on_spinner_tick: Callable[[int], None] | None = None,
     ) -> None:
         self.frame = frame
         self._commit = commit
@@ -180,6 +182,9 @@ class FrameScheduler:
         self._invalidate_task: asyncio.Task[None] | None = None
         self._spinner_task: asyncio.Task[None] | None = None
         self._last_invalidation = 0.0
+        self._spinning = spinning
+        self._on_spinner_tick = on_spinner_tick
+        self._spinner_frame = 0
 
     def commit_now(self) -> None:
         if self._commit_task is not None and not self._commit_task.done():
@@ -224,12 +229,21 @@ class FrameScheduler:
             self._spinner_task = asyncio.create_task(self._tick_spinners())
         return self._spinner_task
 
+    def _has_spinners(self) -> bool:
+        if self._spinning is not None and self._spinning():
+            return True
+        return any(
+            block.state is BlockState.ACTIVE
+            and block.kind in {"thinking", "tool", "subagents"}
+            for block in self.frame.blocks
+        )
+
     def tick_spinners(self, *, now: float | None = None) -> None:
         current = time.monotonic() if now is None else now
         for block in self.frame.blocks:
             if (
                 block.state is not BlockState.ACTIVE
-                or block.kind not in {"thinking", "tool"}
+                or block.kind not in {"thinking", "tool", "subagents"}
             ):
                 continue
             changes: dict[str, Any] = {
@@ -238,16 +252,21 @@ class FrameScheduler:
             elapsed = max(0.0, current - block.created)
             if block.kind == "tool":
                 changes["elapsed"] = elapsed
-            else:
+            elif block.kind == "thinking":
                 tokens = int(block.data.get("reasoning_tokens", 0))
                 changes["tokens_per_second"] = tokens / elapsed if elapsed else 0.0
             block.update(changes)
 
 
     async def _tick_spinners(self) -> None:
-        while True:
+        while self._has_spinners():
             await asyncio.sleep(self.SPINNER_INTERVAL)
+            if not self._has_spinners():
+                break
             self.tick_spinners()
+            self._spinner_frame = (self._spinner_frame + 1) % 8
+            if self._on_spinner_tick is not None:
+                self._on_spinner_tick(self._spinner_frame)
             self.request_invalidate()
 
     async def aclose(self) -> None:

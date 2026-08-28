@@ -96,7 +96,9 @@ async def test_commit_and_invalidation_requests_are_coalesced() -> None:
 @pytest.mark.asyncio
 async def test_all_spinners_share_one_ticker_task() -> None:
     ticks: list[int] = []
-    scheduler = FrameScheduler(Frame(), commit=lambda _blocks: None, invalidate=lambda: ticks.append(1))
+    frame = Frame()
+    frame.add("thinking")
+    scheduler = FrameScheduler(frame, commit=lambda _blocks: None, invalidate=lambda: ticks.append(1))
 
     first = scheduler.start_spinner()
     second = scheduler.start_spinner()

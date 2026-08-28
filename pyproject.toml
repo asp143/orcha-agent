@@ -36,7 +36,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-artifacts = ["orcha_agent/tui/themes/*.json", "orcha_agent/tui/keybindings.toml"]
+artifacts = ["orcha_agent/tui/themes/*.json", "orcha_agent/tui/keybindings.toml", "orcha_agent/tui/tips.txt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["orcha_agent"]

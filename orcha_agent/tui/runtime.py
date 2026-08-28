@@ -35,16 +35,19 @@ from orcha_agent.core.events import (
     AppStart,
     Event,
     EventBus,
+    InterruptRaised,
     SessionSwitch,
     ToolCallEnd,
     ToolCallStart,
+    TurnEnd,
+    TurnStart,
 )
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
 
-from .blocks import BlockRendererDispatcher, DEFAULT_THEME
+from .blocks import BlockRendererDispatcher, DEFAULT_RENDERERS, DEFAULT_THEME, theme_spinner
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -58,9 +61,11 @@ from .frame import Block, Frame, FrameScheduler
 from .history import SQLiteHistory, history_path
 from .keys import create_key_bindings, load_keybindings
 from .queue import PromptQueue, split_submission
+from .notify import DesktopNotifier
 from .transcript import Transcript
 from .statusline import render_statusline
 from .theme import Theme, load_themes, select_theme
+from .title import TerminalTitle
 from .turn import _run_cancellable_turn
 from .overlays import register_builtin_overlays
 from .overlays.base import Overlay
@@ -195,6 +200,8 @@ class UIFacade:
         self.notifications: list[str] = []
         self.thinking_visible = True
         self.tools_expanded = False
+        self.todos: list[Any] = []
+        self.subagents: list[Any] = []
 
     def notify(self, text: str) -> None:
         self.notifications.append(text)
@@ -223,6 +230,12 @@ class UIFacade:
         if self._set_theme is None:
             raise RuntimeError("theme selection is unavailable")
         return self._set_theme(name)
+
+    def set_todos(self, todos: Any) -> None:
+        self.todos = list(todos) if isinstance(todos, (list, tuple)) else []
+        invalidate = getattr(self, "invalidate", None)
+        if callable(invalidate):
+            invalidate()
 
 
     def toggle_thinking(self) -> bool:
@@ -267,7 +280,7 @@ class ApplicationRuntime:
         )
         self._themes.setdefault(current_theme_id, theme)
         self._block_dispatcher = BlockRendererDispatcher(
-            registry.block_renderers if registry is not None else {}
+            registry.block_renderers if registry is not None else DEFAULT_RENDERERS
         )
         previous_ui = getattr(ctx, "ui", None)
         self._fallback_show = getattr(previous_ui, "_show_overlay", None)
@@ -298,6 +311,10 @@ class ApplicationRuntime:
         self._overlay_lock = asyncio.Lock()
         self._last_escape = 0.0
         self._last_interrupt = 0.0
+        self._live_subagents: dict[str, dict[str, str]] = {}
+        self._turn_active = False
+        self._spinner_frame = 0
+        self._approval_notification_sent = False
         self._shell_runner = shell_runner or self._run_shell_process
         self._custom_editor = editor_runner is not None
         self._editor_runner = editor_runner or self._run_editor_process
@@ -363,6 +380,11 @@ class ApplicationRuntime:
                         FormattedTextControl(self._viewport_text),
                         height=Dimension(min=0),
                     ),
+                    Window(
+                        FormattedTextControl(self._hud_text),
+                        height=self._hud_height,
+                        dont_extend_height=True,
+                    ),
                     self.composer.container,
                     Window(
                         FormattedTextControl(self._status),
@@ -398,10 +420,26 @@ class ApplicationRuntime:
         self.application.timeoutlen = 0.1
         self.ui.invalidate = self.application.invalidate
         self.ui.status_width = lambda: self.application.output.get_size().columns
+        symbols = str(getattr(getattr(ctx, "cfg", None), "symbols", "unicode"))
+        encoding_value = getattr(self.application.output, "encoding", "utf-8")
+        try:
+            encoding = encoding_value() if callable(encoding_value) else encoding_value
+        except Exception:
+            encoding = ""
+        unicode_title = symbols != "ascii" and "utf" in str(encoding).casefold()
+        self.title = TerminalTitle(self.application.output, unicode=unicode_title)
+        self.notifier = DesktopNotifier(
+            enabled=bool(getattr(getattr(ctx, "cfg", None), "notify", False)),
+            output=self.application.output,
+        )
+        self.application.key_processor.before_key_press += self._record_keypress
+        self._refresh_title()
         self.scheduler = FrameScheduler(
             self.frame,
             commit=self._commit_blocks,
             invalidate=self.application.invalidate,
+            spinning=self._has_spinner_activity,
+            on_spinner_tick=self._spinner_tick,
         )
         self.transcript = Transcript(
             self.frame,
@@ -411,9 +449,110 @@ class ApplicationRuntime:
         for notification in self._early_notifications:
             self.transcript.append_banner(notification, level="info")
         self._early_notifications.clear()
+        self.ui.subagents = []
+        self.ui.todos = []
+        self._refresh_title()
+
     @property
     def active_overlay(self) -> Overlay | None:
         return self._active_overlay
+
+    def _record_keypress(self, _event: Any = None) -> None:
+        self.notifier.record_keypress()
+
+    def _session_title(self) -> str:
+        session = getattr(self.ctx, "session", None)
+        session_id = getattr(self.ctx, "session_id", None)
+        try:
+            info = session.get(session_id) if session is not None and session_id is not None else None
+        except Exception:
+            info = None
+        return str(getattr(info, "title", None) or "new session")
+
+    def _refresh_title(self) -> None:
+        self.title.set_session(self._session_title())
+
+    def _has_spinner_activity(self) -> bool:
+        return self._turn_active or bool(self._live_subagents)
+
+    def _spinner_tick(self, frame: int) -> None:
+        self._spinner_frame = frame
+        spinner = theme_spinner(self.theme, "spinner.status", frame, ("✻",))
+        self.title.set_spinner(spinner)
+
+    def set_todos(self, todos: Any) -> None:
+        self.ui.set_todos(todos)
+        self.application.invalidate()
+
+    def _hud_blocks(self) -> list[Block]:
+        blocks: list[Block] = []
+        if self.ui.todos:
+            blocks.append(Block("hud-todo", "todo", data={"items": self.ui.todos}))
+        if self.ui.subagents:
+            blocks.append(
+                Block(
+                    "hud-subagents",
+                    "subagents",
+                    data={
+                        "agents": self.ui.subagents,
+                        "spinner_frame": self._spinner_frame,
+                    },
+                )
+            )
+        if self.queue:
+            blocks.append(Block("hud-queue", "queue", data={"prompts": list(self.queue.items)}))
+        return blocks
+
+    def _hud_text(self) -> Any:
+        width = max(1, self.application.output.get_size().columns)
+        rendered = [
+            self._capture_block(block, width, 8, force_terminal=True).rstrip("\n")
+            for block in self._hud_blocks()
+        ]
+        return ANSI("\n".join(value for value in rendered if value))
+
+    def _hud_height(self) -> int:
+        value = self._hud_text().value
+        return min(24, len(value.splitlines())) if value else 0
+
+    async def handle_presentation(self, event: Event) -> None:
+        if isinstance(event, TurnStart):
+            self._turn_active = True
+            self._refresh_title()
+            spinner = theme_spinner(self.theme, "spinner.status", self._spinner_frame, ("✻",))
+            self.title.set_turn(True, spinner=spinner)
+            self.scheduler.start_spinner()
+        elif isinstance(event, TurnEnd):
+            self._turn_active = False
+            self._live_subagents.clear()
+            self.ui.subagents = []
+            self.title.set_turn(False)
+            await self.notifier.notify("Orcha", "Turn complete")
+        elif isinstance(event, ToolCallStart) and event.name == "task":
+            label = str(
+                event.args.get("description")
+                or event.args.get("subagent_type")
+                or event.args.get("name")
+                or event.id
+            )
+            self._live_subagents[event.id] = {
+                "id": event.id,
+                "name": label,
+                "status": "running",
+            }
+            self.ui.subagents = list(self._live_subagents.values())
+            self.scheduler.start_spinner()
+        elif isinstance(event, ToolCallEnd) and event.name == "task":
+            self._live_subagents.pop(event.id, None)
+            self.ui.subagents = list(self._live_subagents.values())
+        elif isinstance(event, InterruptRaised):
+            if self._approval_notification_sent:
+                self._approval_notification_sent = False
+            else:
+                await self.notifier.notify("Orcha", "Approval required")
+        elif isinstance(event, SessionSwitch):
+            self._refresh_title()
+        self.application.invalidate()
 
     def _resolve_overlay(
         self,
@@ -443,14 +582,25 @@ class ApplicationRuntime:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
+        approval = isinstance(overlay, str) and overlay == "approval"
+        if approval:
+            self.title.set_approval(True)
+            await self.notifier.notify("Orcha", "Approval required")
+            self._approval_notification_sent = True
         resolved = self._resolve_overlay(overlay, args, kwargs)
         if resolved is None:
-            if self._fallback_show is not None:
-                return await self._fallback_show(overlay, *args, **kwargs)
-            raise RuntimeError(f"overlay {overlay!r} is unavailable")
+            try:
+                if self._fallback_show is not None:
+                    return await self._fallback_show(overlay, *args, **kwargs)
+                raise RuntimeError(f"overlay {overlay!r} is unavailable")
+            finally:
+                if approval:
+                    self.title.set_approval(False)
         async with self._overlay_lock:
             if self._shutting_down:
                 resolved.cancel()
+                if approval:
+                    self.title.set_approval(False)
                 return None
             self._active_overlay = resolved
             self._root.floats.append(resolved)
@@ -465,6 +615,8 @@ class ApplicationRuntime:
                 if resolved in self._root.floats:
                     self._root.floats.remove(resolved)
                 self._active_overlay = None
+                if approval:
+                    self.title.set_approval(False)
                 self.application.layout.focus(self.buffer)
                 self.application.invalidate()
 
@@ -794,6 +946,8 @@ class ApplicationRuntime:
                 if self._shutting_down:
                     break
                 current = self.queue.pop()
+                if current is not None:
+                    self.application.invalidate()
 
     def _notify(self, text: str) -> None:
         transcript = getattr(self, "transcript", None)
@@ -811,6 +965,8 @@ class ApplicationRuntime:
         prompt_style = _completion_style(selected)
         if prompt_style is not None:
             self.application.style = prompt_style
+        self._spinner_tick(self._spinner_frame)
+        self._refresh_title()
         self.application.invalidate()
         return selected
 
@@ -895,7 +1051,7 @@ class ApplicationRuntime:
         width = max(1, size.columns)
         budget = Frame.row_budget(
             terminal_rows=size.rows,
-            composer_rows=self.composer.height_for_width(width),
+            composer_rows=self.composer.height_for_width(width) + self._hud_height(),
             status_rows=1,
         )
         rendered: list[str] = []
@@ -1158,6 +1314,13 @@ async def run_app(cfg: Config) -> int:
         if hasattr(runtime, "transcript"):
             ctx.transcript = runtime.transcript
             ctx.ui = runtime.ui
+            if hasattr(runtime, "handle_presentation"):
+                bus.on(
+                    Event,
+                    runtime.handle_presentation,
+                    plugin="<tui-presentation>",
+                    priority=9_000,
+                )
             bus.on(
                 Event,
                 runtime.transcript.handle,

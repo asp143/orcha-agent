@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.metadata
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,292 +7,107 @@ from typing import Any
 import pytest
 
 from orcha_agent.builtin import banner
-from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.events import AppStart, EventBus
-from orcha_agent.core.plugin import PluginAPI, ProviderCaps
+from orcha_agent.core.plugin import PluginAPI
 from orcha_agent.core.registry import Registry
+from orcha_agent.tui.frame import Frame
+from orcha_agent.tui.transcript import Transcript
 
 
-WIDE_ART = [
-    "  ██████╗ ██████╗  ██████╗██╗  ██╗ █████╗",
-    " ██╔═══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗",
-    " ██║   ██║██████╔╝██║     ███████║███████║",
-    " ██║   ██║██╔══██╗██║     ██╔══██║██╔══██║",
-    " ╚██████╔╝██║  ██║╚██████╗██║  ██║██║  ██║",
-    "  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝",
-]
-BOX_AND_BLOCK_CHARS = set("█╔╗╚╝║═┌┐└┘│─")
+class RecordingTranscript(Transcript):
+    def __init__(self) -> None:
+        super().__init__(Frame())
+        self.commits: list[list[str]] = []
 
 
-class FakeConsoleOutput:
-    """Minimal ConsoleOutput double with deterministic terminal capabilities."""
-
-    def __init__(self, *, width: int, encoding: str) -> None:
-        self.console = SimpleNamespace(
-            width=width,
-            encoding=encoding,
-            no_color=False,
-        )
-        self._chunks: list[str] = []
-
-    def print(
-        self,
-        *objects: Any,
-        sep: str = " ",
-        end: str = "\n",
-        **_: Any,
-    ) -> None:
-        self._chunks.append(sep.join(str(item) for item in objects) + end)
-
-    @property
-    def text(self) -> str:
-        return "".join(self._chunks)
+def _context(tmp_path: Path, *, enabled: bool = True, symbols: str = "unicode") -> Any:
+    transcript = RecordingTranscript()
+    return SimpleNamespace(
+        cfg=SimpleNamespace(
+            model="anthropic:claude-opus-5",
+            mode="ask",
+            cwd=tmp_path,
+            banner=enabled,
+            symbols=symbols,
+            trust_cwd=True,
+        ),
+        console=SimpleNamespace(console=SimpleNamespace(encoding="utf-8")),
+        transcript=transcript,
+        session=SimpleNamespace(list=lambda: []),
+        session_id="current",
+        plugins=[],
+        registry=SimpleNamespace(providers={"anthropic": object()}),
+    )
 
 
-@pytest.fixture(autouse=True)
-def _clean_banner_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ORCHA_NO_BANNER", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-
-
-async def _dispatch_start(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    model: str | None = "anthropic:claude-opus-5",
-    mode: str = "ask",
-    banner_enabled: bool = True,
-    width: int = 120,
-    encoding: str = "utf-8",
-    configure_registry: Callable[[PluginAPI], None] | None = None,
-) -> tuple[FakeConsoleOutput, list[str]]:
-    home = Path("/home/tester")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    version_requests: list[str] = []
-
-    def fake_version(distribution: str) -> str:
-        version_requests.append(distribution)
-        return "3.4.5"
-
-    monkeypatch.setattr(importlib.metadata, "version", fake_version)
+async def _start(ctx: Any) -> None:
     bus = EventBus()
-    registry = Registry()
     api = PluginAPI(
         name="banner",
         config={},
         state={},
-        registry=registry,
+        registry=Registry(),
         bus=bus,
         request_rebuild=lambda: None,
     )
-    if configure_registry is not None:
-        configure_registry(api)
     banner.register(api)
-    output = FakeConsoleOutput(width=width, encoding=encoding)
-    ctx = SimpleNamespace(
-        cfg=SimpleNamespace(
-            model=model,
-            mode=mode,
-            cwd=home / "src/orcha",
-            banner=banner_enabled,
-        ),
-        console=output,
-        registry=registry,
-    )
-
     await bus.emit(AppStart(ctx=ctx))
 
-    return output, version_requests
+
+@pytest.fixture(autouse=True)
+def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ORCHA_NO_BANNER", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
 
 
 @pytest.mark.asyncio
-async def test_wide_startup_banner_matches_the_v3_spec_exactly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output, version_requests = await _dispatch_start(monkeypatch)
+async def test_welcome_is_the_first_immediately_committed_block(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
 
-    assert output.text.splitlines() == [
-        *WIDE_ART,
-        "        pluggable coding agent · v3.4.5",
-        "  model: anthropic:claude-opus-5   mode: ask   cwd: ~/src/orcha",
-        "  /help for commands",
-    ]
-    assert version_requests == ["orcha-agent"]
+    await _start(ctx)
+
+    assert [block.kind for block in ctx.transcript.frame.blocks] == ["welcome"]
+    assert ctx.transcript.frame.blocks[0].state.value == "committed"
+    assert len(ctx.transcript.frame.blocks[0].data["sessions"]) == 4
+    assert len(ctx.transcript.frame.blocks[0].data["hints"]) == 4
 
 
 @pytest.mark.asyncio
-async def test_wide_banner_explains_how_to_select_a_missing_model(
+@pytest.mark.parametrize("source", ["ui", "legacy", "environment"])
+async def test_welcome_disable_and_backcompat(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    source: str,
 ) -> None:
-    output, _ = await _dispatch_start(monkeypatch, model=None, mode="plan")
+    ctx = _context(tmp_path, enabled=source == "environment")
+    if source == "environment":
+        monkeypatch.setenv("ORCHA_NO_BANNER", "1")
 
-    assert (
-        "  model: (none) — /model or /login codex   mode: plan   cwd: ~/src/orcha"
-        in output.text.splitlines()
-    )
+    await _start(ctx)
+
+    assert ctx.transcript.frame.blocks == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("api_key", "warning_expected"),
-    [(None, True), ("fake-anthropic-key", False)],
-    ids=["missing-key", "configured-key"],
-)
-async def test_banner_reports_selected_provider_configuration_without_building_model(
-    monkeypatch: pytest.MonkeyPatch,
-    api_key: str | None,
-    warning_expected: bool,
-) -> None:
-    if api_key is not None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", api_key)
-    factory_calls: list[tuple[str, object]] = []
-    availability_checks: list[str] = []
+async def test_banner_never_writes_directly_when_application_transcript_exists(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    ctx.console.print = lambda *_args, **_kwargs: pytest.fail("direct terminal write")
 
-    def configure_registry(api: PluginAPI) -> None:
-        def factory(model_name: str, provider_config: object) -> object:
-            factory_calls.append((model_name, provider_config))
-            raise AssertionError("the banner must not construct the configured model")
+    await _start(ctx)
 
-        def available() -> None:
-            availability_checks.append("anthropic")
-
-        api.add_provider(
-            "anthropic",
-            factory,
-            capabilities=ProviderCaps(
-                tool_calling=True,
-                streaming=True,
-                thinking=True,
-                structured_output=True,
-                max_context=200_000,
-            ),
-            env_keys=("ANTHROPIC_API_KEY",),
-            models=("claude-opus-5",),
-            available=available,
-        )
-
-    output, _ = await _dispatch_start(
-        monkeypatch,
-        configure_registry=configure_registry,
-    )
-
-    warning = (
-        "(not configured — set ANTHROPIC_API_KEY, /login codex, or /model)"
-    )
-    if warning_expected:
-        assert warning in output.text
-    else:
-        assert "not configured" not in output.text
-    assert "anthropic:claude-opus-5" in output.text
-    assert availability_checks == ["anthropic"]
-    assert factory_calls == []
+    assert ctx.transcript.frame.blocks[0].kind == "welcome"
 
 
 @pytest.mark.asyncio
-async def test_banner_suggests_logged_in_codex_default_for_unusable_model(
+async def test_no_color_produces_ascii_safe_welcome_data(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def configure_registry(api: PluginAPI) -> None:
-        async def unexpected_login(_ctx: object, _mode: str) -> None:
-            raise AssertionError("rendering the banner must not start login")
+    monkeypatch.setenv("NO_COLOR", "1")
+    ctx = _context(tmp_path)
 
-        async def unexpected_logout(_ctx: object) -> None:
-            raise AssertionError("rendering the banner must not log out")
+    await _start(ctx)
 
-        caps = ProviderCaps(
-            tool_calling=True,
-            streaming=True,
-            thinking=True,
-            structured_output=False,
-            max_context=None,
-        )
-        api.add_auth(
-            "codex",
-            AuthFlow(
-                login=unexpected_login,
-                logout=unexpected_logout,
-                status=lambda: "logged in as codex@example.test / acct_fake_banner",
-            ),
-        )
-        api.add_provider(
-            "anthropic",
-            lambda model_name, provider_config: (model_name, provider_config),
-            capabilities=caps,
-            models=("claude-opus-5",),
-            env_keys=("ANTHROPIC_API_KEY",),
-        )
-        api.add_provider(
-            "codex",
-            lambda model_name, provider_config: (model_name, provider_config),
-            capabilities=caps,
-            models=("gpt-5.6-sol",),
-            default_model="gpt-5.6-sol",
-        )
-
-    output, _ = await _dispatch_start(
-        monkeypatch,
-        configure_registry=configure_registry,
-    )
-
-    assert "/model codex:gpt-5.6-sol" in output.text
-    assert "/login codex" not in output.text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("banner_enabled", "no_banner_env"),
-    [(False, None), (True, "1")],
-    ids=["core-config-false", "environment"],
-)
-async def test_banner_can_be_suppressed(
-    monkeypatch: pytest.MonkeyPatch,
-    banner_enabled: bool,
-    no_banner_env: str | None,
-) -> None:
-    if no_banner_env is not None:
-        monkeypatch.setenv("ORCHA_NO_BANNER", no_banner_env)
-
-    output, _ = await _dispatch_start(
-        monkeypatch,
-        banner_enabled=banner_enabled,
-    )
-
-    assert output.text == ""
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("width", "encoding", "no_color"),
-    [
-        (49, "utf-8", False),
-        (120, "ascii", False),
-        (120, "utf-8", True),
-    ],
-    ids=["narrow", "non-utf", "no-color"],
-)
-async def test_incompatible_terminals_get_a_plain_banner(
-    monkeypatch: pytest.MonkeyPatch,
-    width: int,
-    encoding: str,
-    no_color: bool,
-) -> None:
-    if no_color:
-        monkeypatch.setenv("NO_COLOR", "1")
-
-    output, _ = await _dispatch_start(
-        monkeypatch,
-        width=width,
-        encoding=encoding,
-    )
-    text = output.text
-
-    assert not BOX_AND_BLOCK_CHARS.intersection(text)
-    assert "pluggable coding agent" in text
-    assert "v3.4.5" in text
-    assert "anthropic:claude-opus-5" in text
-    assert "ask" in text
-    assert "~/src/orcha" in text
-    assert "/help for commands" in text
-    if encoding == "ascii":
-        assert text.isascii()
+    block = ctx.transcript.frame.blocks[0]
+    assert block.data["ascii"] is True
+    assert "".join(block.data["logo"]).isascii()

@@ -312,6 +312,32 @@ def test_core_config_can_disable_banner(tmp_path: Path) -> None:
     assert cfg.banner is False
 
 
+def test_ui_banner_overrides_legacy_core_and_notify_defaults_off(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text("[core]\nbanner = false\n\n[ui]\nbanner = true\n")
+
+    cfg = _load(tmp_path, user_config_path=user_config)
+
+    assert cfg.banner is True
+    assert cfg.notify is False
+
+
+def test_ui_can_enable_notifications(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text("[ui]\nnotify = true\n")
+
+    assert _load(tmp_path, user_config_path=user_config).notify is True
+
+
+@pytest.mark.parametrize("name", ["banner", "notify"])
+def test_stage7_ui_flags_require_toml_booleans(tmp_path: Path, name: str) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text(f'[ui]\n{name} = "yes"\n')
+
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=user_config)
+
+
 def test_ui_flags_and_per_model_pricing_survive_toml_loading(tmp_path: Path) -> None:
     user_config = tmp_path / "user.toml"
     user_config.write_text(

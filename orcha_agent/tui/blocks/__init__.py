@@ -125,10 +125,11 @@ class BlockRendererDispatcher:
 from .assistant import render as render_assistant
 from .banner import render as render_banner
 from .diff import render as render_diff
-from .hud import render_subagents, render_todo
+from .hud import render_queue, render_subagents, render_todo
 from .marker import render as render_marker
 from .thinking import render as render_thinking
 from .tool import render as render_tool
+from .welcome import render as render_welcome
 from .user import render as render_user
 
 DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
@@ -141,6 +142,8 @@ DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
     "marker": render_marker,
     "todo": render_todo,
     "subagents": render_subagents,
+    "queue": render_queue,
+    "welcome": render_welcome,
 }
 
 __all__ = [

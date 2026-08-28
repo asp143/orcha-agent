@@ -34,8 +34,8 @@ def render_todo(
     rendered = Text("Todo", style=f"bold {theme_value(theme, 'accent')}")
     for item in items[: max(0, rows - 1)]:
         if isinstance(item, Mapping):
-            label = str(item.get("text", item.get("title", "")))
-            done = bool(item.get("done") or item.get("status") == "done")
+            label = str(item.get("content", item.get("text", item.get("title", ""))))
+            done = bool(item.get("done") or item.get("status") in {"done", "completed"})
         else:
             label, done = str(item), False
         glyph = theme_symbol(
@@ -73,4 +73,24 @@ def render_subagents(
     return rendered
 
 
-__all__ = ["render_subagents", "render_todo"]
+def render_queue(
+    block: Block,
+    theme: Any,
+    width: int,
+    budget_rows: int,
+    expanded: bool,
+) -> Text | None:
+    del width, expanded
+    prompts = _items(block, "prompts")
+    if not prompts or budget_rows <= 0:
+        return None
+    rows = min(_MAX_ROWS, budget_rows)
+    rendered = Text("Queue", style=f"bold {theme_value(theme, 'accent')}")
+    glyph = theme_symbol(theme, "status.pending", "○")
+    for prompt in prompts[: max(0, rows - 1)]:
+        text = " ".join(str(prompt).split())
+        rendered.append(f"\n{glyph} {text}")
+    return rendered
+
+
+__all__ = ["render_queue", "render_subagents", "render_todo"]

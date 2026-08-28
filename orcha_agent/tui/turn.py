@@ -64,6 +64,23 @@ def _messages(value: Any) -> list[BaseMessage]:
     return found
 
 
+def _todos(value: Any) -> list[Any] | None:
+    if isinstance(value, Mapping):
+        direct = value.get("todos")
+        if isinstance(direct, list):
+            return direct
+        for item in value.values():
+            found = _todos(item)
+            if found is not None:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found = _todos(item)
+            if found is not None:
+                return found
+    return None
+
+
 def _model_name(message: BaseMessage, metadata: Any) -> str | None:
     sources = (
         metadata,
@@ -311,6 +328,10 @@ async def _updates_event(
 ) -> Resolved | None:
     if not isinstance(data, dict):
         return None
+    todos = _todos(data)
+    ui = getattr(ctx, "ui", None)
+    if todos is not None and ui is not None and hasattr(ui, "set_todos"):
+        ui.set_todos(todos)
     interrupts = data.get("__interrupt__", ())
     if interrupts:
         interrupt = interrupts[0]

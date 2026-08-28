@@ -1,0 +1,8 @@
+[NEW] Press Escape twice to open the file tree.
+[NEW] Queue another prompt while a turn is running.
+Use /help to review commands and effective key bindings.
+Use /theme to switch themes without restarting.
+Press Alt+Enter to insert a newline in the composer.
+Use /session to resume, branch, or create a session.
+Press Ctrl+O to expand or collapse tool details.
+Use /thinking to choose how reasoning is displayed.
