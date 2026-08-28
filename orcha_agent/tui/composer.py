@@ -129,7 +129,10 @@ class Composer:
         return max(1, app.output.get_size().columns)
 
     def _content_width(self, width: int) -> int:
-        return max(1, width - (2 if self.shape in {"box", "claude"} else 0))
+        return max(
+            1,
+            width - (2 if self.shape in {"box", "claude"} else 0) - 1,
+        )
 
     def text_rows(self, width: int) -> int:
         width = max(1, width)

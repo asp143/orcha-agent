@@ -514,3 +514,69 @@ async def test_ctrl_d_preserves_draft_and_queue_without_dispatching_queue(
     assert submitted == ["active"]
     assert ctx.plugin_states["composer"]["draft"] == "draft"
     assert ctx.plugin_states["composer"]["queue"] == ["queued one", "queued two"]
+
+
+@pytest.mark.asyncio
+async def test_headless_exact_height_counts_scrollbar_wrap_column() -> None:
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            composer_shape="borderless",
+            input=pipe,
+            output=DummyOutput(),
+        )
+        task = asyncio.create_task(runtime.run())
+        await asyncio.sleep(0)
+        runtime.buffer.text = "x" * 80
+        runtime.application.invalidate()
+        await asyncio.sleep(0)
+
+        assert runtime.composer.height_for_width(80) == 2
+        dimension = to_dimension(runtime.composer.container.height)
+        assert (dimension.min, dimension.preferred, dimension.max) == (2, 2, 2)
+
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+
+def test_reconstructed_runtime_restores_and_clears_persisted_queue(
+    tmp_path: Path,
+) -> None:
+    first_ctx = _ctx(tmp_path)
+    with create_pipe_input() as first_pipe:
+        first = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            ctx=first_ctx,
+            input=first_pipe,
+            output=DummyOutput(),
+        )
+        first.queue.extend(["queued one", "queued two"])
+        first.buffer.text = "saved draft"
+        event = SimpleNamespace(
+            current_buffer=first.buffer,
+            app=SimpleNamespace(exit=lambda: None),
+        )
+        first._exit(event)
+
+    persisted = {
+        name: dict(state)
+        for name, state in first_ctx.plugin_states.items()
+    }
+    persisted_calls: list[None] = []
+    resumed_ctx = _ctx(tmp_path)
+    resumed_ctx.plugin_states = persisted
+    resumed_ctx.persist_plugin_states = lambda: persisted_calls.append(None)
+
+    with create_pipe_input() as second_pipe:
+        resumed = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            ctx=resumed_ctx,
+            input=second_pipe,
+            output=DummyOutput(),
+        )
+
+    assert resumed.buffer.text == "saved draft"
+    assert resumed.queue.items == ("queued one", "queued two")
+    assert "draft" not in resumed_ctx.plugin_states["composer"]
+    assert "queue" not in resumed_ctx.plugin_states["composer"]
+    assert persisted_calls == [None]

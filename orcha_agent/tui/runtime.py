@@ -389,11 +389,23 @@ class ApplicationRuntime:
     def _restore_draft(self) -> None:
         state = self._composer_state()
         draft = state.get("draft")
-        if not isinstance(draft, str) or not draft:
+        saved_queue = state.get("queue")
+        has_draft = isinstance(draft, str) and bool(draft)
+        has_queue = (
+            isinstance(saved_queue, list)
+            and bool(saved_queue)
+            and all(isinstance(prompt, str) for prompt in saved_queue)
+        )
+        if not has_draft and not has_queue:
             return
-        self.buffer.text = draft
-        self.buffer.cursor_position = len(draft)
-        state.pop("draft", None)
+        if has_draft:
+            self.buffer.text = draft
+            self.buffer.cursor_position = len(draft)
+            state.pop("draft", None)
+        if has_queue:
+            self.queue.extend(saved_queue)
+            state.pop("queue", None)
+        self._persist_state()
 
     def _persist_state(self) -> None:
         persist = getattr(self.ctx, "persist_plugin_states", None)
