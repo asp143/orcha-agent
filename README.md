@@ -195,7 +195,6 @@ overrides:
     "statusLineBg": "$terminal"
   },
   "symbols": {
-    "preset": "unicode",
     "overrides": {
       "icon.model": "M",
       "status.success": "ok"
@@ -207,9 +206,9 @@ overrides:
 Colors accept `#rrggbb`, palette indexes `0` through `255`, `$variable`
 references, or `""` for the terminal default. Missing color tokens produce a
 warning and inherit from `dark`; unknown tokens or invalid files are skipped
-with a warning. `[ui].symbols` takes precedence over a theme's symbol preset,
-while theme overrides still apply. Non-UTF output automatically falls back
-from `nerd` or `unicode` to `ascii`.
+with a warning. Select the `nerd`, `unicode`, or `ascii` preset with
+`[ui] symbols`; theme `symbols.overrides` still apply. Non-UTF output
+automatically falls back from `nerd` or `unicode` to `ascii`.
 
 `/theme` opens a live-preview picker; `Esc` restores the prior theme and
 `Enter` saves the selection with the session. `/theme <name>` switches
@@ -269,11 +268,12 @@ remains one prompt. `Esc Up` pulls the newest queued prompt back into the
 composer, and the queue runs sequentially after the active turn.
 
 `Esc` first closes completion. During streaming it cancels the turn and
-restores the queued prompts as editable `->` lines; when idle with an empty
-composer, a double `Esc` opens the conversation tree. `Ctrl+C` clears a
-draft, otherwise cancels a streaming turn, otherwise exits on a second press
-within one second. `Ctrl+D` exits immediately, saving the current draft and
-queue so the session can restore them.
+restores the queued prompts as editable `->` lines. With the default tree
+binding, double `Esc` or `Shift+Esc` opens the conversation tree from an idle,
+empty composer. `Ctrl+C` clears a draft, otherwise cancels a streaming turn,
+otherwise exits on a second press within one second. `Ctrl+D` exits
+immediately and saves the current draft and queue; they are restored when
+orcha starts with `--resume <session-id>`, not by in-app `/resume`.
 
 ### Overlays and session chrome
 
@@ -284,12 +284,12 @@ to select, and `Esc` to cancel.
 | --- | --- | --- |
 | Model | `/model` or `escape p` | Shows registered models and provider availability, then switches to the selection. |
 | Session | `/sessions` or `/resume` | Shows saved-session age, directory, and entry count, then resumes the selection. |
-| Tree | `/tree` or double `Esc` | Shows the ledger hierarchy and branches at the selected entry. |
+| Tree | `/tree`, double `Esc`, or `Shift+Esc` | Shows the ledger hierarchy and branches at the selected entry. |
 | Theme | `/theme` | Live-previews themes and persists the accepted selection; cancellation rolls back. |
 | Approval | A tool approval interrupt | Previews shell commands, edits, or arguments and returns `approve`, `reject`, or `always` (`Y`, `N`, or `A`). |
 | Ask | A plugin calls `await ctx.ui.ask(questions)` | Returns `{"kind":"submit","results":[...]}` with each answer's `id`, `selectedOptions`, and optional `customInput`. |
 | History | `Ctrl+R` | Full-text searches prompt history and returns a selection to the composer. |
-| Help | `/help` | Shows the effective command and keybinding reference; `Enter` or `Esc` closes it. |
+| Help | `/help` or `?` in an empty composer | Shows the effective command and keybinding reference; `Enter` or `Esc` closes it. |
 
 The responsive welcome block shows the active model, mode, working directory,
 recent sessions, trust/provider/plugin hints, and a rotating tip. During a
@@ -306,10 +306,9 @@ interrupt the session.
 
 Model reasoning streams before the answer. `thinking="summary"` shows the
 main agent only, `off` hides it, and `all` includes subagents. `/thinking
-off|on` or `Ctrl+T` changes display for the current session; `Shift+Tab`
-cycles supported model effort through `off`, `low`, `medium`, `high`, and
-`max`. These settings and the current draft are restored when a session is
-resumed.
+off|on` changes display for the current session. Its saved display state is
+restored when orcha starts with `--resume <session-id>`, not by in-app
+`/resume`.
 
 ## Plugins
 
