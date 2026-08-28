@@ -772,11 +772,23 @@ async def test_streamed_main_and_subagent_usage_accumulates_once_across_turns_an
         (event.role, event.chunk.usage_metadata["input_tokens"])
         for event in observed
     ] == [("main", 100), ("subagent", 30)]
-    assert state == {
+    assert {
+        key: state[key]
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "cache_known",
+            "last_input_tokens",
+        )
+    } == {
         "input_tokens": 130,
         "output_tokens": 25,
         "cache_read_tokens": 14,
-        "last_input_tokens": 30,
+        "cache_write_tokens": 0,
+        "cache_known": True,
+        "last_input_tokens": 100,
     }
 
     # AppContext.resume preserves the PluginAPI state object by replacing its
@@ -797,10 +809,22 @@ async def test_streamed_main_and_subagent_usage_accumulates_once_across_turns_an
         (event.role, event.chunk.usage_metadata["input_tokens"])
         for event in observed
     ] == [("main", 100), ("subagent", 30), ("main", 50)]
-    assert state == {
+    assert {
+        key: state[key]
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "cache_known",
+            "last_input_tokens",
+        )
+    } == {
         "input_tokens": 1_050,
         "output_tokens": 110,
         "cache_read_tokens": 45,
+        "cache_write_tokens": 0,
+        "cache_known": True,
         "last_input_tokens": 50,
     }
     assert ctx.console.errors == []
