@@ -8,8 +8,9 @@ from typing import Any
 import httpx
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.types import Command
+from pydantic import PrivateAttr
 
 from orcha_agent.builtin import approval_prompt, filesystem, modes, provider_codex, statusbar
 from orcha_agent.core.agent import build_agent
@@ -32,6 +33,26 @@ from orcha_agent.tui.app import AppContext, _run_turn
 
 class ToolCallingFakeModel(GenericFakeChatModel):
     disable_streaming: bool = True
+    _received_messages: list[list[Any]] = PrivateAttr(default_factory=list)
+
+    @property
+    def received_messages(self) -> list[list[Any]]:
+        return self._received_messages
+
+    def _generate(
+        self,
+        messages: list[Any],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        self._received_messages.append(list(messages))
+        return super()._generate(
+            messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
 
     def bind_tools(
         self,
@@ -64,12 +85,19 @@ class _UsageContext:
         self._bus = bus
         self.console = _RecordingConsole()
         self.thread_id = "usage-thread"
+        self.session_id = "usage-session"
         self.thread_config = {"configurable": {"thread_id": self.thread_id}}
         self.rebuild_requested = False
         self.session = SimpleNamespace(get=lambda _thread_id: None)
 
     async def ensure_agent(self) -> bool:
         return True
+
+    def capture_turn(self) -> None:
+        pass
+
+    def record_exit(self, _kind: str) -> None:
+        pass
 
     async def rebuild(self) -> None:
         raise AssertionError("usage streaming must not request a rebuild")
@@ -178,7 +206,7 @@ def _runtime(
     *,
     mode: str,
     writes: tuple[tuple[str, str], ...],
-) -> tuple[Registry, EventBus, Config]:
+) -> tuple[Registry, EventBus, Config, ToolCallingFakeModel]:
     registry = Registry()
     bus = EventBus()
     model = ToolCallingFakeModel(messages=_script(*writes))
@@ -196,7 +224,7 @@ def _runtime(
             max_context=None,
         ),
     )
-    return registry, bus, _config(tmp_path, mode)
+    return registry, bus, _config(tmp_path, mode), model
 
 
 async def _build_harness(
@@ -206,7 +234,7 @@ async def _build_harness(
     thread_id: str,
     content: str,
 ) -> tuple[Any, SessionStore, EventBus, dict[str, dict[str, str]]]:
-    registry, bus, cfg = _runtime(
+    registry, bus, cfg, _model = _runtime(
         tmp_path,
         mode=mode,
         writes=(("/approved.txt", content),),
@@ -215,7 +243,7 @@ async def _build_harness(
     created = session.create(cwd=tmp_path, model=cfg.model, thread_id=thread_id)
     assert created.thread_id == thread_id
     graph = await build_agent(registry, cfg, session, bus)
-    thread_config = {"configurable": {"thread_id": thread_id}}
+    thread_config = {"configurable": {"thread_id": created.current_thread}}
     return graph, session, bus, thread_config
 
 
@@ -226,9 +254,9 @@ async def _build_context(
     writes: tuple[tuple[str, str], ...],
     approval_state: dict[str, Any] | None = None,
 ) -> tuple[AppContext, SessionStore]:
-    registry, bus, cfg = _runtime(tmp_path, mode="ask", writes=writes)
+    registry, bus, cfg, _model = _runtime(tmp_path, mode="ask", writes=writes)
     session = SessionStore(cfg.db_path)
-    session.create(cwd=tmp_path, model=cfg.model, thread_id=thread_id)
+    created = session.create(cwd=tmp_path, model=cfg.model, thread_id=thread_id)
     plugin_states: dict[str, dict[str, Any]] = {}
     holder: dict[str, AppContext] = {}
 
@@ -253,7 +281,8 @@ async def _build_context(
         plugins=[],
         plugin_states=plugin_states,
         console=_RecordingConsole(),
-        thread_id=thread_id,
+        session_id=created.thread_id,
+        thread_id=created.current_thread,
     )
     holder["ctx"] = ctx
     await ctx.rebuild()
@@ -349,6 +378,69 @@ async def test_async_graph_invocation_succeeds_with_session_store_saver(
         assert "__interrupt__" not in result
         assert result["messages"][-1].content == "The file was written."
         assert (tmp_path / "approved.txt").read_text() == "written asynchronously\n"
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_real_branch_reseed_preserves_seeded_messages_and_todos_for_turn(
+    tmp_path: Path,
+) -> None:
+    registry, bus, cfg, model = _runtime(
+        tmp_path,
+        mode="yolo",
+        writes=(("/after-branch.txt", "continued after branch\n"),),
+    )
+    session = SessionStore(cfg.db_path)
+    created = session.create(
+        cwd=tmp_path,
+        model=cfg.model,
+        thread_id="branch-reseed",
+    )
+    graph = await build_agent(registry, cfg, session, bus)
+    ctx = AppContext(
+        cfg=cfg,
+        registry=registry,
+        bus=bus,
+        session=session,
+        plugins=[],
+        plugin_states={},
+        console=_RecordingConsole(),
+        session_id=created.thread_id,
+        thread_id=created.current_thread,
+        agent=graph,
+    )
+    seeded_messages = [
+        HumanMessage(content="Seeded question.", id="seeded-user"),
+        AIMessage(content="Seeded answer.", id="seeded-assistant"),
+    ]
+    todos = [{"content": "Preserve this todo", "status": "in_progress"}]
+
+    try:
+        await graph.aupdate_state(
+            ctx.thread_config,
+            {"messages": seeded_messages, "todos": todos},
+            as_node="model",
+        )
+        ctx.capture_turn()
+        branch_point = ctx.ledger.path(ctx.session_id)[-1]
+
+        await ctx.branch(branch_point.id)
+        await _run_turn(ctx, "Continue from the seeded history.")
+
+        seeded_received = [
+            (type(message), message.id, message.content)
+            for message in model.received_messages[0]
+            if message.id in {"seeded-user", "seeded-assistant"}
+        ]
+        assert seeded_received == [
+            (HumanMessage, "seeded-user", "Seeded question."),
+            (AIMessage, "seeded-assistant", "Seeded answer."),
+        ]
+        assert graph.get_state(ctx.thread_config).values["todos"] == todos
+        assert (tmp_path / "after-branch.txt").read_text() == (
+            "continued after branch\n"
+        )
     finally:
         session.close()
 

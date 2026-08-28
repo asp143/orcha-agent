@@ -17,6 +17,7 @@ from langchain_core.messages import (
     RemoveMessage,
     ToolMessage,
     message_to_dict,
+    messages_from_dict,
 )
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -236,6 +237,30 @@ async def test_requested_rebuild_runs_after_the_current_stream_finishes(
     await _run_turn(ctx, "continue")
 
     assert order == ["stream started", "stream finished", "rebuild"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_requires_capture_turn_on_its_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _context(tmp_path, agent=_StreamGraph([]))
+    monkeypatch.delattr(AppContext, "capture_turn")
+
+    with pytest.raises(AttributeError, match="capture_turn"):
+        await _run_turn(ctx, "continue")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_turn_requires_record_exit_on_its_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _context(tmp_path, agent=_cancelled_graph())
+    monkeypatch.delattr(AppContext, "record_exit")
+
+    with pytest.raises(AttributeError, match="record_exit"):
+        await _run_turn(ctx, "continue")
 
 
 def test_tool_call_chunks_are_buffered_until_arguments_form_complete_json() -> None:
@@ -535,7 +560,10 @@ class _HistoryGraph:
         self,
         config: dict[str, Any],
         values: dict[str, Any],
+        *,
+        as_node: str,
     ) -> None:
+        assert as_node == "model"
         snapshot = {
             "messages": list(values.get("messages", [])),
             "todos": list(values.get("todos", [])),
@@ -2498,6 +2526,23 @@ def test_app_context_keys_persistent_state_by_session_and_graph_state_by_thread(
         assert store.get_plugin_state("identity.0", "example") == {}
 
 
+def test_app_context_requires_explicit_session_id(tmp_path: Path) -> None:
+    with SessionStore(tmp_path / "required-session-id.sqlite") as store:
+        created = store.create(tmp_path, "old:model", thread_id="identity")
+
+        with pytest.raises(TypeError, match="session_id"):
+            AppContext(
+                cfg=_config(tmp_path),
+                registry=Registry(),
+                bus=_RecordingBus(),
+                session=store,
+                plugins=[],
+                plugin_states={},
+                console=_RecordingConsole(),
+                thread_id=created.current_thread,
+            )
+
+
 @pytest.mark.parametrize("outcome", ["success", "exception", "cancel"])
 @pytest.mark.asyncio
 async def test_turn_capture_runs_in_finally_and_snapshots_non_message_state(
@@ -2548,7 +2593,10 @@ async def test_capture_counter_advances_only_after_ledger_append_succeeds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    messages = [HumanMessage(content="retry me"), AIMessage(content="done")]
+    messages = [
+        HumanMessage(content="retry me", id="retry-user"),
+        AIMessage(content="done", id="retry-assistant"),
+    ]
     graph = _StreamGraph([], values={"messages": messages})
     with SessionStore(tmp_path / "capture-retry.sqlite") as store:
         ctx = _real_context(tmp_path, store, graph)
@@ -2561,9 +2609,12 @@ async def test_capture_counter_advances_only_after_ledger_append_succeeds(
             thread_id: str,
             entries: Any,
             *,
-            message_count: int,
+            captured_message_ids: tuple[str, ...],
+            captured: int,
         ) -> Any:
             nonlocal failed
+            assert captured_message_ids == ("retry-user", "retry-assistant")
+            assert captured == 2
             if not failed:
                 failed = True
                 raise RuntimeError("ledger unavailable")
@@ -2572,7 +2623,8 @@ async def test_capture_counter_advances_only_after_ledger_append_succeeds(
                 session_id,
                 thread_id,
                 entries,
-                message_count=message_count,
+                captured_message_ids=captured_message_ids,
+                captured=captured,
             )
 
         monkeypatch.setattr(Ledger, "capture", fail_once)
@@ -2596,6 +2648,81 @@ async def test_capture_counter_advances_only_after_ledger_append_succeeds(
                 and entry.custom_type == "turn_state"
             ]
         ) == 1
+
+
+def test_capture_recognizes_summarization_after_message_state_shrinks(
+    tmp_path: Path,
+) -> None:
+    graph = _HistoryGraph(
+        [
+            HumanMessage(content="before", id="before-user"),
+            AIMessage(content="before reply", id="before-assistant"),
+        ]
+    )
+    with SessionStore(tmp_path / "capture-summary-shrink.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+        ctx.capture_turn()
+        summary = HumanMessage(
+            content=(
+                "Here is a summary of the conversation to date:\n\n"
+                "Condensed history."
+            ),
+            id="summary-message",
+            additional_kwargs={"lc_source": "summarization"},
+        )
+        post_summary = [
+            HumanMessage(content="after summary", id="after-user"),
+            AIMessage(content="after summary reply", id="after-assistant"),
+        ]
+        graph.update_state(
+            ctx.thread_config,
+            {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    summary,
+                    *post_summary,
+                ]
+            },
+            as_node="summarization",
+        )
+
+        ctx.capture_turn()
+
+        path = Ledger(store).path(ctx.session_id)
+        compactions = [entry for entry in path if isinstance(entry, CompactionEntry)]
+        captured_messages = [
+            messages_from_dict([entry.message])[0]
+            for entry in path
+            if isinstance(entry, MessageEntry)
+        ]
+        assert len(compactions) == 1
+        assert compactions[0].summary == "Condensed history."
+        assert [message.id for message in captured_messages] == [
+            "before-user",
+            "before-assistant",
+            "after-user",
+            "after-assistant",
+        ]
+        thread = store.get_thread(ctx.thread_id)
+        assert thread.captured == 3
+        assert thread.captured_message_ids == (
+            "summary-message",
+            "after-user",
+            "after-assistant",
+        )
+        captured_entry_ids = [
+            entry.id
+            for entry in path
+            if isinstance(entry, (CompactionEntry, MessageEntry))
+        ]
+
+        ctx.capture_turn()
+
+        assert [
+            entry.id
+            for entry in Ledger(store).path(ctx.session_id)
+            if isinstance(entry, (CompactionEntry, MessageEntry))
+        ] == captured_entry_ids
 
 
 @pytest.mark.asyncio
@@ -2650,8 +2777,22 @@ async def test_fork_copies_current_path_seeds_it_and_switches_session(
     tmp_path: Path,
 ) -> None:
     graph = _HistoryGraph([])
+    approval = {"always_allowed": ["execute"]}
+    navigation = {"recent_paths": ["/one", "/two"]}
+    live_states = {"approval": approval, "navigation": navigation}
     with SessionStore(tmp_path / "fork.sqlite") as store:
-        ctx = _real_context(tmp_path, store, graph, session_id="source")
+        ctx = _real_context(
+            tmp_path,
+            store,
+            graph,
+            session_id="source",
+            plugin_states=live_states,
+        )
+        store.set_plugin_state(
+            ctx.session_id,
+            "dormant",
+            {"retained_without_live_plugin": True},
+        )
         source_ledger = Ledger(store)
         source_ledger.append(
             ctx.session_id,
@@ -2673,6 +2814,17 @@ async def test_fork_copies_current_path_seeds_it_and_switches_session(
         assert ctx.session_id != old_session
         forked = store.get(ctx.session_id)
         assert forked.parent_session == old_session
+        assert ctx.thread_id == f"{ctx.session_id}.0"
+        assert forked.current_thread == ctx.thread_id
+        assert store.all_plugin_state(ctx.session_id) == {
+            "approval": {"always_allowed": ["execute"]},
+            "navigation": {"recent_paths": ["/one", "/two"]},
+            "dormant": {"retained_without_live_plugin": True},
+        }
+        assert ctx.plugin_states is live_states
+        assert set(ctx.plugin_states) == {"approval", "navigation"}
+        assert ctx.plugin_states["approval"] is approval
+        assert ctx.plugin_states["navigation"] is navigation
         forked_path = Ledger(store).path(ctx.session_id)
         assert forked_path == source_path
         assert graph.seed_calls[-1] == (
@@ -2757,7 +2909,7 @@ async def test_resume_without_checkpoint_reseeds_ledger_context(
         await ctx.resume("target")
 
         assert ctx.session_id == "target"
-        assert ctx.thread_id != target.current_thread
+        assert ctx.thread_id == target.current_thread
         assert graph.seed_calls[-1] == (
             ctx.thread_config,
             {
@@ -2771,11 +2923,12 @@ async def test_resume_without_checkpoint_reseeds_ledger_context(
         ]
         thread_switch = _thread_switches(ctx)
         assert len(thread_switch) == 1
-        assert (thread_switch[0].session_id, thread_switch[0].old, thread_switch[0].reason) == (
-            "target",
-            old_thread,
-            "reseed",
-        )
+        assert (
+            thread_switch[0].session_id,
+            thread_switch[0].old,
+            thread_switch[0].new,
+            thread_switch[0].reason,
+        ) == ("target", old_thread, target.current_thread, "reseed")
 
 
 @pytest.mark.asyncio
@@ -3081,7 +3234,10 @@ class _FailingSeedGraph(_HistoryGraph):
         self,
         config: dict[str, Any],
         values: dict[str, Any],
+        *,
+        as_node: str,
     ) -> None:
+        assert as_node == "model"
         raise RuntimeError("seed failed")
 
 
@@ -3116,14 +3272,14 @@ async def test_branch_seed_failure_restores_prior_leaf_and_thread_identity(
 
 
 @pytest.mark.parametrize(
-    ("operation", "unreachable_type"),
+    ("operation", "entry_type"),
     [("clear", ResetBoundaryEntry), ("compact", CompactionEntry)],
 )
 @pytest.mark.asyncio
-async def test_reset_seed_failure_restores_leaf_and_leaves_new_entry_unreachable(
+async def test_reset_seed_failure_restores_position_and_deletes_new_entry(
     tmp_path: Path,
     operation: str,
-    unreachable_type: type[ResetBoundaryEntry] | type[CompactionEntry],
+    entry_type: type[ResetBoundaryEntry] | type[CompactionEntry],
 ) -> None:
     graph = _FailingSeedGraph([])
     with SessionStore(tmp_path / f"{operation}-seed-failure.sqlite") as store:
@@ -3151,14 +3307,53 @@ async def test_reset_seed_failure_restores_leaf_and_leaves_new_entry_unreachable
         assert ctx.thread_id == prior_thread
         assert ledger.leaf(ctx.session_id) == prior_leaf
         assert ledger.path(ctx.session_id)[-1].id == prior_leaf
-        unreachable = [
-            entry for entry in ledger.all(ctx.session_id) if isinstance(entry, unreachable_type)
-        ]
-        assert len(unreachable) == 1
-        assert unreachable[0].id not in {entry.id for entry in ledger.path(ctx.session_id)}
+        assert not any(
+            isinstance(entry, entry_type)
+            for entry in ledger.all(ctx.session_id)
+        )
         assert store.get(ctx.session_id).current_thread == prior_thread
         assert _thread_switches(ctx) == []
         assert _session_switches(ctx) == []
+
+
+@pytest.mark.asyncio
+async def test_model_switch_rollback_deletes_unreferenced_model_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _HistoryGraph([])
+    candidate = _HistoryGraph([])
+    with SessionStore(tmp_path / "model-change-rollback.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph, session_id="model-source")
+        ctx._registry.providers["old"] = SimpleNamespace(
+            foreign_block_types=frozenset({"reasoning"})
+        )
+        ledger = Ledger(store)
+        prior_leaf = ledger.append(
+            ctx.session_id,
+            MessageEntry(message=message_to_dict(AIMessage(content="prior"))),
+        ).id
+
+        async def build_candidate(*_args: Any, **_kwargs: Any) -> _HistoryGraph:
+            return candidate
+
+        def fail_history_cleanup(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("history cleanup failed")
+
+        monkeypatch.setattr(app_module, "build_agent", build_candidate)
+        monkeypatch.setattr(
+            AppContext, "_resolve_summarizer", lambda _self, _cfg: object()
+        )
+        monkeypatch.setattr(app_module, "strip_foreign_blocks", fail_history_cleanup)
+
+        with pytest.raises(RuntimeError, match="history cleanup failed"):
+            await ctx.switch_model("new:model")
+
+        assert ledger.leaf(ctx.session_id) == prior_leaf
+        assert not any(
+            isinstance(entry, ModelChangeEntry)
+            for entry in ledger.all(ctx.session_id)
+        )
 
 
 @pytest.mark.asyncio
@@ -3295,7 +3490,10 @@ async def test_capture_storage_error_names_session_and_thread_and_remains_retrya
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    messages = [HumanMessage(content="question"), AIMessage(content="answer")]
+    messages = [
+        HumanMessage(content="question", id="storage-user"),
+        AIMessage(content="answer", id="storage-assistant"),
+    ]
     graph = _StreamGraph([], values={"messages": messages})
     with SessionStore(tmp_path / "capture-context-error.sqlite") as store:
         ctx = _real_context(
@@ -3309,8 +3507,11 @@ async def test_capture_storage_error_names_session_and_thread_and_remains_retrya
             _thread_id: str,
             _entries: Any,
             *,
-            message_count: int,
+            captured_message_ids: tuple[str, ...],
+            captured: int,
         ) -> Any:
+            assert captured_message_ids == ("storage-user", "storage-assistant")
+            assert captured == 2
             raise RuntimeError("storage offline")
 
         monkeypatch.setattr(Ledger, "capture", fail_capture)
@@ -3450,10 +3651,11 @@ async def test_slash_resume_recovers_uncaptured_checkpoint_messages_before_warni
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    human = HumanMessage(content="run tool")
+    human = HumanMessage(content="run tool", id="slash-human")
     assistant = AIMessage(
         content="",
         tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+        id="slash-assistant",
     )
     checkpoint_graph = _HistoryGraph([human, assistant])
     with SessionStore(tmp_path / "slash-resume-recovery.sqlite") as store:
@@ -3463,7 +3665,8 @@ async def test_slash_resume_recovers_uncaptured_checkpoint_messages_before_warni
             target.thread_id,
             target.current_thread,
             [MessageEntry(message=message_to_dict(human))],
-            message_count=1,
+            captured_message_ids=(human.id,),
+            captured=1,
         )
         _put_checkpoint(
             store, target.current_thread, messages=[human, assistant]
@@ -3497,10 +3700,11 @@ async def test_startup_resume_recovers_checkpoint_before_warning_and_normal_exit
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _config(tmp_path)
-    human = HumanMessage(content="run tool")
+    human = HumanMessage(content="run tool", id="startup-human")
     assistant = AIMessage(
         content="",
         tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+        id="startup-assistant",
     )
     checkpoint_graph = _HistoryGraph([human, assistant])
     with SessionStore(cfg.db_path) as store:
@@ -3509,7 +3713,8 @@ async def test_startup_resume_recovers_checkpoint_before_warning_and_normal_exit
             target.thread_id,
             target.current_thread,
             [MessageEntry(message=message_to_dict(human))],
-            message_count=1,
+            captured_message_ids=(human.id,),
+            captured=1,
         )
         _put_checkpoint(
             store, target.current_thread, messages=[human, assistant]
@@ -3556,10 +3761,11 @@ async def test_signal_exit_with_live_checkpoint_forces_sanitized_reseed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    human = HumanMessage(content="run tool")
+    human = HumanMessage(content="run tool", id="signal-human")
     dangling = AIMessage(
         content="",
         tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+        id="signal-assistant",
     )
     candidate = _HistoryGraph([])
     with SessionStore(tmp_path / "signal-live-reseed.sqlite") as store:
@@ -3572,7 +3778,8 @@ async def test_signal_exit_with_live_checkpoint_forces_sanitized_reseed(
                 MessageEntry(message=message_to_dict(human)),
                 MessageEntry(message=message_to_dict(dangling)),
             ],
-            message_count=2,
+            captured_message_ids=(human.id, dangling.id),
+            captured=2,
         )
         Ledger(store).append(
             target.thread_id,
@@ -3606,10 +3813,11 @@ async def test_live_checkpoint_with_pending_approval_remains_reusable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    human = HumanMessage(content="run tool")
+    human = HumanMessage(content="run tool", id="approval-human")
     pending = AIMessage(
         content="",
         tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+        id="approval-assistant",
     )
     checkpoint_graph = _HistoryGraph([human, pending])
     with SessionStore(tmp_path / "approval-live-resume.sqlite") as store:
@@ -3622,7 +3830,8 @@ async def test_live_checkpoint_with_pending_approval_remains_reusable(
                 MessageEntry(message=message_to_dict(human)),
                 MessageEntry(message=message_to_dict(pending)),
             ],
-            message_count=2,
+            captured_message_ids=(human.id, pending.id),
+            captured=2,
         )
         checkpoint_config = _put_checkpoint(
             store, target.current_thread, messages=[human, pending]
@@ -3668,7 +3877,10 @@ class _InspectingFailingSeedGraph(_HistoryGraph):
         self,
         config: dict[str, Any],
         values: dict[str, Any],
+        *,
+        as_node: str,
     ) -> None:
+        assert as_node == "model"
         self.observed_current_threads.append(
             self.store.get(self.session_id).current_thread
         )
@@ -3728,12 +3940,15 @@ class _OrphanCheckpointInspectingGraph(_HistoryGraph):
         self,
         config: dict[str, Any],
         values: dict[str, Any],
+        *,
+        as_node: str,
     ) -> None:
+        assert as_node == "model"
         thread_id = config["configurable"]["thread_id"]
         self.checkpoint_exists_during_update.append(
             self.store.checkpoint_exists(thread_id)
         )
-        await super().aupdate_state(config, values)
+        await super().aupdate_state(config, values, as_node=as_node)
 
 
 @pytest.mark.asyncio
@@ -3770,7 +3985,6 @@ async def test_restart_reseed_deletes_orphan_checkpoint_before_state_update(
         graph = _OrphanCheckpointInspectingGraph(store)
         ctx.agent = graph
         ctx.thread_id = pending_thread
-        ctx._pending_reseed = True
 
         assert await ctx.ensure_agent() is True
 
@@ -3817,7 +4031,6 @@ async def test_lazy_pending_reseed_failure_keeps_persisted_thread_null(
             (session_id,),
         )
         ctx.thread_id = pending_thread
-        ctx._pending_reseed = True
         ctx.agent = _FailingSeedGraph([])
         if operation == "compact":
             class Summarizer:

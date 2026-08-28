@@ -64,6 +64,9 @@ from orcha_agent.core.session import SessionStore
 from .console import ConsoleOutput
 
 
+_SUMMARIZATION_PREFIX = "Here is a summary of the conversation to date:\n\n"
+
+
 def _history_path() -> Path:
     return Path.home() / ".local/share/orcha-agent/history"
 
@@ -156,6 +159,24 @@ def _session_resolution_error(prefix: str, exc: LookupError) -> str:
     return f"Unknown session: {prefix}"
 
 
+def _uncheckpointed_seed_target(
+    store: SessionStore,
+    session_id: str,
+    current_thread: str | None,
+) -> str:
+    for candidate in (current_thread, f"{session_id}.0"):
+        if candidate is None:
+            continue
+        thread = store.get_thread(candidate)
+        if (
+            thread is not None
+            and thread.session_id == session_id
+            and not store.checkpoint_exists(candidate)
+        ):
+            return candidate
+    return store.next_thread_id(session_id)
+
+
 def _bottom_toolbar(ctx: Any) -> Any:
     if not bool(getattr(ctx.cfg, "statusbar", True)):
         return ""
@@ -231,15 +252,14 @@ class AppContext:
     plugins: list[PluginRecord]
     plugin_states: dict[str, dict[str, Any]]
     console: ConsoleOutput
+    session_id: str = field(kw_only=True)
     thread_id: str
-    session_id: str = field(default="", kw_only=True)
     agent: Any = None
     summarizer: Any = None
     history_model: str | list[str] | None = None
     exit_requested: bool = False
     rebuild_requested: bool = False
     _title_written: bool = False
-    _pending_reseed: bool = field(default=False, init=False, repr=False)
     _pending_switch_old_thread: str | None = field(
         default=None, init=False, repr=False
     )
@@ -247,18 +267,6 @@ class AppContext:
     _bus: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not self.session_id:
-            session_info = self.session.get(self.thread_id)
-            if session_info is not None and session_info.current_thread is not None:
-                self.session_id = session_info.thread_id
-                self.thread_id = session_info.current_thread
-            else:
-                thread_info = self.session.get_thread(self.thread_id)
-                if thread_info is None:
-                    raise ValueError(
-                        "session_id is required when thread identity cannot be inferred"
-                    )
-                self.session_id = thread_info.session_id
         if isinstance(self.registry, Registry):
             self._registry = self.registry
             self.registry = RegistryView(self.registry)
@@ -324,8 +332,9 @@ class AppContext:
         )
 
     async def ensure_agent(self, *, seed_pending: bool = True) -> bool:
+        reseed_pending = self._reseed_pending()
         if self.agent is not None:
-            if self._pending_reseed and seed_pending:
+            if reseed_pending and seed_pending:
                 await self._seed_ready_thread("reseed")
             return True
         try:
@@ -337,7 +346,7 @@ class AppContext:
                 always_allowed=self._always_allowed(),
             )
             candidate_summarizer = self._resolve_summarizer(self.cfg)
-            if not self._pending_reseed:
+            if not reseed_pending:
                 self._clean_history_for_model(
                     candidate_agent,
                     self.history_model,
@@ -349,7 +358,7 @@ class AppContext:
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
         self.rebuild_requested = False
-        if self._pending_reseed and seed_pending:
+        if reseed_pending and seed_pending:
             await self._seed_ready_thread("reseed")
         self.history_model = None
         return True
@@ -370,62 +379,29 @@ class AppContext:
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
         self.rebuild_requested = False
-        if self._pending_reseed:
+        if self._reseed_pending():
             await self._seed_ready_thread("reseed")
 
-    def _activate_seeded_thread(
-        self,
-        thread_id: str,
-        *,
-        seeded_from: str | None,
-        captured: int,
-    ) -> None:
-        with self.session.saver.lock:
-            connection = self.session._connection
-            connection.execute("BEGIN")
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO threads(thread_id, session_id, seeded_from, captured)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (thread_id, self.session_id, seeded_from, captured),
-                )
-                cursor = connection.execute(
-                    """
-                    UPDATE sessions
-                    SET current_thread = ?
-                    WHERE thread_id = ?
-                    """,
-                    (thread_id, self.session_id),
-                )
-                if cursor.rowcount != 1:
-                    raise LookupError(f"Unknown session: {self.session_id}")
-                connection.commit()
-            except BaseException:
-                connection.rollback()
-                raise
+    def _persisted_current_thread(self) -> str | None:
+        session = self.session.get(self.session_id)
+        if session is None:
+            raise LookupError(f"Unknown session: {self.session_id}")
+        return session.current_thread
+
+    def _reseed_pending(self) -> bool:
+        return self._persisted_current_thread() != self.thread_id
 
     async def _seed_ready_thread(self, reason: str) -> None:
-        old_thread = self._pending_switch_old_thread or self.thread_id
-        pending_thread = (
-            self._pending_reseed
-            and self.thread_id.startswith(f"{self.session_id}.")
-            and self.session.get_thread(self.thread_id) is None
-        )
-        new_thread = (
-            self.thread_id
-            if pending_thread
-            else self.session.next_thread_id(self.session_id)
-        )
-        if pending_thread:
-            self.session.saver.delete_thread(new_thread)
+        if not self._reseed_pending():
+            return
+        new_thread = self.thread_id
+        old_thread = self._pending_switch_old_thread or new_thread
         context = build_context(
             self.ledger.path(self.session_id),
             strip=_reseed_foreign_block_types(self.registry, self.cfg),
         )
         config = {"configurable": {"thread_id": new_thread}}
-        activated = False
+        self.session.saver.delete_thread(new_thread)
         try:
             await self.agent.aupdate_state(
                 config,
@@ -434,19 +410,30 @@ class AppContext:
                     "todos": context.todos,
                     "files": context.files,
                 },
+                as_node="model",
             )
-            self._activate_seeded_thread(
+            seeded_state = self.agent.get_state(config)
+            seeded_values = getattr(seeded_state, "values", {})
+            seeded_messages = (
+                seeded_values.get("messages", context.messages)
+                if isinstance(seeded_values, Mapping)
+                else context.messages
+            )
+            captured_message_ids = tuple(
+                message.id
+                for message in seeded_messages
+                if isinstance(message.id, str)
+            )
+            self.session.activate_thread(
+                self.session_id,
                 new_thread,
                 seeded_from=self.ledger.leaf(self.session_id),
-                captured=len(context.messages),
+                captured=len(seeded_messages),
+                captured_message_ids=captured_message_ids,
             )
-            activated = True
         except BaseException:
-            if not activated:
-                self.session.saver.delete_thread(new_thread)
+            self.session.saver.delete_thread(new_thread)
             raise
-        self.thread_id = new_thread
-        self._pending_reseed = False
         self._pending_switch_old_thread = None
         await self._bus.emit(
             ThreadSwitch(
@@ -457,44 +444,53 @@ class AppContext:
             )
         )
 
-    def _restore_position(
-        self,
-        *,
-        leaf_id: str | None,
-        thread_id: str | None,
-    ) -> None:
-        self.ledger.restore_position(
-            self.session_id,
-            leaf_id=leaf_id,
-            thread_id=thread_id,
-        )
-
-    def _persisted_current_thread(self) -> str | None:
-        session = self.session.get(self.session_id)
-        if session is None:
-            raise LookupError(f"Unknown session: {self.session_id}")
-        return session.current_thread
-
     async def seed_thread(self, reason: str) -> None:
         if self.agent is None and not await self.ensure_agent(seed_pending=False):
             return
+        if not self._reseed_pending():
+            old_thread = self.thread_id
+            target_thread = _uncheckpointed_seed_target(
+                self.session,
+                self.session_id,
+                old_thread,
+            )
+            self.ledger.set_position(
+                self.session_id,
+                leaf_id=self.ledger.leaf(self.session_id),
+                thread_id=None,
+            )
+            self.thread_id = target_thread
+            self._pending_switch_old_thread = old_thread
         await self._seed_ready_thread(reason)
 
     async def branch(self, entry_id: str) -> None:
         if self.agent is None and not await self.ensure_agent(seed_pending=False):
             return
-        prior_leaf = self.ledger.leaf(self.session_id)
+        ledger = self.ledger
+        prior_leaf = ledger.leaf(self.session_id)
         prior_thread = self.thread_id
         prior_persisted_thread = self._persisted_current_thread()
-        self.ledger.branch_for_reseed(self.session_id, entry_id)
+        prior_switch_old_thread = self._pending_switch_old_thread
+        was_pending = prior_persisted_thread != prior_thread
+        ledger.set_position(
+            self.session_id,
+            leaf_id=entry_id,
+            thread_id=None,
+        )
+        if not was_pending:
+            self.thread_id = self.session.next_thread_id(self.session_id)
+            self._pending_switch_old_thread = prior_thread
         try:
             await self._seed_ready_thread("branch")
         except BaseException:
-            if self.thread_id == prior_thread:
-                self._restore_position(
+            if self._reseed_pending():
+                ledger.set_position(
+                    self.session_id,
                     leaf_id=prior_leaf,
                     thread_id=prior_persisted_thread,
                 )
+                self.thread_id = prior_thread
+                self._pending_switch_old_thread = prior_switch_old_thread
             raise
 
     async def fork(self) -> None:
@@ -502,6 +498,7 @@ class AppContext:
             return
         old_session = self.session_id
         old_thread = self.thread_id
+        old_switch_thread = self._pending_switch_old_thread
         self.persist_plugin_states()
         created = self.session.create(
             self.cfg.cwd,
@@ -511,12 +508,28 @@ class AppContext:
         )
         try:
             self.ledger.fork(old_session, created.thread_id)
+            self.session.copy_plugin_state(old_session, created.thread_id)
+            if created.current_thread is None:
+                raise RuntimeError(f"Session {created.thread_id} has no graph thread")
+            self.ledger.set_position(
+                created.thread_id,
+                leaf_id=self.ledger.leaf(created.thread_id),
+                thread_id=None,
+            )
             self.session_id = created.thread_id
-            self.thread_id = old_thread
+            self.thread_id = _uncheckpointed_seed_target(
+                self.session,
+                created.thread_id,
+                created.current_thread,
+            )
+            self._pending_switch_old_thread = old_switch_thread or old_thread
             await self._seed_ready_thread("reseed")
         except BaseException:
+            if self.session_id == created.thread_id and not self._reseed_pending():
+                raise
             self.session_id = old_session
             self.thread_id = old_thread
+            self._pending_switch_old_thread = old_switch_thread
             self.session.delete_session(created.thread_id)
             raise
         await self._bus.emit(SessionSwitch(old=old_session, new=self.session_id))
@@ -559,7 +572,6 @@ class AppContext:
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
         self.history_model = None
-        self._pending_reseed = False
         self._pending_switch_old_thread = None
         self.rebuild_requested = False
         self.console.console.clear()
@@ -568,18 +580,32 @@ class AppContext:
     async def clear(self) -> None:
         if self.agent is None and not await self.ensure_agent(seed_pending=False):
             return
-        prior_leaf = self.ledger.leaf(self.session_id)
+        ledger = self.ledger
+        prior_leaf = ledger.leaf(self.session_id)
         prior_thread = self.thread_id
         prior_persisted_thread = self._persisted_current_thread()
-        self.ledger.append_for_reseed(self.session_id, ResetBoundaryEntry())
+        prior_switch_old_thread = self._pending_switch_old_thread
+        was_pending = prior_persisted_thread != prior_thread
+        appended = ledger.append(
+            self.session_id,
+            ResetBoundaryEntry(),
+            thread_id=None,
+        )
+        if not was_pending:
+            self.thread_id = self.session.next_thread_id(self.session_id)
+            self._pending_switch_old_thread = prior_thread
         try:
             await self._seed_ready_thread("clear")
         except BaseException:
-            if self.thread_id == prior_thread:
-                self._restore_position(
+            if self._reseed_pending():
+                ledger.set_position(
+                    self.session_id,
                     leaf_id=prior_leaf,
                     thread_id=prior_persisted_thread,
+                    discard_entry_id=appended.id,
                 )
+                self.thread_id = prior_thread
+                self._pending_switch_old_thread = prior_switch_old_thread
             raise
         self.console.console.clear()
 
@@ -596,7 +622,6 @@ class AppContext:
         old_agent = self.agent
         old_summarizer = self.summarizer
         old_history_model = self.history_model
-        old_pending_reseed = self._pending_reseed
         old_pending_switch = self._pending_switch_old_thread
         old_rebuild_requested = self.rebuild_requested
         old_states = deepcopy(self.plugin_states)
@@ -627,6 +652,7 @@ class AppContext:
             and self.session.checkpoint_exists(live_thread)
         )
         target_position_changed = False
+        needs_reseed = False
         try:
             if checkpoint_live:
                 self.recover_checkpoint(saved_session.thread_id, live_thread)
@@ -638,24 +664,37 @@ class AppContext:
             needs_reseed = not checkpoint_live or (
                 bool(context.dangling) and not pending_interrupt
             )
-            target_thread = (
-                self.session.next_thread_id(saved_session.thread_id)
-                if needs_reseed
-                else live_thread
-            )
             if needs_reseed:
-                self.ledger.restore_position(
+                target_thread = (
+                    _uncheckpointed_seed_target(
+                        self.session,
+                        saved_session.thread_id,
+                        live_thread,
+                    )
+                    if not checkpoint_live
+                    else self.session.next_thread_id(saved_session.thread_id)
+                )
+                self.ledger.set_position(
                     saved_session.thread_id,
                     leaf_id=self.ledger.leaf(saved_session.thread_id),
                     thread_id=None,
                 )
                 target_position_changed = True
+            else:
+                if live_thread is None:
+                    raise RuntimeError(
+                        f"Session {saved_session.thread_id} has no graph thread"
+                    )
+                target_thread = live_thread
             self.session_id = saved_session.thread_id
             self.thread_id = target_thread
             self.cfg = candidate_cfg
             self.history_model = stored_model
-            self._pending_reseed = needs_reseed
-            self._pending_switch_old_thread = old_thread if needs_reseed else None
+            self._pending_switch_old_thread = (
+                old_pending_switch or old_thread
+                if needs_reseed
+                else None
+            )
             if old_agent is None:
                 self.summarizer = None
             else:
@@ -680,8 +719,15 @@ class AppContext:
                 self.history_model = None
             self.rebuild_requested = False
         except BaseException:
+            target_activated = (
+                self.session_id == saved_session.thread_id
+                and needs_reseed
+                and not self._reseed_pending()
+            )
+            if target_activated:
+                raise
             if target_position_changed:
-                self.ledger.restore_position(
+                self.ledger.set_position(
                     saved_session.thread_id,
                     leaf_id=self.ledger.leaf(saved_session.thread_id),
                     thread_id=live_thread,
@@ -692,7 +738,6 @@ class AppContext:
             self.agent = old_agent
             self.summarizer = old_summarizer
             self.history_model = old_history_model
-            self._pending_reseed = old_pending_reseed
             self._pending_switch_old_thread = old_pending_switch
             self.rebuild_requested = old_rebuild_requested
             for name, state in self.plugin_states.items():
@@ -729,14 +774,13 @@ class AppContext:
         )
         prior_leaf = self.ledger.leaf(self.session_id)
         prior_persisted_thread = self._persisted_current_thread()
-        audit_appended = False
+        audit: ModelChangeEntry | None = None
         self.session.set_model(self.session_id, spec)
         try:
-            self.ledger.append(
+            audit = self.ledger.append(
                 self.session_id,
                 ModelChangeEntry(model=spec if isinstance(spec, str) else list(spec)),
             )
-            audit_appended = True
             if foreign:
                 strip_foreign_blocks(
                     self.agent or candidate_agent,
@@ -745,10 +789,12 @@ class AppContext:
                 )
         except BaseException:
             self.session.set_model(self.session_id, old_model)
-            if audit_appended:
-                self._restore_position(
+            if audit is not None:
+                self.ledger.set_position(
+                    self.session_id,
                     leaf_id=prior_leaf,
                     thread_id=prior_persisted_thread,
+                    discard_entry_id=audit.id,
                 )
             raise
         self.cfg = candidate_cfg
@@ -808,25 +854,36 @@ class AppContext:
             if isinstance(summary.content, str)
             else str(summary.content)
         )
-        prior_leaf = self.ledger.leaf(self.session_id)
+        ledger = self.ledger
+        prior_leaf = ledger.leaf(self.session_id)
         prior_thread = self.thread_id
         prior_persisted_thread = self._persisted_current_thread()
-        self.ledger.append_for_reseed(
+        prior_switch_old_thread = self._pending_switch_old_thread
+        was_pending = prior_persisted_thread != prior_thread
+        appended = ledger.append(
             self.session_id,
             CompactionEntry(
                 summary=summary_text,
                 first_kept_id=None,
                 tokens_before=None,
             ),
+            thread_id=None,
         )
+        if not was_pending:
+            self.thread_id = self.session.next_thread_id(self.session_id)
+            self._pending_switch_old_thread = prior_thread
         try:
             await self._seed_ready_thread("compact")
         except BaseException:
-            if self.thread_id == prior_thread:
-                self._restore_position(
+            if self._reseed_pending():
+                ledger.set_position(
+                    self.session_id,
                     leaf_id=prior_leaf,
                     thread_id=prior_persisted_thread,
+                    discard_entry_id=appended.id,
                 )
+                self.thread_id = prior_thread
+                self._pending_switch_old_thread = prior_switch_old_thread
             raise
         self.console.print("Conversation compacted.")
 
@@ -841,13 +898,99 @@ class AppContext:
         thread = self.session.get_thread(thread_id)
         if thread is None or thread.session_id != session_id:
             raise LookupError(f"Unknown graph thread: {thread_id}")
-        new_messages = values.get("messages", ())[thread.captured :]
-        if only_if_new and not new_messages:
+        messages = list(values.get("messages", ()))
+        current_message_ids = tuple(
+            message.id
+            for message in messages
+            if isinstance(message.id, str)
+        )
+        previous_message_ids = thread.captured_message_ids
+        previous_id_set = set(previous_message_ids)
+        current_id_set = set(current_message_ids)
+        shrunk = (
+            bool(previous_message_ids)
+            and not previous_id_set.issubset(current_id_set)
+        ) or (not previous_message_ids and len(messages) < thread.captured)
+        entries: list[CompactionEntry | MessageEntry | CustomEntry] = []
+        candidates = messages
+        summary_index: int | None = None
+        if shrunk:
+            summary_index = next(
+                (
+                    index
+                    for index, message in enumerate(messages)
+                    if isinstance(message, HumanMessage)
+                    and message.additional_kwargs.get("lc_source")
+                    == "summarization"
+                ),
+                None,
+            )
+            if summary_index is not None:
+                summary_message = messages[summary_index]
+                summary = (
+                    summary_message.content
+                    if isinstance(summary_message.content, str)
+                    else str(summary_message.content)
+                )
+                candidates = messages[summary_index + 1 :]
+                first_retained_id = next(
+                    (
+                        message.id
+                        for message in candidates
+                        if isinstance(message.id, str)
+                        and message.id in previous_id_set
+                    ),
+                    None,
+                )
+                first_kept_id = None
+                if first_retained_id is not None:
+                    path = self.ledger.path(session_id)
+                    retained_at = next(
+                        (
+                            index
+                            for index, entry in enumerate(path)
+                            if isinstance(entry, MessageEntry)
+                            and messages_from_dict([entry.message])[0].id
+                            == first_retained_id
+                        ),
+                        None,
+                    )
+                    if retained_at is not None and retained_at > 0:
+                        first_kept_id = path[retained_at - 1].id
+                entries.append(
+                    CompactionEntry(
+                        summary=summary.removeprefix(_SUMMARIZATION_PREFIX),
+                        first_kept_id=first_kept_id,
+                    )
+                )
+
+        if previous_message_ids:
+            for index, message in enumerate(candidates):
+                message_id = message.id
+                if isinstance(message_id, str):
+                    unseen = message_id not in previous_id_set
+                else:
+                    absolute_index = (
+                        index
+                        if summary_index is None
+                        else summary_index + 1 + index
+                    )
+                    unseen = absolute_index >= thread.captured
+                if unseen:
+                    entries.append(MessageEntry(message=message_to_dict(message)))
+        elif summary_index is not None:
+            entries.extend(
+                MessageEntry(message=message_to_dict(message))
+                for message in candidates
+            )
+        else:
+            entries.extend(
+                MessageEntry(message=message_to_dict(message))
+                for message in messages[thread.captured :]
+            )
+
+        if only_if_new and not entries:
             return False
-        entries = [
-            MessageEntry(message=message_to_dict(message))
-            for message in new_messages
-        ]
         entries.append(
             CustomEntry(
                 custom_type="turn_state",
@@ -862,7 +1005,8 @@ class AppContext:
                 session_id,
                 thread_id,
                 entries,
-                message_count=len(new_messages),
+                captured=len(messages),
+                captured_message_ids=current_message_ids,
             )
         except Exception as exc:
             message = (
@@ -1204,11 +1348,11 @@ async def _updates_event(
 async def _run_turn(ctx: AppContext, text: str) -> None:
     if not await ctx.ensure_agent():
         return
-    session_info = ctx.session.get(getattr(ctx, "session_id", ctx.thread_id))
+    session_info = ctx.session.get(ctx.session_id)
     if session_info is not None and session_info.title is None:
         title = " ".join(text.split())[:80]
         if title:
-            ctx.session.set_title(getattr(ctx, "session_id", ctx.thread_id), title)
+            ctx.session.set_title(ctx.session_id, title)
     await ctx._bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
     tool_calls = _ToolCallBuffer()
@@ -1258,13 +1402,9 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
             ctx.console.error(f"{type(exc).__name__}: {exc}")
     finally:
         try:
-            capture_turn = getattr(ctx, "capture_turn", None)
-            if callable(capture_turn):
-                capture_turn()
+            ctx.capture_turn()
             if cancelled:
-                record_exit = getattr(ctx, "record_exit", None)
-                if callable(record_exit):
-                    record_exit("signal")
+                ctx.record_exit("signal")
         finally:
             ctx.console.print()
             await ctx._bus.emit(TurnEnd(thread_id=ctx.thread_id))
@@ -1299,7 +1439,6 @@ async def run_app(cfg: Config) -> int:
         return 1
     with store:
         history_model: str | list[str] | None = None
-        pending_reseed = False
         pending_switch_old_thread: str | None = None
         resume_live_thread: str | None = None
         if cfg.list_sessions:
@@ -1335,13 +1474,17 @@ async def run_app(cfg: Config) -> int:
                 resume_live_thread is not None
                 and store.checkpoint_exists(resume_live_thread)
             )
-            pending_reseed = not checkpoint_live
-            if pending_reseed:
-                thread_id = store.next_thread_id(session_id)
-                pending_switch_old_thread = resume_live_thread
-                Ledger(store).restore_position(
+            if not checkpoint_live:
+                thread_id = _uncheckpointed_seed_target(
+                    store,
                     session_id,
-                    leaf_id=Ledger(store).leaf(session_id),
+                    resume_live_thread,
+                )
+                pending_switch_old_thread = resume_live_thread or thread_id
+                ledger = Ledger(store)
+                ledger.set_position(
+                    session_id,
+                    leaf_id=ledger.leaf(session_id),
                     thread_id=None,
                 )
             else:
@@ -1381,7 +1524,6 @@ async def run_app(cfg: Config) -> int:
             session_id=session_id,
             history_model=history_model,
         )
-        ctx._pending_reseed = pending_reseed
         ctx._pending_switch_old_thread = pending_switch_old_thread
         holder["ctx"] = ctx
         if cfg.resume and resume_live_thread is not None and store.checkpoint_exists(
@@ -1394,16 +1536,15 @@ async def run_app(cfg: Config) -> int:
             )
             if context.dangling and not pending_interrupt:
                 old_thread = ctx.thread_id
-                ctx.ledger.restore_position(
+                ctx.ledger.set_position(
                     session_id,
                     leaf_id=ctx.ledger.leaf(session_id),
                     thread_id=None,
                 )
                 ctx.thread_id = store.next_thread_id(session_id)
-                ctx._pending_reseed = True
                 ctx._pending_switch_old_thread = old_thread
         await bus.emit(AppStart(ctx=ctx))
-        if ctx._pending_reseed and ctx.agent is not None:
+        if ctx._reseed_pending() and ctx.agent is not None:
             await ctx.ensure_agent()
         if ctx.rebuild_requested:
             await ctx.rebuild()

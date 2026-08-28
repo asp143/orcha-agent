@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
-from langchain.agents.middleware import ModelFallbackMiddleware
+from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -162,6 +162,7 @@ async def build_agent(
     allowed = set(always_allowed)
     interrupts = {name: value for name, value in mode.interrupt_on.items() if name not in allowed}
     middleware = [entry.middleware for entry in registry.middleware]
+    middleware.append(TodoListMiddleware())
     filesystem: FilesystemMiddleware | None = None
     if mode.allowed_tools is not None:
         filesystem_tools = set(mode.allowed_tools) & FILESYSTEM_TOOL_NAMES
