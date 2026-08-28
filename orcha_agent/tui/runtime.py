@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import signal
 import shlex
 import subprocess
 import sys
@@ -54,6 +55,8 @@ from .complete import ComposerCompleter
 from .composer import Composer
 from .context import (
     AppContext,
+    _model_specs,
+    _primary_provider_prefix,
     _session_resolution_error,
     _stored_model,
     _uncheckpointed_seed_target,
@@ -320,12 +323,14 @@ class ApplicationRuntime:
             for kind in ("todo", "subagents", "queue")
         }
         self._approval_notification_sent = False
-        self._shell_runner = shell_runner or self._run_shell_process
+        self._shell_runner = shell_runner
+        self._shell_process: asyncio.subprocess.Process | None = None
         self._custom_editor = editor_runner is not None
         self._editor_runner = editor_runner or self._run_editor_process
         self.thinking_level = self._restore_thinking_level()
         self.ui.thinking_level = self.thinking_level
 
+        self._completion_registry = completion_registry
         completer = ComposerCompleter(completion_registry, self._cwd())
         self.composer = Composer(
             shape=composer_shape,
@@ -344,6 +349,7 @@ class ApplicationRuntime:
             warn=self._notify,
         )
         self.ui.effective_keys = effective
+        self.ui.prepare_session_switch = self.prepare_session_switch
         handlers = self._action_handlers()
         bindings = create_key_bindings(effective, handlers)
         self._tree_handler = handlers["tree"]
@@ -684,6 +690,35 @@ class ApplicationRuntime:
             state.pop("queue", None)
         self._persist_state()
 
+    def prepare_session_switch(self) -> None:
+        """Copy the outgoing editor state into the current session state."""
+
+        state = self._composer_state()
+        draft = self.buffer.text
+        if draft:
+            state["draft"] = draft
+        else:
+            state.pop("draft", None)
+        if self.queue:
+            state["queue"] = list(self.queue.items)
+        else:
+            state.pop("queue", None)
+        state["thinking_level"] = self.thinking_level
+
+    async def rebind_session(self, _event: SessionSwitch) -> None:
+        """Restore editor-local state after AppContext activates a session."""
+
+        self.buffer.reset(append_to_history=False)
+        self.queue.clear()
+        self.thinking_level = self._restore_thinking_level()
+        self.ui.thinking_level = self.thinking_level
+        self.buffer.completer = ComposerCompleter(self._completion_registry, self._cwd())
+        history = self.buffer.history
+        if isinstance(history, SQLiteHistory):
+            history.rebind(cwd=self._cwd(), session_id=str(self.ctx.session_id))
+        self._restore_draft()
+        self.application.invalidate()
+
     def _persist_state(self) -> None:
         persist = getattr(self.ctx, "persist_plugin_states", None)
         if persist is not None:
@@ -718,8 +753,8 @@ class ApplicationRuntime:
             "newline": lambda event: event.current_buffer.insert_text("\n"),
             "queue": self._queue_draft,
             "dequeue": self._dequeue,
-            "toggle_thinking": lambda _event: self.ui.toggle_thinking(),
-            "cycle_thinking_level": lambda _event: self._cycle_thinking_level(),
+            "toggle_thinking": lambda _event: self._toggle_thinking(),
+            "cycle_thinking_level": lambda _event: self._track(self._cycle_thinking_level()),
             "expand_tools": lambda _event: self.ui.expand_tools(not self.ui.tools_expanded),
             "model_picker": lambda _event: self._track(self.ui.show("model")),
             "cycle_model": lambda _event: self._track(self._cycle_model()),
@@ -764,8 +799,14 @@ class ApplicationRuntime:
     def _dequeue(self, event: Any) -> None:
         text = self.queue.pop_last()
         if text is not None:
-            event.current_buffer.text = text
-            event.current_buffer.cursor_position = len(text)
+            self._merge_restored_draft(event.current_buffer, text)
+
+    @staticmethod
+    def _merge_restored_draft(buffer: Any, restored: str) -> None:
+        active = buffer.text
+        text = "\n\n".join(value for value in (restored, active) if value)
+        buffer.text = text
+        buffer.cursor_position = len(text)
 
     def _abort_turn(self) -> None:
         if self._active_turn is not None and not self._active_turn.done():
@@ -779,8 +820,7 @@ class ApplicationRuntime:
         if self.streaming:
             restored = self.queue.restore_text()
             if restored:
-                buffer.text = restored
-                buffer.cursor_position = len(restored)
+                self._merge_restored_draft(buffer, restored)
             self._abort_turn()
             return
         if buffer.text or not self._tree_double_escape:
@@ -828,40 +868,74 @@ class ApplicationRuntime:
             self.buffer.text = selected
             self.buffer.cursor_position = len(selected)
 
-    def _thinking_supported(self) -> bool:
-        if self.registry is None:
-            return False
-        model = self._model_label()
-        prefix, separator, _name = model.partition(":")
-        registration = self.registry.providers.get(prefix) if separator else None
-        return bool(registration and registration.capabilities.thinking)
+    def _thinking_provider_prefix(self) -> str | None:
+        if self.registry is None or self.ctx is None:
+            return None
+        cfg = self.ctx.cfg
+        prefix = _primary_provider_prefix(cfg.model, getattr(cfg, "models", {}))
+        registration = self.registry.providers.get(prefix) if prefix else None
+        if registration is None or not registration.capabilities.thinking:
+            return None
+        return prefix
 
-    def _cycle_thinking_level(self) -> None:
-        if not self._thinking_supported():
+    def _thinking_supported(self) -> bool:
+        return self._thinking_provider_prefix() is not None
+
+    def _toggle_thinking(self) -> None:
+        state = self.ctx.plugin_states.setdefault("render_default", {})
+        configured = str(getattr(self.ctx.cfg, "thinking", "summary"))
+        current = str(state.get("thinking", configured))
+        state["thinking"] = "summary" if current == "off" else "off"
+        self.ui.thinking_visible = state["thinking"] != "off"
+        self._persist_state()
+        self.application.invalidate()
+
+    async def _cycle_thinking_level(self) -> None:
+        prefix = self._thinking_provider_prefix()
+        if prefix is None:
             self.ui.notify("Thinking levels are unavailable for the active provider.")
             return
         levels = ("off", "low", "medium", "high", "max")
         self.thinking_level = levels[(levels.index(self.thinking_level) + 1) % len(levels)]
         self.ui.thinking_level = self.thinking_level
         self._composer_state()["thinking_level"] = self.thinking_level
+        providers = getattr(self.ctx.cfg, "providers", None)
+        if isinstance(providers, dict):
+            providers.setdefault(prefix, {})["reasoning_effort"] = self.thinking_level
+        if prefix == "anthropic":
+            self.ctx.plugin_states.setdefault("provider_anthropic", {})["thinking"] = (
+                "off" if self.thinking_level == "off" else "summary"
+            )
         self._persist_state()
+        await self.ctx.rebuild()
         self.application.invalidate()
 
     async def _cycle_model(self) -> None:
         if self.registry is None or self.ctx is None:
             return
-        available = [
-            f"{prefix}:{model}"
-            for prefix, provider in sorted(self.registry.providers.items())
-            for model in provider.models
-            if provider.available() is None
-        ]
+        available = self._available_model_aliases()
         if not available:
-            self.ui.notify("No models are available.")
+            self.ui.notify("No configured model aliases are available.")
             return
         current = self._model_label()
         index = available.index(current) + 1 if current in available else 0
         await self.ctx.switch_model(available[index % len(available)])
+
+    def _available_model_aliases(self) -> list[str]:
+        if self.registry is None or self.ctx is None:
+            return []
+        aliases = getattr(self.ctx.cfg, "models", {})
+        if not isinstance(aliases, Mapping):
+            return []
+        available: list[str] = []
+        for alias in aliases:
+            for spec in _model_specs(alias, aliases):
+                prefix, separator, _model = spec.partition(":")
+                provider = self.registry.providers.get(prefix) if separator else None
+                if provider is not None and provider.available() is None:
+                    available.append(alias)
+                    break
+        return available
 
     async def _external_editor(self) -> None:
         if not self._custom_editor and not (os.environ.get("VISUAL") or os.environ.get("EDITOR")):
@@ -893,33 +967,82 @@ class ApplicationRuntime:
             if path:
                 Path(path).unlink(missing_ok=True)
 
-    @staticmethod
-    def _run_shell_process(command: str, cwd: Path, timeout: float) -> Any:
-        return subprocess.run(
-            command,
-            shell=True,
-            cwd=cwd,
-            timeout=timeout,
-            capture_output=True,
-            text=True,
-        )
 
     async def _run_shell(self, command: str) -> None:
         identifier = f"execute-{time.monotonic_ns()}"
         bus = getattr(self.ctx, "_bus", None)
         if bus is not None:
             await bus.emit(ToolCallStart(name="execute", args={"command": command}, id=identifier))
+        result: dict[str, Any]
         try:
-            completed = await asyncio.to_thread(self._shell_runner, command, self._cwd(), 60.0)
+            if self._shell_runner is None:
+                result = await self._run_shell_process(command)
+            else:
+                completed = await asyncio.to_thread(
+                    self._shell_runner, command, self._cwd(), 60.0
+                )
+                result = {
+                    "returncode": int(getattr(completed, "returncode", 0)),
+                    "stdout": str(getattr(completed, "stdout", "")),
+                    "stderr": str(getattr(completed, "stderr", "")),
+                }
+        except (TimeoutError, subprocess.TimeoutExpired):
+            await self._stop_shell_process()
             result = {
-                "returncode": int(getattr(completed, "returncode", 0)),
-                "stdout": str(getattr(completed, "stdout", "")),
-                "stderr": str(getattr(completed, "stderr", "")),
+                "returncode": 124,
+                "stdout": "",
+                "stderr": "timed out after 60 seconds",
             }
-        except subprocess.TimeoutExpired:
-            result = {"returncode": 124, "stdout": "", "stderr": "timed out after 60 seconds"}
-        if bus is not None:
-            await bus.emit(ToolCallEnd(name="execute", id=identifier, result=result))
+        except asyncio.CancelledError:
+            await self._stop_shell_process()
+            result = {"returncode": 130, "stdout": "", "stderr": "cancelled"}
+            raise
+        except Exception as exc:
+            await self._stop_shell_process()
+            result = {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": f"{type(exc).__name__}: {exc}",
+            }
+        finally:
+            if bus is not None:
+                await bus.emit(ToolCallEnd(name="execute", id=identifier, result=result))
+
+    async def _run_shell_process(self, command: str) -> Any:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=self._cwd(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        self._shell_process = process
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
+        self._shell_process = None
+        return {
+            "returncode": int(process.returncode or 0),
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace"),
+        }
+
+    async def _stop_shell_process(self) -> None:
+        process = self._shell_process
+        if process is None:
+            return
+        if process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except TimeoutError:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+        self._shell_process = None
 
     async def _dispatch_submission(self, text: str) -> None:
         if text.startswith("!"):
@@ -1144,7 +1267,8 @@ def _register_theme_refresh(
     ctx: Any,
     runtime: ApplicationRuntime,
 ) -> None:
-    async def refresh_theme(_event: SessionSwitch) -> None:
+    async def refresh_session(event: SessionSwitch) -> None:
+        await runtime.rebind_session(event)
         themes, active = _resolve_runtime_themes(
             ctx.cfg,
             ctx.plugin_states,
@@ -1154,8 +1278,8 @@ def _register_theme_refresh(
 
     bus.on(
         SessionSwitch,
-        refresh_theme,
-        plugin="<tui-theme>",
+        refresh_session,
+        plugin="<tui-session>",
         priority=9_000,
     )
 

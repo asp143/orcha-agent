@@ -41,6 +41,19 @@ class SQLiteHistory(History):
         self._initialize()
         super().__init__()
 
+    def rebind(
+        self,
+        *,
+        cwd: str | Path,
+        session_id: str,
+    ) -> None:
+        """Update prompt metadata and force prompt-toolkit to reload history."""
+
+        self.cwd = str(Path(cwd).resolve())
+        self.session_id = session_id
+        self._loaded = False
+        self._loaded_strings.clear()
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.execute("PRAGMA journal_mode=WAL")

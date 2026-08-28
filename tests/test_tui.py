@@ -1936,6 +1936,11 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
         session=session,
         plugin_states={"approval": approval_state, "scratch": scratch_state},
     )
+    ctx.ui = SimpleNamespace(
+        prepare_session_switch=lambda: scratch_state.update(
+            {"draft": "captured by runtime"}
+        )
+    )
     rebuilt: list[tuple[Path, str | list[str], str, set[str]]] = []
     replacement_graph = object()
 
@@ -1969,7 +1974,7 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
     assert scratch_state == {}
     assert session.plugin_states["current"] == {
         "approval": {"always_allowed": ["execute"]},
-        "scratch": {"draft": "keep before resume"},
+        "scratch": {"draft": "captured by runtime"},
     }
     assert session.operations[:3] == [
         (
@@ -1982,7 +1987,7 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
             "set_plugin_state",
             "current",
             "scratch",
-            {"draft": "keep before resume"},
+            {"draft": "captured by runtime"},
         ),
         ("all_plugin_state", "saved"),
     ]

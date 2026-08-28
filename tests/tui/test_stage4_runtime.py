@@ -8,7 +8,7 @@ import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from orcha_agent.core.events import EventBus, ToolCallEnd, ToolCallStart
+from orcha_agent.core.events import EventBus, SessionSwitch, ToolCallEnd, ToolCallStart
 from orcha_agent.core.plugin import ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.composer import Composer
@@ -23,7 +23,13 @@ def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
     registry = registry or Registry()
     state: dict[str, dict[str, object]] = {}
     return SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path, model="able:test", models={}),
+        cfg=SimpleNamespace(
+            cwd=tmp_path,
+            model="able:test",
+            models={},
+            providers={},
+            thinking="summary",
+        ),
         registry=registry,
         plugin_states=state,
         persist_plugin_states=lambda: None,
@@ -31,6 +37,7 @@ def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
         bus=EventBus(),
         _bus=EventBus(),
         switch_model=lambda _model: asyncio.sleep(0),
+        rebuild=lambda: asyncio.sleep(0),
     )
 
 
@@ -369,6 +376,8 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(tmp_path: Path) 
 
     registry._add_keybinding("plugin", "custom", plugin_handler, "c-x")
     ctx = _ctx(tmp_path, registry)
+    ctx.cfg.model = "first"
+    ctx.cfg.models = {"first": "able:test", "second": "able:next"}
     switched: list[str] = []
 
     async def switch_model(model: str) -> None:
@@ -391,7 +400,7 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(tmp_path: Path) 
         await asyncio.sleep(0.2)
         assert runtime.thinking_level == "low"
         assert ctx.plugin_states["composer"]["thinking_level"] == "low"
-        assert switched == ["able:next"]
+        assert switched == ["second"]
         assert plugin_calls == ["custom"]
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
@@ -580,3 +589,194 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
     assert "draft" not in resumed_ctx.plugin_states["composer"]
     assert "queue" not in resumed_ctx.plugin_states["composer"]
     assert persisted_calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_thinking_controls_resolve_alias_persist_display_and_rebuild_provider(
+    tmp_path: Path,
+) -> None:
+    registry = Registry()
+    registry.providers["able"] = SimpleNamespace(
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=False,
+            max_context=None,
+        ),
+        models=(),
+        available=lambda: None,
+    )
+    ctx = _ctx(tmp_path, registry)
+    ctx.cfg.model = "fast"
+    ctx.cfg.models = {"fast": "able:test", "next": "able:dynamic"}
+    ctx.cfg.providers = {"able": {}}
+    ctx.plugin_states["render_default"] = {"thinking": "summary"}
+    rebuilt: list[str] = []
+
+    async def rebuild() -> None:
+        rebuilt.append(ctx.cfg.providers["able"]["reasoning_effort"])
+
+    ctx.rebuild = rebuild
+    switched: list[str] = []
+
+    async def switch_model(model: str) -> None:
+        switched.append(model)
+
+    ctx.switch_model = switch_model
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        ctx=ctx,
+        registry=registry,
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        runtime._action_handlers()["toggle_thinking"](SimpleNamespace())
+        runtime._action_handlers()["cycle_thinking_level"](SimpleNamespace())
+        runtime._action_handlers()["cycle_model"](SimpleNamespace())
+        await runtime._drain_pending()
+
+        assert ctx.plugin_states["render_default"]["thinking"] == "off"
+        assert runtime.thinking_level == "low"
+        assert rebuilt == ["low"]
+        assert switched == ["next"]
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
+
+
+def test_queue_recovery_merges_older_prompts_before_active_draft(tmp_path: Path) -> None:
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        runtime.buffer.text = "active draft"
+        runtime.queue.extend(["queued one", "queued two"])
+        event = SimpleNamespace(current_buffer=runtime.buffer)
+
+        runtime._dequeue(event)
+        assert runtime.buffer.text == "queued two\n\nactive draft"
+
+        runtime.queue.clear()
+        runtime.queue.extend(["queued one", "queued two"])
+        runtime.streaming = True
+        runtime._escape_ladder(event)
+        assert runtime.buffer.text == (
+            "-> queued one\n-> queued two\n\nqueued two\n\nactive draft"
+        )
+    finally:
+        runtime.application.input.close()
+
+
+@pytest.mark.asyncio
+async def test_shell_error_and_cancellation_always_settle_tool_card(tmp_path: Path) -> None:
+    events: list[object] = []
+    ctx = _ctx(tmp_path)
+
+    async def capture(event: object) -> None:
+        events.append(event)
+
+    ctx._bus.on(object, capture, plugin="test")
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        ctx=ctx,
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        task = asyncio.create_task(runtime._run_shell("exec sleep 10"))
+        while runtime._shell_process is None:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+
+        ends = [event for event in events if isinstance(event, ToolCallEnd)]
+        assert len(ends) == 1
+        assert ends[0].result["returncode"] == 130
+        assert "cancelled" in ends[0].result["stderr"]
+        assert runtime._shell_process is None
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
+
+
+
+@pytest.mark.asyncio
+async def test_shell_runner_failure_emits_error_tool_end(tmp_path: Path) -> None:
+    events: list[object] = []
+    ctx = _ctx(tmp_path)
+
+    async def capture(event: object) -> None:
+        events.append(event)
+
+    def fail(_command: str, _cwd: Path, _timeout: float) -> object:
+        raise OSError("runner broke")
+
+    ctx._bus.on(object, capture, plugin="test")
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        ctx=ctx,
+        shell_runner=fail,
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        await runtime._run_shell("broken")
+        ends = [event for event in events if isinstance(event, ToolCallEnd)]
+        assert len(ends) == 1
+        assert ends[0].result["returncode"] == 1
+        assert ends[0].result["stderr"] == "OSError: runner broke"
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
+
+
+@pytest.mark.asyncio
+async def test_session_rebind_saves_outgoing_state_and_restores_all_runtime_scopes(
+    tmp_path: Path,
+) -> None:
+    old_cwd = tmp_path / "old"
+    new_cwd = tmp_path / "new"
+    old_cwd.mkdir()
+    new_cwd.mkdir()
+    history = SQLiteHistory(tmp_path / "history.db", cwd=old_cwd, session_id="old")
+    ctx = _ctx(old_cwd)
+    ctx.session_id = "old"
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        ctx=ctx,
+        history=history,
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        runtime.buffer.text = "old draft"
+        runtime.queue.append("old queued")
+        runtime.prepare_session_switch()
+        assert ctx.plugin_states["composer"] == {
+            "draft": "old draft",
+            "queue": ["old queued"],
+            "thinking_level": "off",
+        }
+
+        ctx.cfg.cwd = new_cwd
+        ctx.session_id = "new"
+        ctx.plugin_states["composer"] = {
+            "draft": "new draft",
+            "queue": ["new queued"],
+            "thinking_level": "high",
+        }
+        await runtime.rebind_session(SessionSwitch(old="old", new="new"))
+
+        assert runtime.buffer.text == "new draft"
+        assert runtime.queue.items == ("new queued",)
+        assert runtime.thinking_level == "high"
+        assert runtime.buffer.completer.path_index.cwd == new_cwd.resolve()
+        assert (history.cwd, history.session_id) == (str(new_cwd.resolve()), "new")
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
