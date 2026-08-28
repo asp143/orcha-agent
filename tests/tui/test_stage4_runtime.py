@@ -744,11 +744,28 @@ async def test_session_rebind_saves_outgoing_state_and_restores_all_runtime_scop
     old_cwd.mkdir()
     new_cwd.mkdir()
     history = SQLiteHistory(tmp_path / "history.db", cwd=old_cwd, session_id="old")
-    ctx = _ctx(old_cwd)
+    registry = Registry()
+    registry.providers["able"] = SimpleNamespace(
+        capabilities=ProviderCaps(
+            tool_calling=True,
+            streaming=True,
+            thinking=True,
+            structured_output=False,
+            max_context=None,
+        ),
+        available=lambda: None,
+    )
+    ctx = _ctx(old_cwd, registry)
     ctx.session_id = "old"
+    rebuilt: list[str] = []
+    ctx.rebuild = lambda: asyncio.sleep(
+        0,
+        result=rebuilt.append(ctx.cfg.providers["able"]["reasoning_effort"]),
+    )
     runtime = ApplicationRuntime(
         lambda _text: asyncio.sleep(0),
         ctx=ctx,
+        registry=registry,
         history=history,
         input=create_pipe_input().__enter__(),
         output=DummyOutput(),
@@ -775,6 +792,8 @@ async def test_session_rebind_saves_outgoing_state_and_restores_all_runtime_scop
         assert runtime.buffer.text == "new draft"
         assert runtime.queue.items == ("new queued",)
         assert runtime.thinking_level == "high"
+        assert rebuilt == ["high"]
+        assert ctx.cfg.providers["able"]["reasoning_effort"] == "high"
         assert runtime.buffer.completer.path_index.cwd == new_cwd.resolve()
         assert (history.cwd, history.session_id) == (str(new_cwd.resolve()), "new")
     finally:

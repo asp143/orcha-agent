@@ -725,6 +725,11 @@ class ApplicationRuntime:
         if isinstance(history, SQLiteHistory):
             history.rebind(cwd=self._cwd(), session_id=str(self.ctx.session_id))
         self._restore_draft()
+        prefix = self._thinking_provider_prefix()
+        if prefix is not None:
+            self._apply_thinking_level(prefix)
+            self._persist_state()
+            await self.ctx.rebuild()
         self.application.invalidate()
 
     def _persist_state(self) -> None:
@@ -889,6 +894,15 @@ class ApplicationRuntime:
     def _thinking_supported(self) -> bool:
         return self._thinking_provider_prefix() is not None
 
+    def _apply_thinking_level(self, prefix: str) -> None:
+        providers = getattr(self.ctx.cfg, "providers", None)
+        if isinstance(providers, dict):
+            providers.setdefault(prefix, {})["reasoning_effort"] = self.thinking_level
+        if prefix == "anthropic":
+            self.ctx.plugin_states.setdefault("provider_anthropic", {})[
+                "thinking"
+            ] = "off" if self.thinking_level == "off" else "summary"
+
     def _toggle_thinking(self) -> None:
         state = self.ctx.plugin_states.setdefault("render_default", {})
         configured = str(getattr(self.ctx.cfg, "thinking", "summary"))
@@ -907,13 +921,7 @@ class ApplicationRuntime:
         self.thinking_level = levels[(levels.index(self.thinking_level) + 1) % len(levels)]
         self.ui.thinking_level = self.thinking_level
         self._composer_state()["thinking_level"] = self.thinking_level
-        providers = getattr(self.ctx.cfg, "providers", None)
-        if isinstance(providers, dict):
-            providers.setdefault(prefix, {})["reasoning_effort"] = self.thinking_level
-        if prefix == "anthropic":
-            self.ctx.plugin_states.setdefault("provider_anthropic", {})["thinking"] = (
-                "off" if self.thinking_level == "off" else "summary"
-            )
+        self._apply_thinking_level(prefix)
         self._persist_state()
         await self.ctx.rebuild()
         self.application.invalidate()
