@@ -206,6 +206,22 @@ class PluginAPI:
             replace=replace,
         )
 
+    def add_overlay(
+        self,
+        name: str,
+        factory: Callable[..., Any],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_overlay(
+            self.name,
+            name,
+            factory,
+            priority=priority,
+            replace=replace,
+        )
+
 
     def add_provider(
         self,

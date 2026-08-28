@@ -19,7 +19,8 @@ from typing import Any
 from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.key_binding import DynamicKeyBindings, KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
@@ -61,6 +62,8 @@ from .transcript import Transcript
 from .statusline import render_statusline
 from .theme import Theme, load_themes, select_theme
 from .turn import _run_cancellable_turn
+from .overlays import register_builtin_overlays
+from .overlays.base import Overlay
 
 
 def _completion_style(theme: Any) -> Any:
@@ -175,12 +178,12 @@ def _resolve_runtime_themes(
 
 
 class UIFacade:
-    """Minimal stable UI surface for plugins while overlays remain optional."""
+    """Stable awaitable UI surface backed by the active application."""
 
     def __init__(
         self,
         *,
-        show_overlay: Callable[[object], Awaitable[Any]] | None = None,
+        show_overlay: Callable[..., Awaitable[Any]] | None = None,
         notify: Callable[[str], None] | None = None,
         clear: Callable[[], Awaitable[None]] | None = None,
         set_theme: Callable[[str], Any] | None = None,
@@ -198,17 +201,24 @@ class UIFacade:
         if self._notify is not None:
             self._notify(text)
 
-    async def show(self, overlay: object) -> Any:
+    async def show(self, overlay: object, *args: Any, **kwargs: Any) -> Any:
         if self._show_overlay is None:
-            return None
-        return await self._show_overlay(overlay)
+            raise RuntimeError(f"overlay {overlay!r} is unavailable")
+        return await self._show_overlay(overlay, *args, **kwargs)
 
     async def ask(self, questions: object) -> Any:
-        return await self.show(questions)
+        if self._show_overlay is None:
+            raise RuntimeError("ask overlay is unavailable")
+        try:
+            inspect.signature(self._show_overlay).bind("ask", questions=questions)
+        except (TypeError, ValueError):
+            return await self.show(questions)
+        return await self.show("ask", questions=questions)
 
     async def clear(self) -> None:
         if self._clear is not None:
             await self._clear()
+
     def set_theme(self, name: str) -> Any:
         if self._set_theme is None:
             raise RuntimeError("theme selection is unavailable")
@@ -260,14 +270,16 @@ class ApplicationRuntime:
             registry.block_renderers if registry is not None else {}
         )
         previous_ui = getattr(ctx, "ui", None)
-        show_overlay = getattr(previous_ui, "show", None)
+        self._fallback_show = getattr(previous_ui, "_show_overlay", None)
         self.ui = UIFacade(
-            show_overlay=show_overlay,
+            show_overlay=self._show_overlay,
             notify=self._notify,
             clear=self._clear_scrollback,
             set_theme=self._set_theme,
         )
         self.ui.theme = theme
+        self.ui.themes = self._themes
+        self.ui.history = history
         self._status = status or self._status_text
         self._pending: set[asyncio.Future[Any]] = set()
         self._terminal_pending: set[asyncio.Future[Any]] = set()
@@ -282,6 +294,8 @@ class ApplicationRuntime:
         self.streaming = False
         self._shutting_down = False
         self._active_turn: asyncio.Task[Any] | None = None
+        self._active_overlay: Overlay | None = None
+        self._overlay_lock = asyncio.Lock()
         self._last_escape = 0.0
         self._last_interrupt = 0.0
         self._shell_runner = shell_runner or self._run_shell_process
@@ -310,15 +324,37 @@ class ApplicationRuntime:
         self.ui.effective_keys = effective
         handlers = self._action_handlers()
         bindings = create_key_bindings(effective, handlers)
+        self._tree_handler = handlers["tree"]
+        self._tree_double_escape = "escape escape" in effective.get("tree", ())
+        core_bindings = KeyBindings()
 
-        @bindings.add("escape")
+        @core_bindings.add(
+            "escape",
+            filter=Condition(lambda: self._active_overlay is None),
+        )
         def _escape(event: Any) -> None:
             self._escape_ladder(event)
 
-        @bindings.add("s-escape")
-        def _double_escape(event: Any) -> None:
-            self._escape_ladder(event)
-            self._escape_ladder(event)
+        if self._tree_double_escape:
+            core_bindings.add("s-escape")(self._tree_handler)
+
+        @core_bindings.add("?")
+        def _help_or_insert(event: Any) -> None:
+            if (
+                self._active_overlay is None
+                and event.current_buffer is self.buffer
+                and not self.buffer.text
+            ):
+                self._track(self.ui.show("help"))
+            else:
+                event.current_buffer.insert_text("?")
+
+        overlay_bindings = DynamicKeyBindings(
+            lambda: self._active_overlay.bindings
+            if self._active_overlay is not None
+            else KeyBindings()
+        )
+        bindings = merge_key_bindings([bindings, core_bindings, overlay_bindings])
 
         root = FloatContainer(
             content=HSplit(
@@ -342,6 +378,7 @@ class ApplicationRuntime:
                 )
             ],
         )
+        self._root = root
         kwargs: dict[str, Any] = {}
         prompt_style = _completion_style(theme)
         if prompt_style is not None:
@@ -354,6 +391,7 @@ class ApplicationRuntime:
             layout=Layout(root, focused_element=self.buffer),
             key_bindings=bindings,
             full_screen=False,
+            mouse_support=Condition(lambda: self._active_overlay is not None),
             **kwargs,
         )
         self.application.ttimeoutlen = 0.1
@@ -373,6 +411,63 @@ class ApplicationRuntime:
         for notification in self._early_notifications:
             self.transcript.append_banner(notification, level="info")
         self._early_notifications.clear()
+    @property
+    def active_overlay(self) -> Overlay | None:
+        return self._active_overlay
+
+    def _resolve_overlay(
+        self,
+        overlay: object,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Overlay | None:
+        if isinstance(overlay, Overlay):
+            if args or kwargs:
+                raise TypeError("arguments cannot be passed with an overlay instance")
+            return overlay
+        if not isinstance(overlay, str):
+            raise TypeError("overlay must be an Overlay instance or registered name")
+        registration = (
+            None if self.registry is None else self.registry.overlays.get(overlay)
+        )
+        if registration is None:
+            return None
+        created = registration.factory(self.ctx, *args, **kwargs)
+        if not isinstance(created, Overlay):
+            raise TypeError(f"overlay factory {overlay!r} did not return Overlay")
+        return created
+
+    async def _show_overlay(
+        self,
+        overlay: object,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        resolved = self._resolve_overlay(overlay, args, kwargs)
+        if resolved is None:
+            if self._fallback_show is not None:
+                return await self._fallback_show(overlay, *args, **kwargs)
+            raise RuntimeError(f"overlay {overlay!r} is unavailable")
+        async with self._overlay_lock:
+            if self._shutting_down:
+                resolved.cancel()
+                return None
+            self._active_overlay = resolved
+            self._root.floats.append(resolved)
+            try:
+                try:
+                    self.application.layout.focus(resolved.focus_target)
+                except ValueError:
+                    pass
+                self.application.invalidate()
+                return await resolved.wait()
+            finally:
+                if resolved in self._root.floats:
+                    self._root.floats.remove(resolved)
+                self._active_overlay = None
+                self.application.layout.focus(self.buffer)
+                self.application.invalidate()
+
 
     def _cwd(self) -> Path:
         value = getattr(getattr(self.ctx, "cfg", None), "cwd", Path.cwd())
@@ -465,6 +560,7 @@ class ApplicationRuntime:
             "history_search": lambda _event: self._track(self._history_search()),
             "external_editor": lambda _event: self._track(self._external_editor()),
             "clear_screen": lambda _event: self._track(self.ui.clear()),
+            "tree": lambda _event: self._track(self.ui.show("tree")),
             "interrupt": self._interrupt,
             "exit": self._exit,
             **self._plugin_handlers(),
@@ -521,12 +617,12 @@ class ApplicationRuntime:
                 buffer.cursor_position = len(restored)
             self._abort_turn()
             return
-        if buffer.text:
+        if buffer.text or not self._tree_double_escape:
             return
         now = time.monotonic()
         if now - self._last_escape <= 0.5:
             self._last_escape = 0.0
-            self._track(self.ui.show("tree"))
+            self._tree_handler(event)
         else:
             self._last_escape = now
 
@@ -730,6 +826,7 @@ class ApplicationRuntime:
         self._themes = dict(themes)
         identifier = str(getattr(selected, "id", "default"))
         self._themes.setdefault(identifier, selected)
+        self.ui.themes = self._themes
         return self._apply_theme(selected)
 
 
@@ -863,6 +960,9 @@ class ApplicationRuntime:
         except EOFError:
             pass
         finally:
+            self._shutting_down = True
+            if self._active_overlay is not None:
+                self._active_overlay.cancel()
             await self._drain_pending()
             self.scheduler.commit_now()
             await self._drain_pending()
@@ -963,6 +1063,7 @@ async def run_app(cfg: Config) -> int:
             thread_id = created.current_thread
 
         registry = Registry()
+        register_builtin_overlays(registry)
         bus = EventBus()
         states = store.all_plugin_state(session_id)
         holder: dict[str, AppContext] = {}

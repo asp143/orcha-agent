@@ -17,7 +17,17 @@ def _plugin_value(record: object, name: str, default: str = "") -> str:
     return default if value is None else str(value)
 
 
-async def _help(ctx: Any, _args: str) -> None:
+async def _help(ctx: Any, args: str) -> None:
+    if args.strip():
+        ctx.console.error("Usage: /help")
+        return
+    ui = getattr(ctx, "ui", None)
+    if ui is not None and hasattr(ui, "show"):
+        try:
+            await ui.show("help")
+            return
+        except RuntimeError:
+            pass
     table = Table(title="Commands")
     table.add_column("Command", style="cyan", no_wrap=True)
     table.add_column("Help")
@@ -204,7 +214,10 @@ async def _theme(ctx: Any, args: str) -> None:
         if ui is None or not hasattr(ui, "show"):
             ctx.console.error("Theme picker is unavailable.")
             return
-        await ui.show("theme")
+        try:
+            await ui.show("theme")
+        except RuntimeError:
+            ctx.console.error("Theme picker is unavailable.")
         return
     if any(character.isspace() for character in name):
         ctx.console.error("Usage: /theme <name>")

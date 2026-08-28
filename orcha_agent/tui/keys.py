@@ -163,7 +163,10 @@ def create_key_bindings(
         if handler is None:
             continue
         for value in values:
-            bindings.add(*value.split())(handler)
+            keys = value.split()
+            bindings.add(*keys)(handler)
+            if keys == ["escape", "escape"]:
+                bindings.add("s-escape")(handler)
     return bindings
 
 

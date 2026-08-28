@@ -136,6 +136,14 @@ async def _tree(ctx: Any, args: str) -> None:
     if parts not in ([], ["--all"]):
         ctx.console.error("Usage: /tree [--all]")
         return
+    if not parts:
+        ui = getattr(ctx, "ui", None)
+        if ui is not None and hasattr(ui, "show"):
+            try:
+                await ui.show("tree")
+                return
+            except RuntimeError:
+                pass
 
     show_all = parts == ["--all"]
     entries = ctx.ledger.all(ctx.session_id)
@@ -253,6 +261,13 @@ async def _clear(ctx: Any, args: str) -> None:
 async def _sessions(ctx: Any, args: str) -> None:
     if not _require_no_args(ctx, args, "/sessions"):
         return
+    ui = getattr(ctx, "ui", None)
+    if ui is not None and hasattr(ui, "show"):
+        try:
+            await ui.show("session")
+            return
+        except RuntimeError:
+            pass
     table = Table(title="Sessions")
     table.add_column("ID", style="cyan", no_wrap=True)
     table.add_column("Title")
@@ -274,6 +289,16 @@ async def _sessions(ctx: Any, args: str) -> None:
 
 async def _resume(ctx: Any, args: str) -> None:
     parts = args.split()
+    if not parts:
+        ui = getattr(ctx, "ui", None)
+        if ui is not None and hasattr(ui, "show"):
+            try:
+                await ui.show("session")
+                return
+            except RuntimeError:
+                pass
+        ctx.console.error("Usage: /resume <session-id>")
+        return
     if len(parts) != 1:
         ctx.console.error("Usage: /resume <session-id>")
         return

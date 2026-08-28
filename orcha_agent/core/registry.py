@@ -13,6 +13,7 @@ BlockRenderer: TypeAlias = Callable[..., Any]
 AvailabilityCheck: TypeAlias = Callable[[], str | None]
 CompleterFunction: TypeAlias = Callable[[Any], Any]
 KeybindingHandler: TypeAlias = Callable[[Any, Any], Any]
+OverlayFactory: TypeAlias = Callable[..., Any]
 CORE_KEY_ACTIONS = frozenset(
     {
         "submit",
@@ -116,6 +117,14 @@ class KeybindingRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class OverlayRegistration:
+    plugin: str
+    priority: int
+    name: str
+    factory: OverlayFactory
+
+
+@dataclass(frozen=True, slots=True)
 class SubagentRegistration:
     plugin: str
     priority: int
@@ -168,6 +177,7 @@ class Registry:
         self.completers: list[CompleterRegistration] = []
         self.keybindings: dict[str, KeybindingRegistration] = {}
         self.subagents: list[SubagentRegistration] = []
+        self.overlays: dict[str, OverlayRegistration] = {}
         self.prompt_fragments: list[PromptFragment] = []
 
         self._tool_owners: dict[str, str] = {}
@@ -185,6 +195,7 @@ class Registry:
         self._renderer_owners: dict[object, str] = {}
         self._block_renderer_owners: dict[str, str] = {}
         self._subagent_owners: dict[str, str] = {}
+        self._overlay_owners: dict[str, str] = {}
 
     @staticmethod
     def _claim(
@@ -506,6 +517,29 @@ class Registry:
             default=default,
         )
 
+    def _add_overlay(
+        self,
+        plugin: str,
+        name: str,
+        factory: OverlayFactory,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "overlay",
+            name,
+            plugin,
+            self._overlay_owners,
+            replace=replace,
+        )
+        self.overlays[name] = OverlayRegistration(
+            plugin=plugin,
+            priority=priority,
+            name=name,
+            factory=factory,
+        )
+
     def _add_prompt_fragment(
         self,
         plugin: str,
@@ -539,6 +573,8 @@ __all__ = [
     "ProviderRegistration",
     "Registry",
     "Renderer",
+    "OverlayFactory",
+    "OverlayRegistration",
     "RendererMatch",
     "RendererRegistration",
     "StatusSegmentRegistration",
