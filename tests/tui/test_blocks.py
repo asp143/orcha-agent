@@ -7,6 +7,7 @@ from langchain_core.messages import ToolMessage
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
+from rich.text import Text
 
 from orcha_agent.tui.blocks import BlockRendererDispatcher
 from orcha_agent.tui.blocks.assistant import render as render_assistant
@@ -76,6 +77,30 @@ def test_user_bubble_is_full_width_and_supports_lite_markup() -> None:
     assert max(map(len, output.splitlines())) == 40
     assert any("bold" in str(span.style) for span in rendered.renderable.spans)
     assert any("dim" in str(span.style) for span in rendered.renderable.spans)
+
+
+def test_user_bubble_emits_full_width_background_cells_to_a_terminal() -> None:
+    rendered = render_user(
+        block("user", text="visible terminal bubble"),
+        THEME,
+        40,
+        20,
+        False,
+    )
+    output = StringIO()
+    Console(
+        file=output,
+        width=40,
+        force_terminal=True,
+        color_system="256",
+        no_color=False,
+    ).print(rendered)
+    raw = output.getvalue()
+    terminal_text = Text.from_ansi(raw).plain
+
+    assert "48;5;236" in raw
+    assert terminal_text == f" visible terminal bubble{' ' * 16}\n"
+    assert len(terminal_text.rstrip("\n")) == 40
 
 
 def test_assistant_returns_rich_markdown_for_accumulated_text() -> None:
