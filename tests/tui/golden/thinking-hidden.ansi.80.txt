@@ -1,1 +1,1 @@
-<ESC>[36m❊ 144 tokens · 18.0 tok/s<ESC>[0m
+<ESC>[36m❊ Thinking · 144 · 18.0 toks/s<ESC>[0m

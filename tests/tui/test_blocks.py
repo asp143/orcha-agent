@@ -134,7 +134,7 @@ def test_hidden_thinking_has_deterministic_pulse_and_rate() -> None:
     )
     output = plain(rendered)
 
-    assert output == f"{SPINNER_FRAMES[2]} 120 tokens · 24.0 tok/s\n"
+    assert output == f"{SPINNER_FRAMES[2]} Thinking · 120 · 24.0 toks/s\n"
     assert "private plan" not in output
 
 

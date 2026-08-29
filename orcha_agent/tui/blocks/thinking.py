@@ -35,7 +35,7 @@ def render(
     separator = theme_symbol(theme, "sep.thin", "·")
     return Text(
         f"{theme_spinner(theme, 'spinner.activity', frame, SPINNER_FRAMES)} "
-        f"{tokens} tokens {separator} {rate:.1f} tok/s",
+        f"Thinking {separator} {tokens} {separator} {rate:.1f} toks/s",
         style=str(theme_value(theme, "thinkingOff")),
     )
 

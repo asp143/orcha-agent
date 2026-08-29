@@ -169,6 +169,45 @@ async def test_transcript_print_replays_rich_sep_and_end_semantics() -> None:
     assert actual_stream.getvalue() == expected_stream.getvalue()
 
 
+@pytest.mark.asyncio
+async def test_scrollback_places_exactly_one_blank_row_between_blocks() -> None:
+    stream = StringIO()
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+            console=Console(file=stream, force_terminal=False, width=80),
+        )
+        runtime._write_blocks(
+            [
+                Block("first", "assistant", data={"text": "first"}),
+                Block("second", "assistant", data={"text": "second"}),
+            ]
+        )
+        await runtime.scheduler.aclose()
+
+    lines = [line.rstrip() for line in stream.getvalue().splitlines()]
+    assert lines == ["first", "", "second"]
+
+
+@pytest.mark.asyncio
+async def test_viewport_places_exactly_one_blank_row_between_blocks() -> None:
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        runtime.frame.add("assistant", {"text": "first"})
+        runtime.frame.add("assistant", {"text": "second"})
+        rendered = runtime._viewport_text()
+        await runtime.scheduler.aclose()
+
+    lines = [line.rstrip() for line in rendered.value.splitlines()]
+    assert lines == ["first", "", "second"]
+
+
 
 @pytest.mark.asyncio
 async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(

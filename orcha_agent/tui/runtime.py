@@ -1245,7 +1245,9 @@ class ApplicationRuntime:
 
     def _write_blocks(self, blocks: list[Block]) -> None:
         width = max(1, self.application.output.get_size().columns)
-        for block in blocks:
+        for index, block in enumerate(blocks):
+            if index:
+                self._scrollback.print()
             self._print_block(
                 self._scrollback,
                 block,
