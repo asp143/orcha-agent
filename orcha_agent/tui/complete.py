@@ -168,9 +168,11 @@ class PathIndex:
     def _walk(self) -> tuple[str, ...]:
         root_rules = self._read_rules(self.cwd)
         found: list[str] = []
-        stack: list[tuple[Path, list[_IgnoreRule]]] = [(self.cwd, root_rules)]
+        stack: list[tuple[Path, str, list[_IgnoreRule]]] = [
+            (self.cwd, "", root_rules)
+        ]
         while stack and len(found) < self.cap:
-            directory, rules = stack.pop()
+            directory, prefix, rules = stack.pop()
             try:
                 entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
             except OSError:
@@ -181,10 +183,10 @@ class PathIndex:
                 if _sensitive(entry.name) or entry.name == ".git":
                     continue
                 try:
-                    relative = Path(entry.path).relative_to(self.cwd).as_posix()
                     is_directory = entry.is_dir(follow_symlinks=False)
-                except (OSError, ValueError):
+                except OSError:
                     continue
+                relative = f"{prefix}/{entry.name}" if prefix else entry.name
                 ignored = _ignored(relative, rules)
                 if not ignored:
                     found.append(relative + "/" if is_directory else relative)
@@ -193,7 +195,9 @@ class PathIndex:
                     or any(rule.can_reinclude_below(relative) for rule in rules)
                 ):
                     child = Path(entry.path)
-                    stack.append((child, [*rules, *self._read_rules(child)]))
+                    stack.append(
+                        (child, relative, [*rules, *self._read_rules(child)])
+                    )
         return tuple(sorted(found))
 
     def paths(self) -> tuple[str, ...]:

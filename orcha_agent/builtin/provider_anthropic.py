@@ -10,6 +10,7 @@ from orcha_agent.core.plugin import PluginAPI, PluginSpec, ProviderCaps
 
 PLUGIN = PluginSpec(name="provider_anthropic", version="1.0.0")
 _INSTALL_HINT = "pip install langchain-anthropic"
+_THINKING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def _available() -> str | None:
@@ -26,7 +27,10 @@ def _factory(
 
     options = dict(config)
     options.pop("thinking", None)
+    effort = options.pop("reasoning_effort", None)
     if thinking_on:
+        if effort in _THINKING_EFFORTS:
+            options["reasoning_effort"] = effort
         options["thinking"] = {
             "type": "adaptive",
             "display": "summarized",

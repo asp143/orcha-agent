@@ -897,7 +897,11 @@ class ApplicationRuntime:
     def _apply_thinking_level(self, prefix: str) -> None:
         providers = getattr(self.ctx.cfg, "providers", None)
         if isinstance(providers, dict):
-            providers.setdefault(prefix, {})["reasoning_effort"] = self.thinking_level
+            options = providers.setdefault(prefix, {})
+            if prefix == "anthropic" and self.thinking_level == "off":
+                options.pop("reasoning_effort", None)
+            else:
+                options["reasoning_effort"] = self.thinking_level
         if prefix == "anthropic":
             self.ctx.plugin_states.setdefault("provider_anthropic", {})[
                 "thinking"
