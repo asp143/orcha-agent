@@ -647,6 +647,47 @@ def test_approval_preview_prefers_specialized_tool_rendering() -> None:
     assert generic.preview_text == "middleware summary"
 
 
+def test_overlays_fit_content_with_omp_width_and_height_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short = SelectList("Pick", ["one", "two"])
+    monkeypatch.setattr(short, "_terminal_size", lambda: (120, 40))
+
+    assert short._width() == 80
+    assert short._height() < 24
+
+    long = SelectList("Pick", [f"item-{index}" for index in range(100)])
+    monkeypatch.setattr(long, "_terminal_size", lambda: (120, 40))
+    assert long._height() == 24
+
+
+def test_narrow_overlay_keeps_four_columns_of_chrome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overlay = SelectList("Pick", ["one"])
+    monkeypatch.setattr(overlay, "_terminal_size", lambda: (30, 20))
+
+    assert overlay._width() == 26
+    assert overlay.inner_width == 22
+
+
+def test_ask_and_approval_dialogs_use_content_aware_heights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ask = AskOverlay(
+        [{"id": "q", "question": "Choose", "options": ["one", "two"]}]
+    )
+    approval = ApprovalOverlay(
+        {"name": "execute", "args": {"command": "printf ok"}}
+    )
+    for overlay in (ask, approval):
+        monkeypatch.setattr(overlay, "_terminal_size", lambda: (100, 30))
+
+    assert 7 <= ask._height() <= 21
+    assert ask.body_rows(30) >= 5
+    assert 7 <= approval._height() <= 9
+
+
 def test_tree_overlay_orders_entries_depth_first_by_parent_hierarchy() -> None:
     entries = [
         SimpleNamespace(id="root", parent_id=None),

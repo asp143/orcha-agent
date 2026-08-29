@@ -101,7 +101,14 @@ class AskOverlay(Overlay):
                 Window(self.custom_control, height=1, style="class:overlay.custom"),
             ]
         )
-        super().__init__("Questions", body, width=0.8, height=0.7, bindings=bindings)
+        super().__init__(
+            "Questions",
+            body,
+            width=0.8,
+            height=0.7,
+            min_height=7,
+            bindings=bindings,
+        )
 
     @property
     def focus_target(self) -> FormattedTextControl:

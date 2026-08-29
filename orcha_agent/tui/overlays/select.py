@@ -47,6 +47,7 @@ class SelectList(Overlay, Generic[T]):
         on_cancel: Callable[[], Any] | None = None,
         anchor: Anchor = "center",
         prefix: Any | None = None,
+        show_filter: bool = True,
     ) -> None:
         self.items = tuple(items)
         self.label = label
@@ -61,12 +62,20 @@ class SelectList(Overlay, Generic[T]):
         self._error: str | None = None
         self.filter = Buffer(multiline=False)
         self.filter.on_text_changed += self._filter_changed
-        self.list_control = FormattedTextControl(self._fragments, focusable=False)
+        self._show_filter = show_filter
+        self.list_control = FormattedTextControl(
+            self._fragments,
+            focusable=not show_filter,
+        )
         self.filter_control = BufferControl(buffer=self.filter)
-        body_parts: list[Any] = [
-            Window(self.filter_control, height=1, style="class:overlay.filter"),
-            Window(char="─", height=1, style="class:overlay.divider"),
-        ]
+        body_parts: list[Any] = []
+        if show_filter:
+            body_parts.extend(
+                [
+                    Window(self.filter_control, height=1, style="class:overlay.filter"),
+                    Window(char="─", height=1, style="class:overlay.divider"),
+                ]
+            )
         if prefix is not None:
             body_parts.extend([prefix, Window(char="─", height=1, style="class:overlay.divider")])
         self.list_window = Window(self.list_control, always_hide_cursor=True)
@@ -129,8 +138,8 @@ class SelectList(Overlay, Generic[T]):
         )
 
     @property
-    def focus_target(self) -> BufferControl:
-        return self.filter_control
+    def focus_target(self) -> Any:
+        return self.filter_control if self._show_filter else self.list_control
 
     @property
     def accepting(self) -> bool:

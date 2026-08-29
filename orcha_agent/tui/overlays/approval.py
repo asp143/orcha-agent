@@ -50,10 +50,18 @@ class ApprovalOverlay(SelectList[str]):
             description if isinstance(description, str) else None,
         )
         self.preview_text = detail
+        detail_rows = max(1, detail.count("\n") + 1)
+
+        def tail_scroll(window: Window) -> int:
+            info = window.render_info
+            visible = info.window_height if info is not None else min(10, detail_rows)
+            return max(0, detail_rows - visible)
+
         preview = Window(
             FormattedTextControl(FormattedText([("class:overlay.preview", detail)])),
-            height=min(10, max(1, detail.count("\n") + 1)),
+            height=min(10, detail_rows),
             wrap_lines=True,
+            get_vertical_scroll=tail_scroll,
         )
         decisions = ("Approve", "Reject", "Always")
         super().__init__(
@@ -62,6 +70,7 @@ class ApprovalOverlay(SelectList[str]):
             label=lambda item: item,
             anchor="bottom",
             prefix=preview,
+            show_filter=False,
             on_accept=lambda item: str(item).casefold(),
         )
 

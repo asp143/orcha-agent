@@ -30,6 +30,7 @@ def _bordered(title: str, body: Any) -> Any:
     top = VSplit(
         [
             _text("╭", width=1, style="class:overlay.border"),
+            _text("─", width=1, style="class:overlay.border"),
             _text(title_text, width=len(title_text), style="class:overlay.title"),
             Window(char="─", height=1, style="class:overlay.border"),
             _text("╮", width=1, style="class:overlay.border"),
@@ -39,7 +40,9 @@ def _bordered(title: str, body: Any) -> Any:
     middle = VSplit(
         [
             Window(char="│", width=1, style="class:overlay.border"),
+            Window(char=" ", width=1),
             body,
+            Window(char=" ", width=1),
             Window(char="│", width=1, style="class:overlay.border"),
         ]
     )
@@ -66,6 +69,7 @@ class Overlay(Float):
         width: float = 0.72,
         height: float = 0.62,
         margin: int = 2,
+        min_height: int = 3,
         on_cancel: Callable[[], Any] | None = None,
         bindings: KeyBindings | None = None,
     ) -> None:
@@ -78,6 +82,8 @@ class Overlay(Float):
         self.width_percent = width
         self.height_percent = height
         self.margin = max(0, margin)
+        self.min_height = max(3, min_height)
+        self._body = body
         self._on_cancel = on_cancel
         self._finished = False
         self._value: Any = None
@@ -104,12 +110,59 @@ class Overlay(Float):
     def _width(self) -> int:
         columns, _ = self._terminal_size()
         available = max(1, columns - self.margin * 2)
-        return max(4, min(available, int(columns * self.width_percent)))
+        return max(4, min(80, available))
+
+    @property
+    def inner_width(self) -> int:
+        return max(0, self._width() - 4)
+
+    def _needed_height(self, available: int) -> int:
+        preferred = self.container.preferred_height(self._width(), available)
+        return max(3, int(preferred.preferred))
 
     def _height(self) -> int:
         _, rows = self._terminal_size()
         available = max(1, rows - self.margin * 2)
-        return max(3, min(available, int(rows * self.height_percent)))
+        maximum = max(self.min_height, int(rows * self.height_percent))
+        needed = max(self.min_height, self._needed_height(available))
+        return max(3, min(available, maximum, needed))
+
+    def body_rows(self, terminal_rows: int | None = None) -> int:
+        if terminal_rows is None:
+            return max(0, self._height() - 2)
+        _, current_rows = self._terminal_size()
+        if terminal_rows == current_rows:
+            return max(0, self._height() - 2)
+        available = max(1, terminal_rows - self.margin * 2)
+        maximum = max(self.min_height, int(terminal_rows * self.height_percent))
+        needed = max(self.min_height, self._needed_height(available))
+        return max(0, min(available, maximum, needed) - 2)
+
+    @staticmethod
+    def render_lines(
+        title: str,
+        lines: list[str],
+        *,
+        width: int,
+        height: int,
+        anchor: Anchor = "center",
+    ) -> list[str]:
+        """Plain overlay rendering used by goldens and terminal diagnostics."""
+
+        width = max(4, width)
+        height = max(3, height)
+        inner = width - 4
+        title_text = f" {title} ".replace("\n", " ")
+        title_text = title_text[: max(0, width - 5)]
+        fill = max(0, width - 3 - len(title_text))
+        top = f"╭─{title_text}{'─' * fill}╮"
+        capacity = height - 2
+        visible = lines[-capacity:] if anchor == "bottom" else lines[:capacity]
+        rows = [top]
+        rows.extend(f"│ {line[:inner].ljust(inner)} │" for line in visible)
+        rows.extend(f"│ {'':{inner}} │" for _ in range(capacity - len(visible)))
+        rows.append(f"╰{'─' * (width - 2)}╯")
+        return rows
 
     @property
     def focus_target(self) -> Any:
