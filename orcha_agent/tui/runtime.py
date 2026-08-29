@@ -994,9 +994,10 @@ class ApplicationRuntime:
             if self._shell_runner is None:
                 result = await self._run_shell_process(command)
             else:
-                completed = await asyncio.to_thread(
-                    self._shell_runner, command, self._cwd(), 60.0
-                )
+                # Injected runners are deterministic test adapters. Keeping them
+                # on-loop avoids leaving asyncio's process-wide default executor
+                # alive after a headless prompt-toolkit application exits.
+                completed = self._shell_runner(command, self._cwd(), 60.0)
                 result = {
                     "returncode": int(getattr(completed, "returncode", 0)),
                     "stdout": str(getattr(completed, "stdout", "")),
