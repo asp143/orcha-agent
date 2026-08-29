@@ -215,7 +215,7 @@ async def test_runtime_hud_tracks_todos_queue_and_real_subagent_lifecycle() -> N
     await runtime.handle_presentation(ToolCallStart("task", {"description": "worker"}, "call-1"))
 
     text = runtime._hud_text().value
-    assert "todo 6" in text and "todo 7" not in text
+    assert "todo 5" in text and "todo 6" not in text
     assert "worker" in text and "queued one" in text
     assert len(runtime.ui.subagents) == 1
     assert subagents_segment(runtime.ctx).text == "1"
@@ -324,7 +324,7 @@ async def test_live_hud_changes_invalidate_cached_sections_and_spinner_frames() 
     first = runtime._hud_text().value
     assert "old todo" in first
     assert "old prompt" in first
-    assert "A worker one" in first
+    assert "⣾ call-1: worker one" in first
 
     runtime.set_todos([{"content": "new todo", "status": "pending"}])
     runtime.queue.clear()
@@ -337,7 +337,7 @@ async def test_live_hud_changes_invalidate_cached_sections_and_spinner_frames() 
 
     assert "new todo" in second and "old todo" not in second
     assert "new prompt" in second and "old prompt" not in second
-    assert "worker one" in second and "B worker two" in second
+    assert "worker one" in second and "⣾ call-2: worker two" in second
     await runtime.scheduler.aclose()
 
 

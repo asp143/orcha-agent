@@ -194,10 +194,10 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
     assert success is not None and success.plain.startswith("S ")
     assert error is not None and error.plain.startswith("E ")
     assert folded is not None and folded.plain.startswith("@= ")
-    assert grouped is not None and "execute x2" in grouped.plain
+    assert grouped is not None and "S Bash (2)" in grouped.plain
     assert thinking.plain.startswith("B ")
-    assert todo is not None and "\nS done\nP wait" in todo.plain
-    assert subagents is not None and "\nY worker" in subagents.plain
+    assert todo is not None and "S done" in todo.plain
+    assert subagents is not None and "Task | 1 agents" in subagents.plain
     assert all(
         rendered.plain.isascii()
         for rendered in (

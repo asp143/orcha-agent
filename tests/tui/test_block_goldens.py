@@ -203,6 +203,115 @@ SAMPLES = (
             ],
         ),
     ),
+    Sample(
+        "tool-read-group",
+        _block(
+            "tool-read-group",
+            "tool",
+            name="read_file",
+            calls=[
+                {"args": {"path": "src/a.py"}, "result": "one\ntwo\nthree\nfour"},
+                {"args": {"path": "src/b.py"}, "result": "alpha\nbeta"},
+            ],
+        ),
+    ),
+    Sample(
+        "tool-write-streaming",
+        _block(
+            "tool-write-streaming",
+            "tool",
+            state=BlockState.ACTIVE,
+            name="write_file",
+            args={"path": "src/new.py", "content": "\n".join(f"line {i}" for i in range(15))},
+            spinner_frame=2,
+        ),
+    ),
+    Sample(
+        "tool-write-result",
+        _block(
+            "tool-write-result",
+            "tool",
+            name="write_file",
+            args={"path": "src/new.py", "content": "one\ntwo\nthree\nfour\nfive\nsix\nseven"},
+            result="ok",
+        ),
+    ),
+    Sample(
+        "tool-edit-card",
+        _block(
+            "tool-edit-card",
+            "tool",
+            name="edit_file",
+            args={"path": "src/demo.py"},
+            result={"diff": "@@ -9,2 +9,2 @@\n context\n-old value\n+new value"},
+        ),
+    ),
+    Sample(
+        "tool-grep-inline",
+        _block(
+            "tool-grep-inline",
+            "tool",
+            name="grep",
+            args={"pattern": "needle", "path": "src"},
+            result={"matches": ["a.py:1:needle", "b.py:2:needle", "b.py:4:needle"]},
+        ),
+    ),
+    Sample(
+        "tool-glob-inline",
+        _block(
+            "tool-glob-inline",
+            "tool",
+            name="glob",
+            args={"pattern": "**/*.py"},
+            result=["src/a.py", "src/b.py"],
+        ),
+    ),
+    Sample(
+        "tool-task-card",
+        _block(
+            "tool-task-card",
+            "tool",
+            name="task",
+            result={
+                "agents": [
+                    {"id": "a", "description": "inspect", "status": "success", "requests": 3, "elapsed": 4},
+                    {"id": "b", "description": "test", "status": "error", "requests": 2, "elapsed": 7},
+                ],
+                "requests": 5,
+                "elapsed": 11,
+            },
+        ),
+    ),
+    Sample(
+        "tool-todo-card",
+        _block(
+            "tool-todo-card",
+            "tool",
+            name="todo",
+            args={"items": [{"text": "done", "done": True}, {"text": "next"}]},
+            result="ok",
+        ),
+    ),
+    Sample(
+        "tool-generic-card",
+        _block(
+            "tool-generic-card",
+            "tool",
+            name="custom_tool",
+            args={"alpha": 1, "beta": "two"},
+            result="one\ntwo\nthree\nfour\nfive",
+        ),
+    ),
+    Sample(
+        "tool-inline-error",
+        _block(
+            "tool-inline-error",
+            "tool",
+            name="grep",
+            args={"pattern": "needle"},
+            result={"status": "error", "error": "permission denied"},
+        ),
+    ),
 )
 
 

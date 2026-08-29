@@ -1,0 +1,1 @@
+<ESC>[38;2;243;139;168m✘ Error: permission denied<ESC>[0m

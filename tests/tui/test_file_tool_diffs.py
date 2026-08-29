@@ -95,10 +95,15 @@ async def test_real_file_tool_message_reaches_unified_diff_renderer(
         render_tool(frame.blocks[0], DEFAULT_THEME, 100, 50, True),
         100,
     )
-    assert "--- /demo.py" in rendered
-    assert "+++ /demo.py" in rendered
-    assert "old" in rendered
+    assert "/demo.py" in rendered
     assert "new" in rendered
+    if name == "edit_file":
+        assert "old" in rendered
+        assert "-  1│" in rendered
+        assert "+  1│" in rendered
+    else:
+        assert "old" not in rendered
+        assert "✎ Write" in rendered
 
 
 def test_non_filesystem_turn_context_does_not_require_cfg() -> None:

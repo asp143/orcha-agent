@@ -1,4 +1,4 @@
-"""Unified-diff renderer with compact gutters and token highlights."""
+"""omp-style edit diff renderer with fixed gutters and inverse word changes."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from rich.style import Style
-from rich.syntax import Syntax
 from rich.text import Text
 
 from orcha_agent.tui.frame import Block, BlockState
@@ -18,100 +17,98 @@ _HUNK = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _TOKENS = re.compile(r"\s+|\w+|[^\w\s]", re.UNICODE)
 
 
-def _visible_lines(block: Block) -> list[str]:
-    lines = str(block.data.get("text", block.data.get("diff", ""))).splitlines()
-    if block.state is BlockState.ACTIVE:
-        while lines and lines[-1].startswith("-") and not lines[-1].startswith("---"):
-            lines.pop()
-    return lines
-
-
-def _changed_indexes(before: str, after: str) -> tuple[set[int], set[int]]:
-    old = _TOKENS.findall(_visualize_indent(before))
-    new = _TOKENS.findall(_visualize_indent(after))
-    matcher = SequenceMatcher(a=old, b=new, autojunk=False)
-    old_changed: set[int] = set()
-    new_changed: set[int] = set()
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag != "equal":
-            old_changed.update(range(i1, i2))
-            new_changed.update(range(j1, j2))
-    return old_changed, new_changed
-
-
 def _visualize_indent(value: str) -> str:
     match = re.match(r"[ \t]*", value)
     indent = match.group(0) if match else ""
     return indent.replace(" ", "·").replace("\t", "→") + value[len(indent) :]
 
 
-def _append_content(target: Text, content: str, color: str, changed: set[int]) -> None:
-    for index, token in enumerate(_TOKENS.findall(_visualize_indent(content))):
-        style = Style(color=color, reverse=index in changed)
-        target.append(token, style=style)
+def _changes(before: str, after: str) -> tuple[set[int], set[int]]:
+    old = _TOKENS.findall(_visualize_indent(before))
+    new = _TOKENS.findall(_visualize_indent(after))
+    left: set[int] = set()
+    right: set[int] = set()
+    for tag, i1, i2, j1, j2 in SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes():
+        if tag != "equal":
+            left.update(range(i1, i2))
+            right.update(range(j1, j2))
+    return left, right
 
 
-def _highlight_context(content: str, lexer: str) -> Text:
-    visible = _visualize_indent(content)
-    syntax = Syntax(
-        visible,
-        lexer,
-        theme="ansi_dark",
-        background_color="default",
-        word_wrap=False,
-    )
-    return syntax.highlight(visible)
+def _append(target: Text, value: str, color: str, changed: set[int]) -> None:
+    for index, token in enumerate(_TOKENS.findall(_visualize_indent(value))):
+        target.append(token, style=Style(color=color, reverse=index in changed))
 
 
-def render(
-    block: Block,
-    theme: Any,
-    width: int,
-    budget_rows: int,
-    expanded: bool,
-) -> Text:
-    del width, budget_rows, expanded
-    lines = _visible_lines(block)
-    rendered = Text()
+def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Text:
+    del width, budget_rows
+    lines = str(block.data.get("text", block.data.get("diff", ""))).splitlines()
+    if block.state is BlockState.ACTIVE:
+        while lines and lines[-1].startswith("-") and not lines[-1].startswith("---"):
+            lines.pop()
+    hunks = sum(1 for line in lines if line.startswith("@@ "))
+    maximum = len(lines) if expanded else 40
+    output = Text()
     old_line = new_line = 0
+    digits = 3
     paired: dict[int, tuple[set[int], set[int]]] = {}
-    lexer = "text"
     for index in range(len(lines) - 1):
-        if lines[index].startswith("-") and not lines[index].startswith("---") and lines[index + 1].startswith("+") and not lines[index + 1].startswith("+++"):
-            paired[index] = _changed_indexes(lines[index][1:], lines[index + 1][1:])
-
+        if (
+            lines[index].startswith("-")
+            and not lines[index].startswith("---")
+            and lines[index + 1].startswith("+")
+            and not lines[index + 1].startswith("+++")
+        ):
+            paired[index] = _changes(lines[index][1:], lines[index + 1][1:])
+    visible_hunks = rendered_lines = 0
     for index, line in enumerate(lines):
-        if rendered:
-            rendered.append("\n")
         hunk = _HUNK.search(line)
         if hunk:
+            visible_hunks += 1
+            if not expanded and visible_hunks > 8:
+                continue
             old_line, new_line = int(hunk.group(1)), int(hunk.group(2))
-            rendered.append(line, style=str(theme_value(theme, "accent")))
+            digits = max(3, len(str(old_line)), len(str(new_line)))
+            if output:
+                output.append("\n")
+            output.append("…", style="dim")
+            rendered_lines += 1
             continue
         if line.startswith(("---", "+++")):
-            rendered.append(line, style=str(theme_value(theme, "muted")))
-            if line.startswith("+++"):
-                path = line[4:].strip()
-                try:
-                    lexer = Syntax.guess_lexer(path)
-                except Exception:
-                    lexer = "text"
             continue
+        if rendered_lines >= maximum:
+            continue
+        if output:
+            output.append("\n")
         if line.startswith("-"):
-            changed = paired.get(index, (set(), set()))[0]
-            rendered.append(f"{old_line:03d} - ", style=str(theme_value(theme, "toolDiffRemoved")))
-            _append_content(rendered, line[1:], str(theme_value(theme, "toolDiffRemoved")), changed)
+            color = str(theme_value(theme, "toolDiffRemoved"))
+            output.append(f"-{old_line:>{digits}}│", style=color)
+            _append(output, line[1:], color, paired.get(index, (set(), set()))[0])
             old_line += 1
-            continue
-        if line.startswith("+"):
-            changed = paired.get(index - 1, (set(), set()))[1]
-            rendered.append(f"{new_line:03d} + ", style=str(theme_value(theme, "toolDiffAdded")))
-            _append_content(rendered, line[1:], str(theme_value(theme, "toolDiffAdded")), changed)
+        elif line.startswith("+"):
+            color = str(theme_value(theme, "toolDiffAdded"))
+            output.append(f"+{new_line:>{digits}}│", style=color)
+            _append(output, line[1:], color, paired.get(index - 1, (set(), set()))[1])
             new_line += 1
-            continue
-        content = line[1:] if line.startswith(" ") else line
-        rendered.append(f"{new_line:03d}   ", style=str(theme_value(theme, "toolDiffContext")))
-        rendered.append(_highlight_context(content, lexer))
-        old_line += 1
-        new_line += 1
-    return rendered
+        else:
+            content = line[1:] if line.startswith(" ") else line
+            color = str(theme_value(theme, "toolDiffContext"))
+            output.append(f" {new_line:>{digits}}│", style=color)
+            output.append(_visualize_indent(content), style=f"dim {color}")
+            old_line += 1
+            new_line += 1
+        rendered_lines += 1
+    content_lines = [line for line in lines if not line.startswith(("@@ ", "---", "+++"))]
+    hidden_lines = max(0, len(content_lines) - maximum)
+    hidden_hunks = max(0, hunks - 8)
+    if not expanded and (hidden_lines or hidden_hunks):
+        if output:
+            output.append("\n")
+        output.append(
+            f"… ({hidden_hunks} more hunks, {hidden_lines} more lines) ⟦Ctrl+O: Expand⟧",
+            style="dim",
+        )
+    return output
+
+
+__all__ = ["render"]

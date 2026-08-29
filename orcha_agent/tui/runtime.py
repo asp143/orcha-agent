@@ -1011,8 +1011,15 @@ class ApplicationRuntime:
                 "stderr": "timed out after 60 seconds",
             }
         except asyncio.CancelledError:
-            await self._stop_shell_process()
             result = {"returncode": 130, "stdout": "", "stderr": "cancelled"}
+            process = self._shell_process
+            self._shell_process = None
+            if process is not None and process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                asyncio.create_task(process.wait())
             raise
         except Exception as exc:
             await self._stop_shell_process()

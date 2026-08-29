@@ -144,34 +144,42 @@ class Frame:
         """Allocate measured visual rows newest-first in transcript order."""
         if width is not None:
             width = max(1, width)
-        remaining = max(0, budget_rows)
-        planned: list[ViewportItem] = []
-        for block in reversed(self.blocks):
-            if remaining == 0:
-                break
-            if block.state is BlockState.COMMITTED:
-                continue
+        budget = max(0, budget_rows)
+        if budget == 0:
+            return []
+        candidates = [
+            block for block in self.blocks if block.state is not BlockState.COMMITTED
+        ]
+        selected = candidates[-budget:]
+        allocations = {block.id: 1 for block in selected}
+        remaining = budget - len(selected)
+
+        def desired(block: Block) -> int:
             if block.kind == "tool":
-                requested = self.tool_rows(remaining)
-            elif width is not None and measure is not None:
-                requested = min(remaining, max(1, measure(block, width)))
-            else:
-                content = str(
-                    block.data.get("text", block.data.get("message", ""))
-                )
-                if width is None:
-                    content_rows = max(1, content.count("\n") + 1)
-                else:
-                    content_rows = sum(
-                        max(1, (len(line) + width - 1) // width)
-                        for line in content.split("\n")
-                    )
-                requested = min(remaining, content_rows)
-            if requested:
-                planned.append(ViewportItem(block, requested))
-                remaining -= requested
-        planned.reverse()
-        return planned
+                return 3
+            if width is not None and measure is not None:
+                return max(1, measure(block, width))
+            content = str(block.data.get("text", block.data.get("message", "")))
+            if width is None:
+                return max(1, content.count("\n") + 1)
+            return sum(
+                max(1, (len(line) + width - 1) // width)
+                for line in content.split("\n")
+            )
+
+        # Keep every active block observable. Non-tool prose gets surplus rows
+        # before tool cards, which then degrade deterministically to 2/1 rows.
+        for group in (
+            [block for block in reversed(selected) if block.kind != "tool"],
+            [block for block in reversed(selected) if block.kind == "tool"],
+        ):
+            for block in group:
+                if remaining == 0:
+                    break
+                extra = min(remaining, max(0, desired(block) - 1))
+                allocations[block.id] += extra
+                remaining -= extra
+        return [ViewportItem(block, allocations[block.id]) for block in selected]
 
 
 class FrameScheduler:

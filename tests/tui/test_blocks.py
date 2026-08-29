@@ -129,10 +129,10 @@ def test_visible_thinking_renders_italic_markdown() -> None:
 @pytest.mark.parametrize(
     ("rows", "expected", "forbidden"),
     [
-        (3, "output line", None),
-        (2, "╭─ execute · pytest -q", "output line"),
-        (1, "execute · pytest -q · exit 0 · 1.2s", "output line"),
-        (0, "", "execute"),
+        (3, "$ pytest -q", "output line"),
+        (2, "╭─ Bash · pytest -q · 1.2s", "output line"),
+        (1, "✔ Bash · pytest -q · 1.2s", "output line"),
+        (0, "", "Bash"),
     ],
 )
 def test_tool_degrades_with_observable_row_budget(
@@ -160,9 +160,8 @@ def test_tool_degrades_with_observable_row_budget(
         assert forbidden not in output
 
 
-def test_tool_preview_caps_lines_and_characters_until_expanded() -> None:
-    long_line = "x" * 4100
-    output = "\n".join([long_line, *[f"line {index}" for index in range(1, 25)]])
+def test_bash_preview_keeps_ten_output_tail_lines_until_expanded() -> None:
+    output = "\n".join(f"line {index}" for index in range(25))
     value = block(
         "tool",
         name="execute",
@@ -173,14 +172,13 @@ def test_tool_preview_caps_lines_and_characters_until_expanded() -> None:
     collapsed = plain(render_tool(value, THEME, 5000, 100, False), 5000)
     expanded = plain(render_tool(value, THEME, 5000, 100, True), 5000)
 
-    assert "x" * 4000 in collapsed
-    assert "x" * 4001 not in collapsed
-    assert "line 19" in collapsed
-    assert "line 20" not in collapsed
-    assert "[Ctrl+O] expand" in collapsed
+    assert "line 14" not in collapsed
+    assert "line 15" in collapsed
+    assert "showing 10 of 25" in collapsed
+    assert "ctrl+o to expand" in collapsed
     assert "line 24" in expanded
-    assert "exit 3" in expanded
-    assert "[Ctrl+O] expand" not in expanded
+    assert "Exit: 3" in expanded
+    assert "ctrl+o to expand" not in expanded
 
 
 def test_grouped_read_files_share_one_card() -> None:
@@ -200,7 +198,7 @@ def test_grouped_read_files_share_one_card() -> None:
     )
     output = plain(rendered)
 
-    assert "read_file ×2" in output
+    assert "• Read (2)" in output
     assert "a.py" in output
     assert "b.py" in output
 
@@ -218,9 +216,9 @@ def test_diff_visualizes_indent_and_inverse_word_changes() -> None:
     )
     output = plain(rendered, 100)
 
-    assert "001 - ··old value" in output
-    assert "001 + →new value" in output
-    assert "002   context" in output
+    assert "-  1│··old value" in output
+    assert "+  1│→new value" in output
+    assert "   2│context" in output
     assert any("reverse" in str(span.style) for span in rendered.spans)
 
 
@@ -283,10 +281,11 @@ def test_hud_is_hidden_when_empty_and_capped_at_eight_rows() -> None:
     )
 
     assert len(todo.splitlines()) <= 8
-    assert "task 6" in todo
-    assert "task 7" not in todo
+    assert "task 5" in todo
+    assert "task 6" not in todo
     assert len(agents.splitlines()) <= 8
-    assert "agent-6" in agents
+    assert "agent-8" in agents
+    assert "agent-11" in agents
     assert "agent-7" not in agents
 
 
@@ -313,6 +312,16 @@ def test_dispatcher_memoizes_by_revision_width_expansion_theme_and_budget() -> N
     assert not dispatcher._cache
 
 
+def test_dispatcher_falls_back_to_raw_output_when_renderer_raises() -> None:
+    def broken(*_args: object) -> object:
+        raise RuntimeError("broken renderer")
+
+    dispatcher = BlockRendererDispatcher({"tool": broken})
+    value = block("tool", result={"stdout": "raw tool output"})
+
+    assert dispatcher.render(value, THEME, 80, 3, False) == "raw tool output"
+
+
 def test_nonzero_execute_artifact_renders_error_state() -> None:
     result = ToolMessage(
         content="command failed",
@@ -337,8 +346,8 @@ def test_nonzero_execute_artifact_renders_error_state() -> None:
         )
     )
 
-    assert "✘ execute · false" in output
-    assert "exit 7" in output
+    assert "$ false" in output
+    assert len(output.splitlines()) == 3
 
 
 def test_full_tool_card_fits_allocated_rows() -> None:
@@ -388,9 +397,9 @@ def test_grouped_reads_and_diffs_share_collapsed_preview_caps() -> None:
     diff_expanded = plain(render_tool(diff, THEME, 100, 100, True), 100)
 
     assert "x" * 4001 not in grouped_collapsed
-    assert "20.py" not in grouped_collapsed
+    assert "20.py" in grouped_collapsed
     assert "24.py" in grouped_expanded
-    assert "context 20" not in diff_collapsed
+    assert "context 20" in diff_collapsed
     assert "context 24" in diff_expanded
 
 

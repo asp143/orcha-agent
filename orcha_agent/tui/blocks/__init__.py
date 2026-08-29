@@ -132,7 +132,25 @@ class BlockRendererDispatcher:
         cache = self._cache.setdefault(partition, {})
         if key not in cache:
             cache.clear()
-            cache[key] = renderer(block, theme, width, budget_rows, expanded)
+            try:
+                cache[key] = renderer(block, theme, width, budget_rows, expanded)
+            except Exception:
+                result = block.data.get("result")
+                if isinstance(result, Mapping):
+                    cache[key] = next(
+                        (
+                            str(result[name])
+                            for name in ("stdout", "content", "text", "output", "error")
+                            if result.get(name) is not None
+                        ),
+                        str(result),
+                    )
+                else:
+                    cache[key] = str(
+                        result
+                        if result is not None
+                        else block.data.get("text", block.data)
+                    )
         return cache[key]
 
 

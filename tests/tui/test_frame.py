@@ -71,6 +71,25 @@ def test_viewport_planning_counts_wrapped_rows_at_the_current_width() -> None:
     assert wide == [ViewportItem(block, 1)]
 
 
+def test_viewport_gives_every_block_one_row_then_surplus_to_non_tools() -> None:
+    frame = Frame()
+    assistant = frame.add("assistant", {"text": "one\ntwo\nthree"})
+    first_tool = frame.add("tool", {"name": "read"})
+    second_tool = frame.add("tool", {"name": "write"})
+
+    plan = frame.viewport_plan(
+        5,
+        width=80,
+        measure=lambda block, _width: 3 if block is assistant else 8,
+    )
+
+    assert plan == [
+        ViewportItem(assistant, 3),
+        ViewportItem(first_tool, 1),
+        ViewportItem(second_tool, 1),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_commit_and_invalidation_requests_are_coalesced() -> None:
     commit_batches: list[list[str]] = []

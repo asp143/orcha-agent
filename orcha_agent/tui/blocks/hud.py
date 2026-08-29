@@ -10,6 +10,7 @@ from rich.text import Text
 from orcha_agent.tui.frame import Block
 
 from . import theme_spinner, theme_symbol, theme_value
+from .tool import render as render_tool
 
 _MAX_ROWS = 8
 
@@ -26,25 +27,17 @@ def render_todo(
     budget_rows: int,
     expanded: bool,
 ) -> Text | None:
-    del width, expanded
     items = _items(block, "items")
     if not items or budget_rows <= 0:
         return None
-    rows = min(_MAX_ROWS, budget_rows)
-    rendered = Text("Todo", style=f"bold {theme_value(theme, 'accent')}")
-    for item in items[: max(0, rows - 1)]:
-        if isinstance(item, Mapping):
-            label = str(item.get("content", item.get("text", item.get("title", ""))))
-            done = bool(item.get("done") or item.get("status") in {"done", "completed"})
-        else:
-            label, done = str(item), False
-        glyph = theme_symbol(
-            theme,
-            "status.success" if done else "status.pending",
-            "✔" if done else "○",
-        )
-        rendered.append(f"\n{glyph} {label}", style="dim" if done else "")
-    return rendered
+    tool = Block(
+        id=block.id,
+        kind="tool",
+        state=block.state,
+        revision=block.revision,
+        data={"name": "todo", "args": {"items": items}, "result": "ok"},
+    )
+    return render_tool(tool, theme, width, min(_MAX_ROWS, budget_rows), expanded)
 
 
 def render_subagents(
@@ -54,23 +47,32 @@ def render_subagents(
     budget_rows: int,
     expanded: bool,
 ) -> Text | None:
-    del width, expanded
     agents = _items(block, "agents")
     if not agents or budget_rows <= 0:
         return None
-    rows = min(_MAX_ROWS, budget_rows)
-    rendered = Text("Subagents", style=f"bold {theme_value(theme, 'accent')}")
-    spinner_frame = int(block.data.get("spinner_frame", 0))
-    spinner = theme_spinner(theme, "spinner.status", spinner_frame, ("✻",))
-    separator = theme_symbol(theme, "sep.thin", "·")
-    for agent in agents[: max(0, rows - 1)]:
+    normalized = []
+    for agent in agents:
         if isinstance(agent, Mapping):
-            name = str(agent.get("name", agent.get("id", "agent")))
-            status = str(agent.get("status", "running"))
+            normalized.append(
+                {
+                    **agent,
+                    "description": agent.get("description", agent.get("name", "")),
+                }
+            )
         else:
-            name, status = str(agent), "running"
-        rendered.append(f"\n{spinner} {name} {separator} {status}")
-    return rendered
+            normalized.append({"id": "agent", "description": str(agent), "status": "running"})
+    tool = Block(
+        id=block.id,
+        kind="tool",
+        state=block.state,
+        revision=block.revision,
+        data={
+            "name": "task",
+            "result": {"agents": normalized},
+            "spinner_frame": block.data.get("spinner_frame", 0),
+        },
+    )
+    return render_tool(tool, theme, width, min(_MAX_ROWS, budget_rows), expanded)
 
 
 def render_queue(
