@@ -7,6 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessageChunk, HumanMessage
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.styles import Style
@@ -28,6 +31,14 @@ from orcha_agent.tui.runtime import (
     _register_theme_refresh,
 )
 from orcha_agent.tui.theme import COLOR_TOKENS, Theme, load_themes
+
+
+class _SizedDummyOutput(DummyOutput):
+    def __init__(self, *, columns: int, rows: int = 24) -> None:
+        self._size = Size(rows=rows, columns=columns)
+
+    def get_size(self) -> Size:
+        return self._size
 
 
 @pytest.mark.asyncio
@@ -59,6 +70,65 @@ async def test_application_is_headlessly_driveable_through_submit_and_exit() -> 
     assert submitted == ["hello"]
     assert runtime.application.full_screen is False
     assert "hello" in stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_headless_fake_model_turn_keeps_full_width_composer_frame() -> None:
+    width = 72
+    output = _SizedDummyOutput(columns=width)
+    scrollback = StringIO()
+    model = FakeListChatModel(responses=["A complete fake-model response."])
+    completed = asyncio.Event()
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+        start = TurnStart(thread_id="headless", text=text)
+        await runtime.handle_presentation(start)
+        await runtime.transcript.handle(start)
+
+        response = await model.ainvoke([HumanMessage(content=text)])
+        await runtime.transcript.handle(
+            ModelChunk(
+                chunk=AIMessageChunk(content=response.content),
+                role="main",
+                source_id="main",
+            )
+        )
+
+        end = TurnEnd(thread_id="headless")
+        await runtime.transcript.handle(end)
+        await runtime.handle_presentation(end)
+        completed.set()
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            input=pipe,
+            output=output,
+            console=Console(file=scrollback, force_terminal=False, width=width),
+            composer_shape="box",
+        )
+        task = asyncio.create_task(runtime.run())
+        await asyncio.sleep(0)
+        pipe.send_text("render the full turn\n")
+        await asyncio.wait_for(completed.wait(), timeout=1)
+        await asyncio.sleep(0.05)
+
+        screen = runtime.application.renderer._last_screen
+        rows = [
+            "".join(screen.data_buffer[y][x].char for x in range(width))
+            for y in range(screen.height)
+        ]
+        top_border = next(row for row in rows if row.startswith("╭──"))
+        assert top_border.endswith("╮")
+        assert len(top_border) == width
+
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, timeout=1)
+
+    assert submitted == ["render the full turn"]
+    assert "A complete fake-model response." in scrollback.getvalue()
 
 
 @pytest.mark.asyncio
