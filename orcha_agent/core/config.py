@@ -115,6 +115,11 @@ class Config:
     command: str = "repl"
     login_prefix: str | None = None
     login_mode: str = "auto"
+    gallery_tool: str | None = None
+    gallery_state: str | None = None
+    gallery_width: int | None = None
+    gallery_expanded: bool = False
+    gallery_plain: bool = False
     banner: bool = True
     notify: bool = False
     statusbar: bool = True
@@ -155,6 +160,18 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--device", dest="login_mode", action="store_const", const="device")
     modes.add_argument("--paste", dest="login_mode", action="store_const", const="paste")
     login.set_defaults(login_mode="auto")
+    gallery = subcommands.add_parser(
+        "gallery",
+        help="render built-in TUI blocks and lifecycle states",
+    )
+    gallery.add_argument("--tool", metavar="NAME")
+    gallery.add_argument(
+        "--state",
+        choices=("streaming", "progress", "success", "error"),
+    )
+    gallery.add_argument("--width", type=int, metavar="N")
+    gallery.add_argument("--expanded", action="store_true")
+    gallery.add_argument("--plain", action="store_true")
     return parser
 
 
@@ -381,6 +398,11 @@ def load_config(
         command=args.command or "repl",
         login_prefix=getattr(args, "prefix", None),
         login_mode=getattr(args, "login_mode", "auto"),
+        gallery_tool=getattr(args, "tool", None),
+        gallery_state=getattr(args, "state", None),
+        gallery_width=getattr(args, "width", None),
+        gallery_expanded=getattr(args, "expanded", False),
+        gallery_plain=getattr(args, "plain", False),
         banner=bool(banner),
         notify=bool(notify),
         statusbar=bool(ui.get("statusbar", True)),

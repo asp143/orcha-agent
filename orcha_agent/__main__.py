@@ -12,6 +12,7 @@ from .core.registry import Registry
 from .tui.console import ConsoleOutput
 from .core.config import load_config
 from .tui.app import run_app
+from .tui.gallery import run_gallery
 
 
 async def _run_login(cfg: object) -> int:
@@ -45,6 +46,8 @@ def main() -> None:
     """Load configuration and run the terminal application."""
 
     cfg = load_config()
+    if cfg.command == "gallery":
+        raise SystemExit(run_gallery(cfg))
     if cfg.trust_cwd:
         load_dotenv(cfg.cwd / ".env", override=False)
     if cfg.command == "login":

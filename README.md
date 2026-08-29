@@ -140,7 +140,8 @@ Disable the welcome with `banner=false` or `ORCHA_NO_BANNER=1`.
 
 The status line presets and their left/right groups are:
 
-- `default` and `ascii`: `model mode path git` / `subagents context cost`
+- `default`: `model mode path git context cost` / `subagents session`
+- `ascii`: `model mode path git` / `subagents context cost`
 - `minimal`: `model path` / `context`
 - `compact`: `mode path git` / `context time`
 - `full` and `nerd`: `model mode path git session` /
@@ -170,6 +171,22 @@ input = 5
 output = 30
 cache_read = 0.5
 ```
+
+### Renderer gallery
+
+Use the non-interactive gallery to inspect every built-in block renderer in
+each lifecycle state without starting a model session:
+
+```bash
+uv run orcha gallery
+uv run orcha gallery --tool tool --state error --width 100 --expanded
+uv run orcha gallery --plain > /tmp/orcha-gallery.txt
+```
+
+`--tool NAME` and `--state streaming|progress|success|error` filter the
+matrix. `--width N` sets the simulated terminal width, `--expanded` reveals
+expanded renderer details, and `--plain` disables ANSI styling for snapshots
+or redirected output. Fixtures live in `orcha_agent/tui/gallery_fixtures/`.
 
 ### Themes and symbols
 
