@@ -24,7 +24,7 @@ STATUSLINE_SEPARATORS = frozenset(
 @dataclass(frozen=True, slots=True)
 class StatusLineConfig:
     preset: str = "default"
-    separator: str = "powerline"
+    separator: str = "powerline-thin"
     left: tuple[str, ...] | None = None
     right: tuple[str, ...] | None = None
     transparent: bool = False
@@ -69,7 +69,7 @@ def _statusline_config(
             "[ui.statusline] preset must be default, minimal, compact, full, "
             "nerd, or ascii"
         )
-    separator = value.get("separator", "powerline")
+    separator = value.get("separator", "powerline-thin")
     if not isinstance(separator, str) or separator not in STATUSLINE_SEPARATORS:
         parser.error(
             "[ui.statusline] separator must be powerline, powerline-thin, "

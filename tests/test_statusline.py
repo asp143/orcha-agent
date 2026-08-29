@@ -160,8 +160,8 @@ def test_segment_protocol_wraps_legacy_strings_and_preserves_explicit_segments()
 def test_preset_groups_are_stable() -> None:
     assert PRESETS == {
         "default": (
-            ("model", "mode", "path", "git"),
-            ("subagents", "context", "cost"),
+            ("model", "mode", "path", "git", "context", "cost"),
+            ("subagents", "session"),
         ),
         "minimal": (("model", "path"), ("context",)),
         "compact": (("mode", "path", "git"), ("context", "time")),

@@ -127,7 +127,7 @@ statusbar = true
 
 [ui.statusline]
 preset = "default"
-separator = "powerline"
+separator = "powerline-thin"
 transparent = false
 # left and right are omitted by default; lists override the preset groups.
 ```

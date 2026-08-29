@@ -25,8 +25,8 @@ class Segment:
 
 PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "default": (
-        ("model", "mode", "path", "git"),
-        ("subagents", "context", "cost"),
+        ("model", "mode", "path", "git", "context", "cost"),
+        ("subagents", "session"),
     ),
     "minimal": (("model", "path"), ("context",)),
     "compact": (("mode", "path", "git"), ("context", "time")),
@@ -516,7 +516,7 @@ def _status_config(ctx: Any) -> Any:
         (),
         {
             "preset": "default",
-            "separator": "powerline",
+            "separator": "powerline-thin",
             "left": None,
             "right": None,
             "transparent": False,
@@ -806,14 +806,25 @@ def render_statusline(
 
     gap = max(0, target_width - _width(left) - _width(right))
     if context is not None:
-        middle = _gauge(
-            context,
-            gap,
-            theme,
-            symbols,
-            transparent=transparent,
-            ascii_mode=ascii_mode,
+        gauge_width = min(gap, 17) if transparent else gap
+        leading = (gap - gauge_width) // 2
+        trailing = gap - gauge_width - leading
+        gap_style = _style(theme, "statusLineBg", transparent=transparent)
+        middle = []
+        if leading:
+            middle.append((gap_style, " " * leading))
+        middle.extend(
+            _gauge(
+                context,
+                gauge_width,
+                theme,
+                symbols,
+                transparent=transparent,
+                ascii_mode=ascii_mode,
+            )
         )
+        if trailing:
+            middle.append((gap_style, " " * trailing))
     else:
         middle = [(_style(theme, "statusLineBg", transparent=transparent), " " * gap)]
     return _truncate([*left, *middle, *right], target_width)

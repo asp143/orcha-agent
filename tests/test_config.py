@@ -421,7 +421,7 @@ def test_ui_composer_rejects_non_string_values(
 def test_ui_statusline_defaults_are_maintainable(tmp_path: Path) -> None:
     statusline = _load(tmp_path).statusline
     assert statusline.preset == "default"
-    assert statusline.separator == "powerline"
+    assert statusline.separator == "powerline-thin"
     assert statusline.left is None
     assert statusline.right is None
     assert statusline.transparent is False
