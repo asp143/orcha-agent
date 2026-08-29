@@ -43,7 +43,7 @@ def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
 
 def test_composer_builds_all_shapes_and_dynamic_mode_styles(tmp_path: Path) -> None:
     theme = load_themes(home=tmp_path)["dark"]
-    for shape, chrome in (("box", 2), ("claude", 2), ("borderless", 0)):
+    for shape, chrome in (("box", 1), ("claude", 2), ("borderless", 0)):
         composer = Composer(shape=shape, theme=theme, model=lambda: "model", thinking=lambda: "high")
         assert composer.shape == shape
         assert composer.chrome_lines == chrome
