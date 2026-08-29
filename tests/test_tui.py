@@ -4093,3 +4093,24 @@ async def test_lazy_pending_reseed_failure_keeps_persisted_thread_null(
         assert store.get_thread(pending_thread) is None
         assert ledger.leaf(session_id) == prior_leaf
         assert _thread_switches(ctx) == []
+
+
+def test_application_runtime_accepts_real_app_context(tmp_path: Path) -> None:
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from orcha_agent.tui.runtime import ApplicationRuntime
+
+    async def submit(_text: str) -> None:
+        return None
+
+    ctx = _context(tmp_path)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            input=pipe,
+            output=DummyOutput(),
+            ctx=ctx,
+        )
+    assert ctx.queue is runtime.queue
+    assert ctx.ui is runtime.ui

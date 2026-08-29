@@ -187,6 +187,7 @@ class AppContext:
     rebuild_requested: bool = False
     ui: Any = None
     transcript: Any = None
+    queue: Any = None
     _title_written: bool = False
     _pending_switch_old_thread: str | None = field(
         default=None, init=False, repr=False
