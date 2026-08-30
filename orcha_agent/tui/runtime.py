@@ -1202,6 +1202,9 @@ class ApplicationRuntime:
         console = Console(
             file=stream,
             force_terminal=force_terminal,
+            # Pin the color system so viewport output does not depend on
+            # COLORTERM/NO_COLOR in the launching shell.
+            color_system="truecolor" if force_terminal else None,
             width=max(1, width),
             theme=getattr(self.theme, "rich", None),
         )

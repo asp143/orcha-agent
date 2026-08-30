@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -247,7 +248,7 @@ async def test_scrollback_places_exactly_one_blank_row_between_blocks() -> None:
             lambda _text: asyncio.sleep(0),
             input=pipe,
             output=DummyOutput(),
-            console=Console(file=stream, force_terminal=False, width=80),
+            console=Console(file=stream, force_terminal=False, width=80, color_system=None),
         )
         runtime._write_blocks(
             [
@@ -274,7 +275,8 @@ async def test_viewport_places_exactly_one_blank_row_between_blocks() -> None:
         rendered = runtime._viewport_text()
         await runtime.scheduler.aclose()
 
-    lines = [line.rstrip() for line in rendered.value.splitlines()]
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered.value)
+    lines = [line.rstrip() for line in plain.splitlines()]
     assert lines == ["first", "", "second"]
 
 
