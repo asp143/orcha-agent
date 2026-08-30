@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import secrets
+from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from .agent_types import AgentType
 from .capture import capture_graph_values
 from .config import Config
 from .events import (
+    AgentDelivered,
     AgentFinished,
     AgentSpawned,
     AgentStatus,
@@ -113,6 +115,10 @@ class AgentRun:
         self.result: Any = None
         self.partial_findings: list[Any] = []
         self.schema_overridden = False
+        self.validation_attempts = 0
+        self.yield_count = 0
+        self.last_yield: Any = None
+        self.delivered = False
         self.created_at = datetime.now(UTC)
         self.updated_at = self.created_at
         self.agent_ready = asyncio.Event()
@@ -158,14 +164,21 @@ class AgentRun:
 
     def _tool_scope(self, extras: Iterable[Any]) -> set[str] | None:
         scope = None if self.agent_type.tools is None else set(self.agent_type.tools)
+        extra_names = {
+            str(getattr(tool, "name", "")) for tool in extras
+        }
         may_spawn = self.agent_type.spawns and self.depth < self.cfg.agents.max_depth
+        if scope is not None:
+            scope.update(extra_names & {"yield", "hub"})
+            if may_spawn and "task" in extra_names:
+                scope.add("task")
         if may_spawn:
             return scope
         if scope is None:
             scope = {
                 *self.registry.tools,
                 *FILESYSTEM_TOOL_NAMES,
-                *(str(getattr(tool, "name", "")) for tool in extras),
+                *extra_names,
             }
         scope.discard("task")
         return scope
@@ -342,6 +355,19 @@ class AgentRun:
                 },
             ),
         )
+        Ledger(self.session).append(
+            self.parent_session,
+            CustomEntry(
+                custom_type="agent_job",
+                data={
+                    "run_id": self.id,
+                    "status": status,
+                    "result": result,
+                    "schema_overridden": self.schema_overridden,
+                    "delivered": False,
+                },
+            ),
+        )
         await self._set_status(status, self.abort_reason)
         await self.owner.bus.emit(
             AgentFinished(
@@ -378,6 +404,7 @@ class AgentRegistry:
         self.semaphore = asyncio.Semaphore(cfg.agents.max_concurrency)
         self._runs: dict[str, AgentRun] = {}
         self._order: list[str] = []
+        self._mailboxes: dict[str, deque[dict[str, Any]]] = {}
         self._changed = asyncio.Condition()
 
     async def _notify(self) -> None:
@@ -488,7 +515,9 @@ class AgentRegistry:
             thread_id=info.current_thread,
             cfg=replace(self.cfg, model=model),
             depth=depth,
-            output_schema=output_schema or spec.output_schema,
+            output_schema=(
+                spec.output_schema if output_schema is None else output_schema
+            ),
             schema_mode=schema_mode,
             blocking=blocking or spec.blocking,
         )
@@ -570,6 +599,158 @@ class AgentRegistry:
         pending = [run.task for run in self.list() if run.task is not None]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+
+    def resolve(self, selector: str) -> str:
+        """Resolve main, an exact run id, or an unambiguous run name."""
+        if selector == "main" or selector in self._runs:
+            return selector
+        matches = [run.id for run in self._runs.values() if run.name == selector]
+        if not matches:
+            raise LookupError(f"Unknown agent: {selector}")
+        if len(matches) > 1:
+            raise LookupError(f"Ambiguous agent name: {selector}")
+        return matches[0]
+
+    async def post_message(self, sender: str, recipient: str, message: str) -> None:
+        """Queue one serializable peer message and wake activity waiters."""
+        target = self.resolve(recipient)
+        envelope = {
+            "from": sender,
+            "to": target,
+            "message": message,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        self._mailboxes.setdefault(target, deque()).append(envelope)
+        await self._notify()
+
+    def drain_messages(
+        self, recipient: str, *, sender: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Drain all addressed messages, optionally from one sender."""
+        mailbox = self._mailboxes.get(recipient)
+        if not mailbox:
+            return []
+        if sender is None:
+            messages = list(mailbox)
+            mailbox.clear()
+            return messages
+        messages: list[dict[str, Any]] = []
+        retained: deque[dict[str, Any]] = deque()
+        while mailbox:
+            item = mailbox.popleft()
+            (messages if item["from"] == sender else retained).append(item)
+        self._mailboxes[recipient] = retained
+        return messages
+
+    def unread_count(self, recipient: str) -> int:
+        return len(self._mailboxes.get(recipient, ())) + sum(
+            1
+            for run in self._runs.values()
+            if run.parent_id == recipient and run.terminal and not run.delivered
+        )
+
+    def jobs(
+        self, parent: str, ids: Iterable[str] | None = None
+    ) -> list[AgentRun]:
+        selected = None if ids is None else set(ids)
+        return [
+            run
+            for run in self.list()
+            if run.parent_id == parent and (selected is None or run.id in selected)
+        ]
+
+    async def record_yield(self, run: AgentRun, payload: Any) -> None:
+        run.yield_count += 1
+        run.last_yield = payload
+        await self._notify()
+
+    async def deliver(
+        self, parent: str, ids: Iterable[str] | None = None
+    ) -> list[AgentRun]:
+        delivered = [
+            run
+            for run in self.jobs(parent, ids)
+            if run.terminal and not run.delivered
+        ]
+        for run in delivered:
+            run.delivered = True
+            Ledger(self.session).append(
+                run.parent_session,
+                CustomEntry(
+                    custom_type="agent_job",
+                    data={
+                        "run_id": run.id,
+                        "status": run.status,
+                        "result": run.result,
+                        "schema_overridden": run.schema_overridden,
+                        "delivered": True,
+                    },
+                ),
+            )
+        if delivered:
+            await self.bus.emit(
+                AgentDelivered(parent_id=parent, run_ids=tuple(run.id for run in delivered))
+            )
+            await self._notify()
+        return delivered
+
+    async def wait_all(
+        self, ids: Iterable[str], *, timeout_s: float = 300
+    ) -> list[AgentRun]:
+        selected = set(ids)
+
+        def complete() -> bool:
+            return all(
+                (run := self.get(run_id)) is not None and run.terminal
+                for run_id in selected
+            )
+
+        if selected and not complete():
+            try:
+                async with asyncio.timeout(timeout_s):
+                    async with self._changed:
+                        await self._changed.wait_for(complete)
+            except TimeoutError:
+                pass
+        return [run for run_id in selected if (run := self.get(run_id)) is not None and run.terminal]
+
+    async def wait_activity(
+        self,
+        caller: str,
+        ids: Iterable[str] | None = None,
+        *,
+        timeout_s: float = 300,
+        peer: str | None = None,
+        after_yield: int | None = None,
+    ) -> bool:
+        selected = None if ids is None else set(ids)
+
+        def ready() -> bool:
+            mailbox = self._mailboxes.get(caller, ())
+            if peer is not None:
+                if any(message.get("from") == peer for message in mailbox):
+                    return True
+                if peer == "main":
+                    return False
+                run = self.get(peer)
+                return run is not None and (
+                    run.yield_count > (after_yield or 0) or run.terminal
+                )
+            if mailbox:
+                return True
+            if any(run.terminal and not run.delivered for run in self.jobs(caller, selected)):
+                return True
+            return False
+
+        if ready():
+            return True
+        try:
+            async with asyncio.timeout(timeout_s):
+                async with self._changed:
+                    await self._changed.wait_for(ready)
+        except TimeoutError:
+            return False
+        return True
 
 
 __all__ = ["AgentRegistry", "AgentRun", "AgentStatusName", "AbortReason"]

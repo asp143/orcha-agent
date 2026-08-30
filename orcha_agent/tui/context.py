@@ -16,6 +16,7 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 
+from orcha_agent.builtin.tools_agents import agent_tools
 from orcha_agent.core.agent import build_agent
 from orcha_agent.core.agents import AgentRegistry
 from orcha_agent.core.capture import capture_graph_values
@@ -218,6 +219,7 @@ class AppContext:
                 self._bus,
                 self.session_id,
                 always_allowed=self._always_allowed(),
+                extra_tools=agent_tools,
             )
 
     @property
@@ -297,11 +299,14 @@ class AppContext:
                 await self._seed_ready_thread("reseed")
             return True
         try:
-            candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-            self.cfg,
-            self.session,
-            self._bus,
-            always_allowed=self._always_allowed(),)
+            candidate_agent = await _compat("build_agent", build_agent)(
+                self.registry,
+                self.cfg,
+                self.session,
+                self._bus,
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools(self),
+            )
             candidate_summarizer = self._resolve_summarizer(self.cfg)
             if not reseed_pending:
                 self._clean_history_for_model(
@@ -325,11 +330,14 @@ class AppContext:
             self.rebuild_requested = False
             return
         self.persist_plugin_states()
-        candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-        self.cfg,
-        self.session,
-        self._bus,
-        always_allowed=self._always_allowed(),)
+        candidate_agent = await _compat("build_agent", build_agent)(
+            self.registry,
+            self.cfg,
+            self.session,
+            self._bus,
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+        )
         candidate_summarizer = self._resolve_summarizer(self.cfg)
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
@@ -503,7 +511,9 @@ class AppContext:
                 self.cfg,
                 self.session,
                 self._bus,
-                always_allowed=self._always_allowed(),)
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools(self),
+                )
                 candidate_summarizer = self._resolve_summarizer(self.cfg)
             else:
                 candidate_agent = None
@@ -664,7 +674,9 @@ class AppContext:
                 candidate_cfg,
                 self.session,
                 self._bus,
-                always_allowed=self._always_allowed(),)
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools(self),
+                )
                 candidate_summarizer = self._resolve_summarizer(candidate_cfg)
                 if not needs_reseed:
                     self._clean_history_for_model(
@@ -720,7 +732,9 @@ class AppContext:
         candidate_cfg,
         self.session,
         self._bus,
-        always_allowed=self._always_allowed(),)
+        always_allowed=self._always_allowed(),
+        extra_tools=agent_tools(self),
+        )
         candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         provider_changed = _primary_provider_prefix(
             self.cfg.model,
@@ -775,7 +789,9 @@ class AppContext:
             candidate_cfg,
             self.session,
             self._bus,
-            always_allowed=self._always_allowed(),)
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+            )
             candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         self.session.set_mode(self.session_id, name)
         try:
