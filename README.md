@@ -31,6 +31,21 @@ Built-in provider prefixes are `anthropic:`, `codex:`, `openai:`, `ollama:`,
 variable, such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; orcha never stores
 API keys.
 
+## Development
+
+```bash
+uv sync
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
+uv run pytest --cov=orcha_agent --cov-report=term-missing --cov-report=xml:coverage.xml
+uv run python -m benchmarks
+```
+
+The benchmark command runs locally. CI runs lint, format checks, type checks,
+and tests with coverage on Python 3.12 and 3.13, then builds and smoke-tests the
+wheel in a clean virtual environment.
+
 ## Codex (ChatGPT subscription) login
 
 Codex uses a ChatGPT subscription through OAuth rather than an OpenAI API key.

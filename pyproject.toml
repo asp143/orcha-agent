@@ -45,4 +45,151 @@ packages = ["orcha_agent"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pyright>=1.1.411",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.16.5",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"orcha_agent/tui/blocks/__init__.py" = ["E402"]
+"orcha_agent/tui/blocks/tool.py" = ["E701", "E702", "F401"]
+"tests/tui/test_block_registry.py" = ["E731"]
+"tests/test_registry.py" = ["E731"]
+"tests/tui/test_overlays.py" = ["E731"]
+"tests/tui/test_stage4_components.py" = ["E731", "F401"]
+"orcha_agent/builtin/statusbar.py" = ["F401"]
+"orcha_agent/tui/app.py" = ["F401"]
+"orcha_agent/tui/blocks/hud.py" = ["F401"]
+"orcha_agent/tui/complete.py" = ["F401"]
+"orcha_agent/tui/overlays/base.py" = ["F401"]
+"orcha_agent/tui/runtime.py" = ["F401"]
+"tests/test_statusline.py" = ["F401"]
+"tests/test_commands.py" = ["F821"]
+
+[tool.ruff.format]
+# Explicit file baseline preserves Phase 0 scope; remove entries as files are formatted.
+exclude = [
+    "orcha_agent/builtin/approval_prompt.py",
+    "orcha_agent/builtin/banner.py",
+    "orcha_agent/builtin/commands_core.py",
+    "orcha_agent/builtin/commands_model.py",
+    "orcha_agent/builtin/commands_session.py",
+    "orcha_agent/builtin/provider_codex.py",
+    "orcha_agent/core/agent.py",
+    "orcha_agent/core/auth.py",
+    "orcha_agent/core/config.py",
+    "orcha_agent/core/events.py",
+    "orcha_agent/core/export.py",
+    "orcha_agent/core/ledger.py",
+    "orcha_agent/core/loader.py",
+    "orcha_agent/core/models.py",
+    "orcha_agent/core/plugin.py",
+    "orcha_agent/core/registry.py",
+    "orcha_agent/core/session.py",
+    "orcha_agent/tui/blocks/__init__.py",
+    "orcha_agent/tui/blocks/assistant.py",
+    "orcha_agent/tui/blocks/diff.py",
+    "orcha_agent/tui/blocks/hud.py",
+    "orcha_agent/tui/blocks/thinking.py",
+    "orcha_agent/tui/blocks/tool.py",
+    "orcha_agent/tui/blocks/welcome.py",
+    "orcha_agent/tui/complete.py",
+    "orcha_agent/tui/composer.py",
+    "orcha_agent/tui/context.py",
+    "orcha_agent/tui/frame.py",
+    "orcha_agent/tui/gallery_fixtures/blocks.py",
+    "orcha_agent/tui/history.py",
+    "orcha_agent/tui/keys.py",
+    "orcha_agent/tui/notify.py",
+    "orcha_agent/tui/overlays/__init__.py",
+    "orcha_agent/tui/overlays/approval.py",
+    "orcha_agent/tui/overlays/ask.py",
+    "orcha_agent/tui/overlays/history.py",
+    "orcha_agent/tui/overlays/select.py",
+    "orcha_agent/tui/overlays/tree.py",
+    "orcha_agent/tui/queue.py",
+    "orcha_agent/tui/runtime.py",
+    "orcha_agent/tui/statusline.py",
+    "orcha_agent/tui/symbols.py",
+    "orcha_agent/tui/theme.py",
+    "orcha_agent/tui/title.py",
+    "orcha_agent/tui/transcript.py",
+    "orcha_agent/tui/turn.py",
+    "tests/test_agent.py",
+    "tests/test_auth.py",
+    "tests/test_banner.py",
+    "tests/test_commands.py",
+    "tests/test_config.py",
+    "tests/test_events.py",
+    "tests/test_example_plugin.py",
+    "tests/test_integration.py",
+    "tests/test_ledger.py",
+    "tests/test_loader.py",
+    "tests/test_models.py",
+    "tests/test_plugin_api.py",
+    "tests/test_provider_codex.py",
+    "tests/test_registry.py",
+    "tests/test_render.py",
+    "tests/test_session.py",
+    "tests/test_statusbar.py",
+    "tests/test_statusline.py",
+    "tests/test_tui.py",
+    "tests/tui/test_block_goldens.py",
+    "tests/tui/test_blocks.py",
+    "tests/tui/test_file_tool_diffs.py",
+    "tests/tui/test_frame.py",
+    "tests/tui/test_gallery.py",
+    "tests/tui/test_overlay_goldens.py",
+    "tests/tui/test_overlays.py",
+    "tests/tui/test_runtime.py",
+    "tests/tui/test_stage4_components.py",
+    "tests/tui/test_stage4_runtime.py",
+    "tests/tui/test_stage7.py",
+    "tests/tui/test_statusline_polish.py",
+    "tests/tui/test_symbols.py",
+    "tests/tui/test_theme.py",
+    "tests/tui/test_tool_anatomy.py",
+    "tests/tui/test_transcript.py",
+    "tests/tui/test_welcome_goldens.py",
+]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+include = ["orcha_agent", "benchmarks"]
+exclude = ["tests"]
+ignore = [
+    "orcha_agent/__main__.py",
+    "orcha_agent/builtin/commands_core.py",
+    "orcha_agent/builtin/commands_model.py",
+    "orcha_agent/builtin/commands_session.py",
+    "orcha_agent/builtin/provider_codex.py",
+    "orcha_agent/builtin/provider_ollama.py",
+    "orcha_agent/core/agent.py",
+    "orcha_agent/core/ledger.py",
+    "orcha_agent/core/loader.py",
+    "orcha_agent/core/registry.py",
+    "orcha_agent/tui/blocks/tool.py",
+    "orcha_agent/tui/context.py",
+    "orcha_agent/tui/gallery.py",
+    "orcha_agent/tui/keys.py",
+    "orcha_agent/tui/queue.py",
+    "orcha_agent/tui/runtime.py",
+    "orcha_agent/tui/transcript.py",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["orcha_agent"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
