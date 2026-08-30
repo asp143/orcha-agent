@@ -55,6 +55,48 @@ def test_read_call_result_and_group_match_omp_anatomy() -> None:
     assert "├─ src/a.py" in grouped and "└─ src/c.py" in grouped
 
 
+def test_tool_headers_stay_single_line_and_shorten_paths_at_common_widths() -> None:
+    cwd = "/workspace/project"
+    basename = "renderer_output.py"
+    long_path = f"{cwd}/{'nested/' * 12}{basename}"
+    assert len(long_path) >= 120
+
+    for width in (60, 80, 120):
+        output = _plain(
+            _block(
+                "read_file",
+                cwd=cwd,
+                args={"path": long_path},
+                result="content",
+            ),
+            width=width,
+        )
+        lines = output.splitlines()
+        assert len(lines) == 4
+        assert len(lines[1]) == width
+        assert basename in lines[1]
+        assert ("…" in lines[1]) is (width < 120)
+        assert cwd not in lines[1]
+
+
+def test_tool_header_flattens_control_lines_and_shortens_home() -> None:
+    from pathlib import Path
+
+    home_path = Path.home() / "projects" / "demo.py"
+    output = _plain(
+        _block(
+            "read_file",
+            args={"path": f"{home_path}\r\nunexpected"},
+            result="content",
+        ),
+        width=120,
+    )
+
+    assert "\r" not in output
+    assert "~/projects/demo.py unexpected" in output
+    assert len(output.splitlines()) == 4
+
+
 def test_write_streaming_and_result_use_tail_and_line_count() -> None:
     content = "\n".join(f"line {index}" for index in range(20))
     streaming = _plain(

@@ -7,9 +7,10 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
-from rich.cells import cell_len, set_cell_size
+from rich.cells import cell_len, set_cell_size, split_graphemes
 from rich.console import Group
 from rich.text import Text
 
@@ -120,10 +121,33 @@ def _glyph(block: Block, state: str, theme: Any = None) -> str:
     return str(theme_symbol(theme, keys.get(state, ""), defaults.get(state, "•")))
 
 
-def _path(args: Mapping[str, Any]) -> str:
+def _one_line(value: Any) -> str:
+    return re.sub(r"[\r\n]+", " ", str(value)).strip()
+
+
+def _path(args: Mapping[str, Any], cwd: Any = None) -> str:
     for key in ("path", "file_path", "filename"):
-        if args.get(key):
-            return str(args[key])
+        if not args.get(key):
+            continue
+        value = _one_line(args[key])
+        if not value or "://" in value:
+            return value
+        candidate = Path(value)
+        if candidate.is_absolute() and cwd:
+            try:
+                relative = candidate.relative_to(Path(str(cwd)))
+            except ValueError:
+                pass
+            else:
+                return relative.as_posix() or "."
+        if candidate.is_absolute():
+            try:
+                relative = candidate.relative_to(Path.home())
+            except ValueError:
+                pass
+            else:
+                return f"~/{relative.as_posix()}" if relative.parts else "~"
+        return value
     return ""
 
 
@@ -139,10 +163,10 @@ def _selection(args: Mapping[str, Any], line_count: int | None = None) -> str:
     return ""
 
 
-def _detail(name: str, args: Mapping[str, Any]) -> str:
+def _detail(name: str, args: Mapping[str, Any], cwd: Any = None) -> str:
     if name in _BASH:
-        return str(args.get("command", args.get("cmd", "")))[:40]
-    return _path(args) or str(args.get("pattern", args.get("query", "")))[:40]
+        return _one_line(args.get("command", args.get("cmd", "")))[:40]
+    return _path(args, cwd) or _one_line(args.get("pattern", args.get("query", "")))[:40]
 
 
 def _label(name: str) -> str:
@@ -159,6 +183,31 @@ def _append_line(target: Text, line: str | Text) -> None:
     if target:
         target.append("\n")
     target.append(line if isinstance(line, Text) else Text(line))
+
+
+def _cell_suffix(value: str, width: int) -> str:
+    spans, _ = split_graphemes(value)
+    start = len(value)
+    used = 0
+    for span_start, _span_end, size in reversed(spans):
+        if used + size > width:
+            break
+        start = span_start
+        used += size
+    return value[start:]
+
+
+def _middle_ellipsis(value: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if cell_len(value) <= width:
+        return value
+    if width == 1:
+        return "…"
+    available = width - 1
+    prefix_width = max(1, available // 3)
+    suffix_width = available - prefix_width
+    return f"{set_cell_size(value, prefix_width)}…{_cell_suffix(value, suffix_width)}"
 
 
 def _box_char(theme: Any, name: str, default: str, attr: str) -> str:
@@ -191,13 +240,15 @@ def _frame(
     tee_right = _box_char(theme, "teeRight", "├", "row_left")
     tee_left = _box_char(theme, "teeLeft", "┤", "row_right")
     output = Text()
+    header = _middle_ellipsis(_one_line(header), max(0, width - 8))
     header_text = f" {header} " if header else ""
     top_fill = max(0, width - 6 - cell_len(header_text))
     _append_line(output, Text(f"{tl}{h * 3}{header_text}{h * top_fill}{h}{tr}", style=border))
     capacity = max(0, budget_rows - 2)
     for index, row in enumerate(rows[:capacity]):
         if sections and index in sections:
-            label = f" {sections[index]} "
+            section = _middle_ellipsis(_one_line(sections[index]), max(0, width - 8))
+            label = f" {section} " if section else ""
             fill = max(0, width - 6 - cell_len(label))
             _append_line(output, Text(f"{tee_right}{h * 3}{label}{h * fill}{h}{tee_left}", style=border))
             continue
@@ -248,6 +299,7 @@ def _diff(value: Any) -> str | None:
 
 
 def _read_rows(block: Block, args: Mapping[str, Any], *, expanded: bool) -> tuple[str, list[str | Text]]:
+    cwd = block.data.get("cwd")
     calls = block.data.get("calls")
     if isinstance(calls, list) and calls:
         rows: list[str | Text] = []
@@ -256,12 +308,12 @@ def _read_rows(block: Block, args: Mapping[str, Any], *, expanded: bool) -> tupl
             result = call.get("result") if isinstance(call, Mapping) else None
             content = _result_text(result).splitlines()
             branch = "└─" if index == len(calls) - 1 else "├─"
-            rows.append(f"{branch} {_path(call_args)}{_selection(call_args, len(content))}")
+            rows.append(f"{branch} {_path(call_args, cwd)}{_selection(call_args, len(content))}")
             preview = content if expanded else content[:3]
             rows.extend(f"   {line[:4000]}" for line in preview)
         return f"• Read ({len(calls)})", rows
     content = _result_text(block.data.get("result")).splitlines()
-    path = _path(args)
+    path = _path(args, cwd)
     if _state(block) == "running":
         return f"⏳ Read: {path}{_selection(args)}", []
     start = args.get("offset", 1)
@@ -421,7 +473,7 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     if not isinstance(args, Mapping):
         args = {}
     state = _state(block)
-    label, detail = _label(name), _detail(name, args)
+    label, detail = _label(name), _detail(name, args, block.data.get("cwd"))
     calls = block.data.get("calls")
     if isinstance(calls, list) and calls:
         label = f"{label} ({len(calls)})"
