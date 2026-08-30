@@ -755,6 +755,7 @@ class ApplicationRuntime:
                 buffer.reset(append_to_history=False)
                 self._abort_turn()
             return False
+        self.transcript.dismiss_error()
         buffer.reset(append_to_history=True)
         if text == ".":
             text = "keep going"
@@ -1123,7 +1124,7 @@ class ApplicationRuntime:
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     self.transcript.append_banner("interrupted", level="warning")
                 except Exception as exc:
-                    self.transcript.append_banner(f"{type(exc).__name__}: {exc}")
+                    self.transcript.pin_error(f"{type(exc).__name__}: {exc}")
                 finally:
                     self.queue.close_steering()
                     self._active_turn = None

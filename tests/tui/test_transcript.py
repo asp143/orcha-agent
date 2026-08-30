@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 import pytest
 from langchain_core.messages import AIMessageChunk
+from rich.console import Console
 from rich.text import Text
 
 from orcha_agent.core.events import (
@@ -15,8 +17,10 @@ from orcha_agent.core.events import (
 )
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.console import ConsoleOutput
-from orcha_agent.tui.frame import BlockState, Frame, FrameScheduler
+from orcha_agent.tui.frame import Block, BlockState, Frame, FrameScheduler
 from orcha_agent.tui.transcript import Transcript
+from orcha_agent.tui.blocks.banner import render as render_banner
+from orcha_agent.tui.blocks import DEFAULT_THEME
 
 
 @pytest.mark.asyncio
@@ -144,6 +148,65 @@ async def test_retry_indicator_uses_warning_countdown_on_shared_ticker() -> None
 
     await scheduler.aclose()
     assert retry.data["message"] == "Retrying (2/5) in 3s…"
+
+
+@pytest.mark.asyncio
+async def test_provider_error_is_pinned_capped_and_dismissed_by_next_turn() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    message = "\n".join(f"line {index}" for index in range(12))
+
+    await transcript.handle(RuntimeError(message))
+    error = frame.blocks[-1]
+
+    assert error.kind == "banner"
+    assert error.state is BlockState.ACTIVE
+    assert error.data["pinned"] is True
+    assert len(error.data["message"].splitlines()) == 8
+    assert error.data["message"].splitlines()[-1] == "…"
+
+    await transcript.handle(TurnEnd(thread_id="thread"))
+    assert error.state is BlockState.ACTIVE
+
+    await transcript.handle(TurnStart(thread_id="thread", text="try again"))
+    assert error not in frame.blocks
+
+
+@pytest.mark.asyncio
+async def test_tool_error_stays_in_tool_card_instead_of_pinned_banner() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    await transcript.handle(TurnStart(thread_id="thread", text="question"))
+    await transcript.handle(ToolCallStart(name="execute", args={}, id="tool-error"))
+    await transcript.handle(
+        ToolCallEnd(
+            name="execute",
+            id="tool-error",
+            result={"status": "error", "message": "command failed"},
+        )
+    )
+
+    assert [block.kind for block in frame.blocks] == ["user", "tool"]
+    assert frame.blocks[-1].data["result"]["status"] == "error"
+
+
+
+def test_error_banner_never_exceeds_eight_visual_rows() -> None:
+    output = StringIO()
+    console = Console(file=output, width=80, color_system=None)
+    block = Block(
+        "error",
+        "banner",
+        data={
+            "level": "error",
+            "message": "\n".join(f"line {index}" for index in range(12)),
+        },
+    )
+
+    console.print(render_banner(block, DEFAULT_THEME, 80, 20, False))
+
+    assert len(output.getvalue().splitlines()) <= 8
+
 
 @pytest.mark.asyncio
 async def test_turn_start_resets_source_and_tool_accumulators() -> None:

@@ -314,9 +314,10 @@ def test_banner_caps_error_at_eight_lines() -> None:
     )
     output = plain(rendered)
 
-    assert "line 6" in output
-    assert "line 7" not in output
+    assert "line 4" in output
+    assert "line 5" not in output
     assert "…" in output
+    assert len(output.splitlines()) <= 8
     assert "Error" in output
 
 

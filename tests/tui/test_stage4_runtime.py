@@ -1206,6 +1206,28 @@ def test_queue_hud_dims_modes_hint_and_clips_old_rows(tmp_path: Path) -> None:
         runtime.application.input.close()
 
 
+
+
+@pytest.mark.asyncio
+async def test_next_send_dismisses_pinned_provider_error() -> None:
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        error = runtime.transcript.pin_error("provider unavailable")
+        runtime.buffer.text = "try again"
+
+        runtime._accept(runtime.buffer)
+
+        assert error not in runtime.frame.blocks
+        await runtime._drain_pending()
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
+
+
 @pytest.mark.asyncio
 async def test_shell_error_and_cancellation_always_settle_tool_card(tmp_path: Path) -> None:
     events: list[object] = []

@@ -103,6 +103,7 @@ class Transcript:
         self._tools: dict[str, Block] = {}
         self._read_groups: dict[str, Block] = {}
         self._working: Block | None = None
+        self._pinned_error: Block | None = None
 
     @staticmethod
     def _settle(block: Block) -> None:
@@ -164,6 +165,35 @@ class Transcript:
             self.scheduler.start_spinner()
             self.scheduler.request_invalidate()
         return block
+
+    def dismiss_error(self) -> None:
+        error = self._pinned_error
+        if error is None:
+            return
+        self.frame.blocks[:] = [
+            block for block in self.frame.blocks if block is not error
+        ]
+        self._pinned_error = None
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+
+    def pin_error(self, message: str) -> Block:
+        self._discard_working()
+        self.dismiss_error()
+        lines = message.splitlines() or ["Unknown error"]
+        if len(lines) > 8:
+            lines = [*lines[:7], "…"]
+        self._pinned_error = self.frame.add(
+            "banner",
+            {
+                "message": "\n".join(lines),
+                "level": "error",
+                "pinned": True,
+            },
+        )
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+        return self._pinned_error
 
     def _commit(self, block: Block, *, immediate: bool = False) -> None:
         self._settle(block)
@@ -232,6 +262,7 @@ class Transcript:
     async def handle(self, event: object) -> None:
         if isinstance(event, TurnStart):
             self._discard_working()
+            self.dismiss_error()
             for prior in self.frame.blocks:
                 if prior.state is BlockState.ACTIVE:
                     self._settle(prior)
@@ -309,15 +340,17 @@ class Transcript:
         if isinstance(event, TurnEnd):
             self._discard_working()
             for block in self.frame.blocks:
-                if block.state is BlockState.ACTIVE:
+                if (
+                    block.state is BlockState.ACTIVE
+                    and block is not self._pinned_error
+                ):
                     self._settle(block)
             if self.scheduler is not None:
                 self.scheduler.request_commit()
                 self.scheduler.request_invalidate()
             return
         if isinstance(event, BaseException):
-            self._discard_working()
-            self.append_banner(f"{type(event).__name__}: {event}")
+            self.pin_error(f"{type(event).__name__}: {event}")
 
     def _tool_start(self, event: ToolCallStart) -> None:
         source = str(event.source_id or "main")
