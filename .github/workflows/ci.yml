@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Typecheck
+        run: uv run pyright
+
+      - name: Test with coverage
+        run: uv run pytest --cov=orcha_agent --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload coverage
+        if: ${{ always() && hashFiles('coverage.xml') != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-python-${{ matrix.python-version }}
+          path: coverage.xml
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Create clean wheel environment
+        run: uv venv --python "${{ matrix.python-version }}" .wheel-smoke
+
+      - name: Install built wheel
+        run: uv pip install --python .wheel-smoke/bin/python dist/*.whl
+
+      - name: Smoke test wheel
+        run: |
+          .wheel-smoke/bin/orcha --help
+          .wheel-smoke/bin/orcha gallery --plain
