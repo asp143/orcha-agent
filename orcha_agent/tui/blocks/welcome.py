@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from rich import box
+from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -21,6 +22,7 @@ _LEFT_PADDING = 1
 _SESSION_SLOTS = 4
 _HINT_SLOTS = 4
 _TIP_ROWS = 2
+_WRAP_CONSOLE = Console(width=_MAX_WIDTH, force_terminal=False, color_system=None)
 
 
 def _slots(value: Any, count: int) -> list[str]:
@@ -97,21 +99,61 @@ def _tip_lines(value: Any, width: int) -> list[str]:
     return [*rendered, *([""] * (_TIP_ROWS - len(rendered)))]
 
 
-def _right(block: Block, width: int, *, ascii_only: bool) -> Text:
+def _display_bindings(value: object) -> str:
+    if isinstance(value, str):
+        bindings = (value,)
+    elif isinstance(value, Sequence):
+        bindings = tuple(str(binding) for binding in value)
+    else:
+        bindings = (str(value),)
+    try:
+        from orcha_agent.tui.keys import format_key_bindings
+    except ImportError:
+        return ", ".join(bindings)
+    return format_key_bindings(bindings)
+
+
+def _hint_text(value: object, theme: Any) -> Text:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) == 2:
+        bindings, description = value
+        key = _display_bindings(bindings)
+        rendered = Text(key, style=str(theme_value(theme, "dim", "bright_black")))
+        if key and description:
+            rendered.append(" ")
+        rendered.append(str(description), style=str(theme_value(theme, "muted", "bright_black")))
+        return rendered
+    return Text(str(value), style=str(theme_value(theme, "muted", "bright_black")))
+
+
+def _hint_lines(value: object, width: int, theme: Any) -> list[Text]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        hints = value
+    else:
+        hints = ()
+    rendered: list[Text] = []
+    for hint in hints:
+        if len(rendered) >= _HINT_SLOTS:
+            break
+        text = _hint_text(hint, theme)
+        wrapped = text.wrap(_WRAP_CONSOLE, max(1, width), overflow="fold") if text else [Text()]
+        rendered.extend(wrapped[: _HINT_SLOTS - len(rendered)])
+    return [*rendered, *([Text()] * (_HINT_SLOTS - len(rendered)))]
+
+
+def _right(block: Block, width: int, *, ascii_only: bool, theme: Any) -> Text:
     rule = "----" if ascii_only else "────"
     lines = [
-        f"{rule} Recent sessions",
-        *_slots(block.data.get("sessions"), _SESSION_SLOTS),
-        f"{rule} Hints",
-        *_slots(block.data.get("hints"), _HINT_SLOTS),
-        *_tip_lines(block.data.get("tip", ""), width),
+        Text(f"{rule} Recent sessions", style="dim"),
+        *(Text(session) for session in _slots(block.data.get("sessions"), _SESSION_SLOTS)),
+        Text(f"{rule} Hints", style="dim"),
+        *_hint_lines(block.data.get("hints"), max(1, width - 1), theme),
+        *(Text(line) for line in _tip_lines(block.data.get("tip", ""), width)),
     ]
     rendered = Text()
     for index, line in enumerate(lines):
-        fitted = _fit(f" {line}" if line else "", width)
-        if index in {0, 5}:
-            fitted.stylize("dim")
-        rendered.append(fitted)
+        indented = Text(" ") if line else Text()
+        indented.append_text(line)
+        rendered.append(_fit(indented, width))
         if index < len(lines) - 1:
             rendered.append("\n")
     return rendered
@@ -164,7 +206,7 @@ def render(
         table.add_row(
             _left(block, left_width),
             Text("\n".join([separator] * 12), style="dim"),
-            _right(block, right_width, ascii_only=ascii_only),
+            _right(block, right_width, ascii_only=ascii_only, theme=theme),
         )
         content: Any = table
     else:
@@ -176,7 +218,7 @@ def render(
         content.append("\n" + _line("Mode", block.data.get("mode", ""), inner))
         content.append("\n" + _line("Cwd", block.data.get("cwd", ""), inner))
         content.append("\n")
-        content.append(_right(block, inner, ascii_only=ascii_only))
+        content.append(_right(block, inner, ascii_only=ascii_only, theme=theme))
     return Panel(
         content,
         box=box.ASCII if ascii_only else box.ROUNDED,
