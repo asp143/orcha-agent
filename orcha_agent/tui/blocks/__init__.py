@@ -215,6 +215,7 @@ from .marker import render as render_marker
 from .thinking import render as render_thinking
 from .tool import render as render_tool
 from .welcome import render as render_welcome
+from .working import render as render_working
 from .user import render as render_user
 
 DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
@@ -228,6 +229,7 @@ DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
     "todo": render_todo,
     "subagents": render_subagents,
     "queue": render_queue,
+    "working": render_working,
     "welcome": render_welcome,
 }
 

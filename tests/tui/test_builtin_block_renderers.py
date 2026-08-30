@@ -31,5 +31,6 @@ def test_builtin_registers_native_block_renderers_only() -> None:
         "todo",
         "subagents",
         "welcome",
+        "working",
     }
     assert registry.renderers == []

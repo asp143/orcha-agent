@@ -84,6 +84,67 @@ async def test_tool_blocks_expose_live_elapsed_then_settled_duration() -> None:
     assert block.data["duration"] >= 2.0
 
 
+
+@pytest.mark.asyncio
+async def test_working_indicator_disappears_on_first_visible_model_output() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(TurnStart(thread_id="thread", text="question"))
+
+    assert [block.kind for block in frame.blocks] == ["user", "working"]
+    working = frame.blocks[-1]
+    assert working.state is BlockState.ACTIVE
+    assert working.data["message"] == "Working… (Esc to interrupt)"
+
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content="answer"),
+            role="main",
+            source_id="main",
+        )
+    )
+
+    assert [block.kind for block in frame.blocks] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_working_indicator_disappears_on_first_tool_output() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    await transcript.handle(TurnStart(thread_id="thread", text="question"))
+    assert frame.blocks[-1].kind == "working"
+
+    await transcript.handle(ToolCallStart(name="read", args={}, id="call"))
+
+    assert [block.kind for block in frame.blocks] == ["user", "tool"]
+
+
+@pytest.mark.asyncio
+async def test_retry_indicator_uses_warning_countdown_on_shared_ticker() -> None:
+    frame = Frame()
+    scheduler = FrameScheduler(
+        frame,
+        commit=lambda _blocks: None,
+        invalidate=lambda: None,
+    )
+    transcript = Transcript(frame, scheduler=scheduler)
+
+    transcript.show_retry(
+        attempt=2,
+        max_attempts=5,
+        delay_seconds=4,
+        now=10,
+    )
+    retry = frame.blocks[-1]
+    assert retry.data["message"] == "Retrying (2/5) in 4s…"
+    assert retry.data["level"] == "warning"
+
+    scheduler.tick_spinners(now=11.1)
+
+    await scheduler.aclose()
+    assert retry.data["message"] == "Retrying (2/5) in 3s…"
+
 @pytest.mark.asyncio
 async def test_turn_start_resets_source_and_tool_accumulators() -> None:
     frame = Frame()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -279,7 +280,7 @@ class FrameScheduler:
             return True
         return any(
             block.state is BlockState.ACTIVE
-            and block.kind in {"thinking", "tool", "subagents"}
+            and block.kind in {"thinking", "tool", "subagents", "working"}
             for block in self.frame.blocks
         )
 
@@ -288,7 +289,7 @@ class FrameScheduler:
         for block in self.frame.blocks:
             if (
                 block.state is not BlockState.ACTIVE
-                or block.kind not in {"thinking", "tool", "subagents"}
+                or block.kind not in {"thinking", "tool", "subagents", "working"}
             ):
                 continue
             changes: dict[str, Any] = {
@@ -300,6 +301,15 @@ class FrameScheduler:
             elif block.kind == "thinking":
                 tokens = int(block.data.get("reasoning_tokens", 0))
                 changes["tokens_per_second"] = tokens / elapsed if elapsed else 0.0
+            elif block.kind == "working" and "retry_deadline" in block.data:
+                remaining = max(
+                    0,
+                    math.ceil(float(block.data["retry_deadline"]) - current),
+                )
+                changes["message"] = (
+                    f"Retrying ({block.data['attempt']}/{block.data['max_attempts']}) "
+                    f"in {remaining}s…"
+                )
             block.update(changes)
 
 

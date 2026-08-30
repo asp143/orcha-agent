@@ -102,6 +102,7 @@ class Transcript:
         self._source_tails: dict[str, Block] = {}
         self._tools: dict[str, Block] = {}
         self._read_groups: dict[str, Block] = {}
+        self._working: Block | None = None
 
     @staticmethod
     def _settle(block: Block) -> None:
@@ -109,6 +110,60 @@ class Transcript:
             block.data.pop("elapsed", None)
             block.update(duration=max(0.0, time.monotonic() - block.created))
         block.settle()
+
+
+    def _discard_working(self) -> None:
+        working = self._working
+        if working is None:
+            return
+        self.frame.blocks[:] = [
+            block for block in self.frame.blocks if block is not working
+        ]
+        self._working = None
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+
+    def _show_working(self) -> Block:
+        self._discard_working()
+        self._working = self.frame.add(
+            "working",
+            {
+                "message": "Working… (Esc to interrupt)",
+                "level": "accent",
+                "spinner_frame": 0,
+            },
+        )
+        if self.scheduler is not None:
+            self.scheduler.start_spinner()
+            self.scheduler.request_invalidate()
+        return self._working
+
+    def show_retry(
+        self,
+        *,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: float,
+        now: float | None = None,
+    ) -> Block:
+        current = time.monotonic() if now is None else now
+        block = self._working
+        if block is None or block.state is not BlockState.ACTIVE:
+            block = self._show_working()
+        block.update(
+            message=(
+                f"Retrying ({attempt}/{max_attempts}) "
+                f"in {max(0, int(delay_seconds + 0.999999))}s…"
+            ),
+            level="warning",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            retry_deadline=current + max(0.0, delay_seconds),
+        )
+        if self.scheduler is not None:
+            self.scheduler.start_spinner()
+            self.scheduler.request_invalidate()
+        return block
 
     def _commit(self, block: Block, *, immediate: bool = False) -> None:
         self._settle(block)
@@ -176,6 +231,7 @@ class Transcript:
 
     async def handle(self, event: object) -> None:
         if isinstance(event, TurnStart):
+            self._discard_working()
             for prior in self.frame.blocks:
                 if prior.state is BlockState.ACTIVE:
                     self._settle(prior)
@@ -191,15 +247,43 @@ class Transcript:
                 source_id=event.thread_id,
             )
             self._commit(block, immediate=True)
+            self._show_working()
             if self.scheduler is not None:
                 self.scheduler.render_now()
             return
+
+        retry_name = type(event).__name__
+        if retry_name in {
+            "ProviderRetry",
+            "ProviderRetryScheduled",
+            "RetryScheduled",
+        }:
+            delay = float(
+                getattr(
+                    event,
+                    "delay_seconds",
+                    getattr(event, "delay_s", getattr(event, "delay_ms", 0) / 1000),
+                )
+            )
+            self.show_retry(
+                attempt=int(getattr(event, "attempt")),
+                max_attempts=int(
+                    getattr(event, "max_attempts", getattr(event, "max_attempt", 1))
+                ),
+                delay_seconds=delay,
+            )
+            return
+
         if self._legacy(event):
+            if isinstance(event, (ModelChunk, ToolCallStart, BaseException)):
+                self._discard_working()
             return
         if isinstance(event, ModelChunk):
-            self._model_chunk(event)
+            if self._model_chunk(event):
+                self._discard_working()
             return
         if isinstance(event, ToolCallStart):
+            self._discard_working()
             self._tool_start(event)
             return
         if isinstance(event, ToolCallEnd):
@@ -223,6 +307,7 @@ class Transcript:
             self._commit(block)
             return
         if isinstance(event, TurnEnd):
+            self._discard_working()
             for block in self.frame.blocks:
                 if block.state is BlockState.ACTIVE:
                     self._settle(block)
@@ -231,6 +316,7 @@ class Transcript:
                 self.scheduler.request_invalidate()
             return
         if isinstance(event, BaseException):
+            self._discard_working()
             self.append_banner(f"{type(event).__name__}: {event}")
 
     def _tool_start(self, event: ToolCallStart) -> None:
@@ -337,11 +423,12 @@ class Transcript:
         self._source_tails[source_id] = block
         return block
 
-    def _model_chunk(self, event: ModelChunk) -> None:
+    def _model_chunk(self, event: ModelChunk) -> bool:
         source_id = str(event.source_id or event.role)
         value = getattr(event.chunk, "content", event.chunk)
         parts = value if isinstance(value, (list, tuple)) else (value,)
         thinking_seen = False
+        visible = False
         usage_tokens = _reasoning_tokens(event.chunk)
         for part in parts:
             if (
@@ -379,6 +466,7 @@ class Transcript:
                         ),
                     }
                     block.update(changes)
+                    visible = True
                     thinking_seen = True
                 continue
 
@@ -387,6 +475,7 @@ class Transcript:
                 continue
             block = self._source_block(source_id, "assistant", event.role)
             block.update(text=f"{block.data['text']}{content}")
+            visible = True
         if usage_tokens is not None:
             thinking = self._source_blocks.get((source_id, "thinking"))
             if (
@@ -399,6 +488,7 @@ class Transcript:
             if thinking_seen:
                 self.scheduler.start_spinner()
             self.scheduler.request_invalidate()
+        return visible
 
     def print(self, *objects: Any, **kwargs: Any) -> Block:
         block = self.frame.add(
