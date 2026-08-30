@@ -191,7 +191,7 @@ class Theme:
         symbols = dict(self.symbols)
         object.__setattr__(self, "colors", colors)
         object.__setattr__(self, "symbols", symbols)
-        object.__setattr__(self, "rich", RichTheme(colors, inherit=False))
+        object.__setattr__(self, "rich", RichTheme(colors, inherit=True))
         object.__setattr__(
             self,
             "pt",

@@ -161,3 +161,27 @@ def test_discovery_precedence_and_bad_optional_theme_isolation(
     assert trusted["dark"].colors["accent"] == "#222222"
     assert "broken" not in trusted
     assert sum("broken.json" in warning for warning in warnings) == 1
+
+
+def test_rich_theme_keeps_rich_defaults_for_markdown_tables() -> None:
+    from io import StringIO
+
+    from rich.console import Console
+    from rich.markdown import Markdown
+
+    from orcha_agent.tui.theme import load_themes
+
+    themes = load_themes()
+    assert themes
+    for name, theme in themes.items():
+        console = Console(
+            file=StringIO(),
+            force_terminal=True,
+            color_system="truecolor",
+            width=60,
+            theme=theme.rich,
+        )
+        # Rich looks up table.header / markdown.* from the console theme;
+        # a theme that drops Rich's defaults crashes the viewport here.
+        console.print(Markdown("| a | b |\n|---|---|\n| 1 | 2 |\n\n> quote\n\n- item"))
+        assert console.get_style("table.header") is not None, name
