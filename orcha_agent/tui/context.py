@@ -180,6 +180,7 @@ class AppContext:
     console: ConsoleOutput
     session_id: str = field(kw_only=True)
     thread_id: str
+    source_id: str = field(default="main", init=False)
     agent: Any = None
     summarizer: Any = None
     history_model: str | list[str] | None = None

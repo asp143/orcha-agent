@@ -31,6 +31,7 @@ class AgentBuildAfter(Event):
 class TurnStart(Event):
     thread_id: str
     text: str
+    source_id: str = "main"
 
 
 @dataclass(slots=True)
@@ -54,16 +55,19 @@ class ToolCallEnd(Event):
     name: str
     id: str
     result: Any
+    source_id: str = "main"
 
 
 @dataclass(slots=True)
 class InterruptRaised(Event):
     payload: dict[str, Any]
+    source_id: str = "main"
 
 
 @dataclass(slots=True)
 class TurnEnd(Event):
     thread_id: str
+    source_id: str = "main"
 
 
 @dataclass(slots=True)

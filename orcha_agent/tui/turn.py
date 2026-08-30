@@ -8,7 +8,7 @@ import signal
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.types import Command
@@ -23,13 +23,56 @@ from orcha_agent.core.events import (
 )
 from orcha_agent.core.plugin import Handled, Resolved
 
-from .context import AppContext
 from .transcript import _matches
-async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
+
+
+@runtime_checkable
+class TurnHost(Protocol):
+    """State and services required to execute one model turn."""
+
+    agent: Any
+    thread_config: dict[str, dict[str, str]]
+    bus: Any
+    source_id: str
+    session_id: str
+    session: Any
+    console: Any | None
+
+    def capture_turn(self) -> None: ...
+
+    def record_exit(self, kind: str) -> None: ...
+
+
+def _thread_id(host: TurnHost) -> str:
+    configurable = host.thread_config.get("configurable", {})
+    return str(configurable.get("thread_id", host.session_id))
+
+
+def _source_id(host: TurnHost) -> str:
+    return str(getattr(host, "source_id", "main"))
+
+
+def _event_source(host: TurnHost, namespace: tuple[str, ...]) -> str:
+    nested = "/".join(str(part) for part in namespace)
+    source = _source_id(host)
+    if not nested:
+        return source
+    return nested if source == "main" else f"{source}/{nested}"
+
+
+def _console_call(
+    host: TurnHost, method: str, *args: object, **kwargs: object
+) -> None:
+    console = getattr(host, "console", None)
+    callback = getattr(console, method, None)
+    if callable(callback):
+        callback(*args, **kwargs)
+
+
+async def _render(ctx: TurnHost, event: object, *, emit: bool = True) -> bool:
     transcript = getattr(ctx, "transcript", None)
     if emit:
-        bus = getattr(ctx, "_bus", ctx.bus)
-        handled = await bus.emit(event)
+        handled = await ctx.bus.emit(event)
         if isinstance(handled, Handled):
             return True
         if transcript is not None:
@@ -37,16 +80,17 @@ async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
     elif transcript is not None:
         await transcript.handle(event)
         return True
-    for registration in ctx.registry.renderers:
+    registry = getattr(ctx, "registry", None)
+    for registration in getattr(registry, "renderers", ()):
         if not _matches(registration.match, event):
             continue
         rendered = registration.render(event)
         if rendered is None:
             continue
         if isinstance(event, ModelChunk):
-            ctx.console.print(rendered, end="")
+            _console_call(ctx, "print", rendered, end="")
         else:
-            ctx.console.print(rendered)
+            _console_call(ctx, "print", rendered)
         return True
     return False
 
@@ -278,7 +322,7 @@ class _ToolCallBuffer:
 
 
 async def _message_event(
-    ctx: AppContext,
+    ctx: TurnHost,
     data: Any,
     tool_calls: _ToolCallBuffer,
     model_labels: _ModelLabelBuffer,
@@ -293,7 +337,7 @@ async def _message_event(
         return file_diffs
     if isinstance(message, ToolMessage):
         return file_diffs
-    source_id = "/".join(str(part) for part in namespace) if namespace else "main"
+    source_id = _event_source(ctx, namespace)
     if isinstance(message, AIMessage):
         for event in tool_calls.add(message, source_id=source_id):
             file_diffs = _start_file_diff_capture(ctx, event, file_diffs)
@@ -302,7 +346,10 @@ async def _message_event(
     agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
     role = (
         "subagent"
-        if namespace or agent_type == "subagent" or "subagent" in str(node)
+        if source_id != "main"
+        or namespace
+        or agent_type == "subagent"
+        or "subagent" in str(node)
         else "main"
     )
     if getattr(message, "content", None) or getattr(message, "usage_metadata", None):
@@ -319,10 +366,11 @@ async def _message_event(
 
 
 async def _updates_event(
-    ctx: AppContext,
+    ctx: TurnHost,
     data: Any,
     seen_results: set[str],
     seen_interrupts: set[str],
+    namespace: tuple[str, ...] = (),
     *,
     file_diffs: _FileDiffCapture | None = None,
 ) -> Resolved | None:
@@ -348,7 +396,9 @@ async def _updates_event(
         )
         warning = "Approval unresolved; rejecting pending actions."
         try:
-            resolution = await ctx._bus.emit(InterruptRaised(payload=payload))
+            resolution = await ctx.bus.emit(
+                InterruptRaised(payload=payload, source_id=_event_source(ctx, namespace))
+            )
         except Exception as exc:
             warning = (
                 f"Approval handler failed ({type(exc).__name__}); "
@@ -358,7 +408,7 @@ async def _updates_event(
         if isinstance(resolution, Resolved):
             return resolution
         actions = payload.get("action_requests", ())
-        ctx.console.warning(warning)
+        _console_call(ctx, "warning", warning)
         return Resolved(
             resume_value={
                 "decisions": [{"type": "reject"} for _ in actions],
@@ -371,20 +421,31 @@ async def _updates_event(
         result = file_diffs.finish(message) if file_diffs is not None else message
         await _render(
             ctx,
-            ToolCallEnd(name=message.name or "tool", id=message.tool_call_id, result=result),
+            ToolCallEnd(
+                name=message.name or "tool",
+                id=message.tool_call_id,
+                result=result,
+                source_id=_event_source(ctx, namespace),
+            ),
         )
     return None
 
 
-async def _run_turn(ctx: AppContext, text: str) -> None:
-    if not await ctx.ensure_agent():
-        return
-    session_info = ctx.session.get(ctx.session_id)
+async def run_turn(host: TurnHost, text: str) -> None:
+    ensure_agent = getattr(host, "ensure_agent", None)
+    if host.agent is None:
+        if not callable(ensure_agent) or not await ensure_agent():
+            return
+    thread_id = _thread_id(host)
+    source_id = _source_id(host)
+    session_info = host.session.get(host.session_id)
     if session_info is not None and session_info.title is None:
         title = " ".join(text.split())[:80]
         if title:
-            ctx.session.set_title(ctx.session_id, title)
-    await ctx._bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
+            host.session.set_title(host.session_id, title)
+    await host.bus.emit(
+        TurnStart(thread_id=thread_id, text=text, source_id=source_id)
+    )
     next_input: Any = {"messages": [{"role": "user", "content": text}]}
     tool_calls = _ToolCallBuffer()
     model_labels = _ModelLabelBuffer()
@@ -395,9 +456,9 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     try:
         while True:
             resolution: Resolved | None = None
-            async for stream_item in ctx.agent.astream(
+            async for stream_item in host.agent.astream(
                 next_input,
-                config=ctx.thread_config,
+                config=host.thread_config,
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
             ):
@@ -408,7 +469,7 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                     namespace = ()
                 if mode == "messages":
                     file_diffs = await _message_event(
-                        ctx,
+                        host,
                         data,
                         tool_calls,
                         model_labels,
@@ -417,10 +478,11 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                     )
                 elif mode == "updates":
                     candidate = await _updates_event(
-                        ctx,
+                        host,
                         data,
                         seen_results,
                         seen_interrupts,
+                        namespace,
                         file_diffs=file_diffs,
                     )
                     if candidate is not None:
@@ -430,24 +492,28 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
             next_input = Command(resume=resolution.resume_value)
     except asyncio.CancelledError:
         cancelled = True
-        ctx.console.warning("interrupted")
+        _console_call(host, "warning", "interrupted")
     except Exception as exc:
-        if not await _render(ctx, exc, emit=False):
-            ctx.console.error(f"{type(exc).__name__}: {exc}")
+        if not await _render(host, exc, emit=False):
+            _console_call(host, "error", f"{type(exc).__name__}: {exc}")
     finally:
         try:
-            ctx.capture_turn()
+            host.capture_turn()
             if cancelled:
-                ctx.record_exit("signal")
+                host.record_exit("signal")
         finally:
-            ctx.console.print()
-            await ctx._bus.emit(TurnEnd(thread_id=ctx.thread_id))
-            if ctx.rebuild_requested:
-                await ctx.rebuild()
+            _console_call(host, "print")
+            await host.bus.emit(
+                TurnEnd(thread_id=thread_id, source_id=source_id)
+            )
+            if getattr(host, "rebuild_requested", False):
+                rebuild = getattr(host, "rebuild", None)
+                if callable(rebuild):
+                    await rebuild()
 
 
-async def _run_cancellable_turn(ctx: AppContext, text: str) -> None:
-    task = asyncio.create_task(_run_turn(ctx, text))
+async def _run_cancellable_turn(ctx: TurnHost, text: str) -> None:
+    task = asyncio.create_task(run_turn(ctx, text))
     loop = asyncio.get_running_loop()
     signal_installed = False
     try:
@@ -461,3 +527,6 @@ async def _run_cancellable_turn(ctx: AppContext, text: str) -> None:
         if signal_installed:
             loop.remove_signal_handler(signal.SIGINT)
             signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+__all__ = ["TurnHost", "run_turn"]

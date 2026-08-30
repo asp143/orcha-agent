@@ -17,14 +17,17 @@ from .runtime import (
     run_app,
 )
 from .turn import (
+    TurnHost,
     _ModelLabelBuffer,
     _ToolCallBuffer,
     _message_event,
     _render,
     _run_cancellable_turn,
-    _run_turn,
     _updates_event,
+    run_turn,
 )
+
+_run_turn = run_turn
 
 
 __all__ = [
@@ -32,6 +35,7 @@ __all__ = [
     "ApplicationRuntime",
     "EventBusView",
     "RegistryView",
+    "TurnHost",
     "UIFacade",
     "_ModelLabelBuffer",
     "_ToolCallBuffer",
@@ -46,4 +50,5 @@ __all__ = [
     "_updates_event",
     "dispatch_command",
     "run_app",
+    "run_turn",
 ]
