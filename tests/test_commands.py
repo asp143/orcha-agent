@@ -1136,3 +1136,33 @@ async def test_invalid_session_command_usage_does_not_mutate_state(
     assert {path.name for path in tmp_path.iterdir()} == files_before
     assert mutations == []
     assert "usage:" in output.getvalue().lower()
+
+
+@pytest.mark.asyncio
+async def test_model_switch_is_remembered_in_user_config(tmp_path: Path) -> None:
+    from orcha_agent.core.events import AppStart, ModelSwitch
+
+    registry = Registry()
+    bus = EventBus()
+    commands_model.register(_api(registry, bus))
+    ctx, _ = _context()
+    user_path = tmp_path / "config.toml"
+    ctx.cfg = SimpleNamespace(model="codex:gpt-5.6-sol", user_config_path=user_path)
+
+    await bus.emit(AppStart(ctx=ctx))
+    await bus.emit(ModelSwitch(old="old:model", new="codex:gpt-5.6-sol"))
+
+    assert user_path.read_text() == '[core]\nmodel = "codex:gpt-5.6-sol"\n'
+
+
+@pytest.mark.asyncio
+async def test_model_switch_without_config_path_is_ignored() -> None:
+    from orcha_agent.core.events import AppStart, ModelSwitch
+
+    registry = Registry()
+    bus = EventBus()
+    commands_model.register(_api(registry, bus))
+    ctx, _ = _context()
+
+    await bus.emit(AppStart(ctx=ctx))
+    await bus.emit(ModelSwitch(old="a", new="b"))  # must not raise

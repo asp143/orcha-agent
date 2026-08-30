@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from orcha_agent.core.config import normalize_model_spec
+from pathlib import Path
+
+from orcha_agent.core.config import normalize_model_spec, save_core_value
+from orcha_agent.core.events import AppStart, ModelSwitch
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
 PLUGIN = PluginSpec(name="commands_model", version="1.0.0")
@@ -67,5 +70,23 @@ async def _mode(ctx: Any, args: str) -> None:
 
 
 def register(api: PluginAPI) -> None:
+    app: dict[str, Any] = {}
+
+    async def remember_app(event: AppStart) -> None:
+        app["ctx"] = event.ctx
+
+    async def remember_model(_event: ModelSwitch) -> None:
+        ctx = app.get("ctx")
+        cfg = getattr(ctx, "cfg", None)
+        path = getattr(cfg, "user_config_path", None)
+        if not isinstance(path, Path):
+            return
+        try:
+            save_core_value(path, "model", cfg.model)
+        except OSError as exc:
+            ctx.console.warning(f"Could not remember model in {path}: {exc}")
+
+    api.on(AppStart, remember_app)
+    api.on(ModelSwitch, remember_model)
     api.add_command("model", _model, help="Switch models: /model <provider:model>")
     api.add_command("mode", _mode, help="Switch operating modes: /mode <name>")

@@ -342,3 +342,71 @@ output = 75
         "codex:gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5},
         "anthropic:claude-opus-4-1": {"input": 15, "output": 75},
     }
+
+
+def test_yolo_flag_is_shorthand_for_mode_yolo(tmp_path: Path) -> None:
+    assert _load(tmp_path, argv=("--yolo",)).mode == "yolo"
+
+
+def test_yolo_flag_agrees_with_explicit_mode(tmp_path: Path) -> None:
+    assert _load(tmp_path, argv=("--yolo", "--mode", "yolo")).mode == "yolo"
+
+
+def test_yolo_flag_conflicting_with_mode_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        _load(tmp_path, argv=("--yolo", "--mode", "ask"))
+
+
+def test_config_records_user_config_path(tmp_path: Path) -> None:
+    user_path = tmp_path / "user.toml"
+    assert _load(tmp_path, user_config_path=user_path).user_config_path == user_path
+
+
+def test_save_core_value_creates_file_and_core_table(tmp_path: Path) -> None:
+    from orcha_agent.core.config import save_core_value
+
+    path = tmp_path / "nested" / "config.toml"
+    save_core_value(path, "model", "codex:gpt-5.6-sol")
+    assert path.read_text() == '[core]\nmodel = "codex:gpt-5.6-sol"\n'
+    assert _load(tmp_path, user_config_path=path).model == "codex:gpt-5.6-sol"
+
+
+def test_save_core_value_replaces_existing_key_and_keeps_everything_else(
+    tmp_path: Path,
+) -> None:
+    from orcha_agent.core.config import save_core_value
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "# top comment\n"
+        "[core]\n"
+        "mode = \"edit\"\n"
+        "model = \"old:model\"  # trailing\n"
+        "\n"
+        "[ui]\n"
+        "icons = false\n"
+    )
+    save_core_value(path, "model", ["a:x", "b:y"])
+    assert path.read_text() == (
+        "# top comment\n"
+        "[core]\n"
+        "mode = \"edit\"\n"
+        'model = ["a:x", "b:y"]\n'
+        "\n"
+        "[ui]\n"
+        "icons = false\n"
+    )
+    loaded = _load(tmp_path, user_config_path=path)
+    assert loaded.model == ["a:x", "b:y"]
+    assert loaded.mode == "edit"
+    assert loaded.icons is False
+
+
+def test_save_core_value_appends_core_table_when_missing(tmp_path: Path) -> None:
+    from orcha_agent.core.config import save_core_value
+
+    path = tmp_path / "config.toml"
+    path.write_text("[ui]\nicons = false\n")
+    save_core_value(path, "model", "x:y")
+    assert path.read_text() == '[ui]\nicons = false\n\n[core]\nmodel = "x:y"\n'
+    assert _load(tmp_path, user_config_path=path).model == "x:y"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
+import re
 import tomllib
 import sys
 from dataclasses import dataclass, field
@@ -37,6 +39,7 @@ class Config:
     model_overridden: bool = False
     trusted_dirs: tuple[Path, ...] = ()
     trust_all_cwd: bool = False
+    user_config_path: Path | None = None
     command: str = "repl"
     login_prefix: str | None = None
     login_mode: str = "auto"
@@ -55,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="orcha", description="Pluggable terminal coding agent")
     parser.add_argument("--model", metavar="PREFIX:MODEL")
     parser.add_argument("--mode")
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        help="shorthand for --mode yolo (no tool approvals)",
+    )
     parser.add_argument("--cwd", type=Path)
     parser.add_argument("--resume", metavar="ID")
     parser.add_argument("--list-sessions", action="store_true")
@@ -82,6 +90,40 @@ def _read_toml(path: Path) -> dict[str, Any]:
         return {}
     with path.open("rb") as stream:
         return tomllib.load(stream)
+
+
+def _toml_value(value: str | list[str]) -> str:
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    return "[" + ", ".join(json.dumps(item, ensure_ascii=False) for item in value) + "]"
+
+
+def save_core_value(path: Path, key: str, value: str | list[str]) -> None:
+    """Persist one ``[core]`` key in a TOML file, rewriting only that line."""
+
+    assignment = f"{key} = {_toml_value(value)}"
+    lines = path.read_text().splitlines() if path.is_file() else []
+    in_core = False
+    core_header: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_core = stripped == "[core]"
+            if in_core:
+                core_header = index
+            continue
+        if in_core and re.match(rf"^\s*{re.escape(key)}\s*=", line):
+            lines[index] = assignment
+            break
+    else:
+        if core_header is None:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend(["[core]", assignment])
+        else:
+            lines.insert(core_header + 1, assignment)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
 
 
 def _merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
@@ -218,7 +260,11 @@ def load_config(
 
     if args.model is not None:
         core["model"] = args.model
-    if args.mode is not None:
+    if args.yolo:
+        if args.mode not in (None, "yolo"):
+            parser.error("--yolo conflicts with --mode " + args.mode)
+        core["mode"] = "yolo"
+    elif args.mode is not None:
         core["mode"] = args.mode
     if args.cwd is not None:
         core["cwd"] = args.cwd
@@ -295,4 +341,5 @@ def load_config(
         model_overridden=args.model is not None,
         trusted_dirs=trusted_dirs,
         trust_all_cwd=args.trust_cwd,
+        user_config_path=user_path,
     )

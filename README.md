@@ -15,6 +15,9 @@ uv run orcha
 Starting without a configured provider or API key is supported. Use `/help`,
 `/providers`, `/plugins`, `/login`, or `/model` after the REPL starts.
 
+`orcha --yolo` starts in `yolo` mode (no tool approvals); it is shorthand for
+`--mode yolo`.
+
 Optional model providers are extras:
 
 ```bash
@@ -174,6 +177,11 @@ See `examples/plugins/hello.py` for a complete external plugin.
 `/mode <name>`, and `/thinking on|off`.
 
 `/clear` resets the current session history, while `/new` starts a fresh session.
+
+`/model <spec>` (and the model picker) is remembered: the chosen model is
+written to `[core] model` in `~/.config/orcha-agent/config.toml` and becomes
+the default for new sessions. `--model` and `ORCHA_MODEL` still override it
+for a single run.
 
 ### Export format
 
