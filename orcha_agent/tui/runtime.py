@@ -77,7 +77,7 @@ from .statusline import render_statusline
 from .theme import Theme, load_themes, select_theme
 from .title import TerminalTitle
 from .turn import _run_cancellable_turn
-from .overlays import register_builtin_overlays
+from .overlays import KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
 
 
@@ -153,6 +153,9 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
         return False
     command_text = text[1:]
     name, separator, args = command_text.partition(" ")
+    if name == "keys" and not separator:
+        await ctx.ui.show(KeyBindingsOverlay(ctx))
+        return True
     registration = registry.commands.get(name)
     if registration is None:
         ctx.console.error(f"Unknown command: /{name}")

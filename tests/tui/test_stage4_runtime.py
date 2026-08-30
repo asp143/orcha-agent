@@ -418,18 +418,28 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
 
 
 @pytest.mark.asyncio
-async def test_keys_command_prints_effective_map() -> None:
+async def test_keys_command_opens_effective_key_card() -> None:
     from orcha_agent.builtin.commands_core import _keys
+    from orcha_agent.tui.runtime import dispatch_command
 
-    printed: list[object] = []
+    shown: list[object] = []
+
+    async def show(overlay: object) -> None:
+        shown.append(overlay)
+
+    registry = Registry()
+    registry._add_command("core", "keys", _keys, "show keys")
     ctx = SimpleNamespace(
-        ui=SimpleNamespace(effective_keys={"submit": ("enter",), "tree": ("escape escape",)}),
-        console=SimpleNamespace(print=printed.append),
+        ui=SimpleNamespace(
+            effective_keys={"submit": ("enter",), "tree": ("escape escape",)},
+            show=show,
+        ),
+        console=SimpleNamespace(print=lambda _value: None),
     )
-    await _keys(ctx, "")
-    rendered = str(printed[0])
-    assert "submit" in rendered and "enter" in rendered
-    assert "tree" in rendered and "escape escape" in rendered
+
+    assert await dispatch_command(registry, ctx, "/keys") is True
+    assert len(shown) == 1
+    assert type(shown[0]).__name__ == "KeyBindingsOverlay"
 
 
 @pytest.mark.asyncio
