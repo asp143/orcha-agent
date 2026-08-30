@@ -32,7 +32,7 @@ from orcha_agent.tui.overlays import (
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 
 
-async def _drive_overlay(overlay: Overlay, keys: bytes | str) -> Any:
+async def _drive_overlay(overlay: Overlay, keys: bytes | str, wait_until) -> Any:
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0),
@@ -41,7 +41,7 @@ async def _drive_overlay(overlay: Overlay, keys: bytes | str) -> Any:
         )
         task = asyncio.create_task(runtime.run())
         shown = asyncio.create_task(runtime.ui.show(overlay))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.active_overlay is overlay)
         if isinstance(keys, bytes):
             pipe.send_bytes(keys)
         else:
@@ -53,16 +53,16 @@ async def _drive_overlay(overlay: Overlay, keys: bytes | str) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_overlay_enter_result_and_escape_cancel_are_headless() -> None:
+async def test_overlay_enter_result_and_escape_cancel_are_headless(wait_until) -> None:
     selected = SelectList("Pick", ["one", "two"])
-    assert await _drive_overlay(selected, b"\x1b[B\r") == "two"
+    assert await _drive_overlay(selected, b"\x1b[B\r", wait_until) == "two"
 
     cancelled = SelectList("Pick", ["one"])
-    assert await _drive_overlay(cancelled, b"\x1b") is None
+    assert await _drive_overlay(cancelled, b"\x1b", wait_until) is None
 
 
 @pytest.mark.asyncio
-async def test_select_list_filters_pages_and_returns_multiselect() -> None:
+async def test_select_list_filters_pages_and_returns_multiselect(wait_until) -> None:
     picker = SelectList(
         "Pick",
         ["alpha", "alpine", "beta", "gamma"],
@@ -75,7 +75,7 @@ async def test_select_list_filters_pages_and_returns_multiselect() -> None:
         )
         task = asyncio.create_task(runtime.run())
         shown = asyncio.create_task(runtime.ui.show(picker))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.active_overlay is picker)
         pipe.send_text("a")
         pipe.send_bytes(b"\x1b[6~")
         pipe.send_text(" ")
@@ -140,16 +140,16 @@ def test_overlay_registry_conflicts_and_replace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_approval_overlay_shortcuts() -> None:
+async def test_approval_overlay_shortcuts(wait_until) -> None:
     for key, expected in (("y", "approve"), ("n", "reject"), ("a", "always")):
         overlay = ApprovalOverlay(
             {"name": "execute", "args": {"command": "pwd"}}
         )
-        assert await _drive_overlay(overlay, key) == expected
+        assert await _drive_overlay(overlay, key, wait_until) == expected
 
 
 @pytest.mark.asyncio
-async def test_runtime_serializes_overlays_and_toggles_mouse() -> None:
+async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None:
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
@@ -159,13 +159,13 @@ async def test_runtime_serializes_overlays_and_toggles_mouse() -> None:
         second = SelectList("Second", ["two"])
         first_result = asyncio.create_task(runtime.ui.show(first))
         second_result = asyncio.create_task(runtime.ui.show(second))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.active_overlay is first)
         assert runtime.active_overlay is first
         assert runtime.application.mouse_support()
         assert len(runtime.application.layout.container.floats) == 2
         pipe.send_bytes(b"\r")
         assert await asyncio.wait_for(first_result, 1) == "one"
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.active_overlay is second)
         assert runtime.active_overlay is second
         pipe.send_bytes(b"\x1b")
         assert await asyncio.wait_for(second_result, 1) is None
@@ -177,7 +177,9 @@ async def test_runtime_serializes_overlays_and_toggles_mouse() -> None:
 
 
 @pytest.mark.asyncio
-async def test_model_session_and_tree_overlays_invoke_context_actions() -> None:
+async def test_model_session_and_tree_overlays_invoke_context_actions(
+    wait_until,
+) -> None:
     called: list[tuple[str, str]] = []
 
     async def capture(kind: str, value: str) -> None:
@@ -211,9 +213,9 @@ async def test_model_session_and_tree_overlays_invoke_context_actions() -> None:
         branch=lambda value: capture("tree", value),
     )
 
-    assert await _drive_overlay(ModelOverlay(ctx), b"\x1b[B\r") == "demo:large"
-    assert await _drive_overlay(SessionOverlay(ctx), b"\r") == "old"
-    assert await _drive_overlay(TreeOverlay(ctx), b"\x1b[B\r") == "leaf"
+    assert await _drive_overlay(ModelOverlay(ctx), b"\x1b[B\r", wait_until) == "demo:large"
+    assert await _drive_overlay(SessionOverlay(ctx), b"\r", wait_until) == "old"
+    assert await _drive_overlay(TreeOverlay(ctx), b"\x1b[B\r", wait_until) == "leaf"
     assert called == [
         ("model", "demo:large"),
         ("session", "old"),
@@ -222,7 +224,7 @@ async def test_model_session_and_tree_overlays_invoke_context_actions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_theme_overlay_previews_reverts_and_persists() -> None:
+async def test_theme_overlay_previews_reverts_and_persists(wait_until) -> None:
     applied: list[str] = []
     persisted: list[None] = []
     themes = {
@@ -238,16 +240,19 @@ async def test_theme_overlay_previews_reverts_and_persists() -> None:
         plugin_states={},
         persist_plugin_states=lambda: persisted.append(None),
     )
-    assert await _drive_overlay(ThemeOverlay(ctx), b"\x1b[B\x1b") is None
+    assert await _drive_overlay(ThemeOverlay(ctx), b"\x1b[B\x1b", wait_until) is None
     assert applied == ["light", "dark"]
 
-    assert await _drive_overlay(ThemeOverlay(ctx), b"\x1b[B\r") == "light"
+    assert await _drive_overlay(ThemeOverlay(ctx), b"\x1b[B\r", wait_until) == "light"
     assert ctx.plugin_states["commands_core"]["theme"] == "light"
     assert persisted == [None]
 
 
 @pytest.mark.asyncio
-async def test_history_help_and_ask_overlays_return_specified_shapes(tmp_path: Path) -> None:
+async def test_history_help_and_ask_overlays_return_specified_shapes(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     from orcha_agent.tui.history import SQLiteHistory
 
     history = SQLiteHistory(tmp_path / "history.db")
@@ -266,12 +271,12 @@ async def test_history_help_and_ask_overlays_return_specified_shapes(tmp_path: P
         ),
     )
     history_overlay = HistoryOverlay(ctx)
-    assert await _drive_overlay(history_overlay, "older\r") == "older prompt"
+    assert await _drive_overlay(history_overlay, "older\r", wait_until) == "older prompt"
 
     help_overlay = HelpOverlay(ctx)
     assert "/help" in help_overlay.text
     assert "escape escape" in help_overlay.text
-    assert await _drive_overlay(help_overlay, b"\x1b") is None
+    assert await _drive_overlay(help_overlay, b"\x1b", wait_until) is None
 
     questions = [
         {
@@ -288,7 +293,7 @@ async def test_history_help_and_ask_overlays_return_specified_shapes(tmp_path: P
         },
     ]
     ask = AskOverlay(questions)
-    result = await _drive_overlay(ask, b"\r\t \x1b[B \r")
+    result = await _drive_overlay(ask, b"\r\t \x1b[B \r", wait_until)
     assert result == {
         "kind": "submit",
         "results": [
@@ -299,7 +304,7 @@ async def test_history_help_and_ask_overlays_return_specified_shapes(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_registered_overlay_name_resolves_through_ui_facade() -> None:
+async def test_registered_overlay_name_resolves_through_ui_facade(wait_until) -> None:
     registry = Registry()
     register_builtin_overlays(registry)
     ctx = SimpleNamespace(
@@ -323,7 +328,7 @@ async def test_registered_overlay_name_resolves_through_ui_facade() -> None:
         )
         task = asyncio.create_task(runtime.run())
         shown = asyncio.create_task(runtime.ui.show("model"))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: isinstance(runtime.active_overlay, ModelOverlay))
         pipe.send_bytes(b"\r")
         assert await asyncio.wait_for(shown, 1) == "demo:one"
         pipe.send_bytes(b"\x04")
@@ -390,14 +395,18 @@ async def test_theme_command_reports_unavailable_picker() -> None:
 
 
 @pytest.mark.asyncio
-async def test_configured_tree_and_empty_question_mark_open_overlays(tmp_path: Path) -> None:
+async def test_configured_tree_and_empty_question_mark_open_overlays(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     key_file = tmp_path / "keys.toml"
     key_file.write_text("[bindings]\ntree = \"c-x\"\n", encoding="utf-8")
     shown: list[str] = []
+    overlay_shown: asyncio.Queue[str] = asyncio.Queue()
 
     async def show(name: str) -> None:
         shown.append(name)
-
+        overlay_shown.put_nowait(name)
     ctx = SimpleNamespace(
         cfg=SimpleNamespace(cwd=tmp_path, model="demo:one", models={}),
         plugin_states={},
@@ -414,12 +423,12 @@ async def test_configured_tree_and_empty_question_mark_open_overlays(tmp_path: P
             output=DummyOutput(),
         )
         task = asyncio.create_task(runtime.run())
-        await asyncio.sleep(0)
         pipe.send_bytes(b"\x18")
+        await asyncio.wait_for(overlay_shown.get(), 1)
         pipe.send_text("?")
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(overlay_shown.get(), 1)
         pipe.send_text("x?")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "x?")
         assert shown == ["tree", "help"]
         assert runtime.buffer.text == "x?"
         pipe.send_bytes(b"\x04")
@@ -485,7 +494,10 @@ async def test_approval_adapter_uses_ui_and_preserves_always_and_fail_closed() -
 
 
 @pytest.mark.asyncio
-async def test_every_concrete_overlay_cancels_headlessly(tmp_path: Path) -> None:
+async def test_every_concrete_overlay_cancels_headlessly(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     from orcha_agent.tui.history import SQLiteHistory
 
     provider = SimpleNamespace(models=("one",), available=lambda: None)
@@ -526,15 +538,15 @@ async def test_every_concrete_overlay_cancels_headlessly(tmp_path: Path) -> None
         HelpOverlay(ctx),
     ]
     for overlay in overlays:
-        assert await _drive_overlay(overlay, b"\x1b") is None
+        assert await _drive_overlay(overlay, b"\x1b", wait_until) is None
 
 
 @pytest.mark.asyncio
-async def test_ask_other_custom_answer_and_cancel_shape() -> None:
+async def test_ask_other_custom_answer_and_cancel_shape(wait_until) -> None:
     ask = AskOverlay(
         [{"id": "other", "question": "What?", "options": [{"label": "Known"}]}]
     )
-    result = await _drive_overlay(ask, b"\x1b[B\rcustom value\r")
+    result = await _drive_overlay(ask, b"\x1b[B\rcustom value\r", wait_until)
     assert result == {
         "kind": "submit",
         "results": [
@@ -548,18 +560,17 @@ async def test_ask_other_custom_answer_and_cancel_shape() -> None:
 
 
 @pytest.mark.asyncio
-async def test_application_eof_cancels_active_overlay() -> None:
+async def test_application_eof_cancels_active_overlay(wait_until) -> None:
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
         )
         task = asyncio.create_task(runtime.run())
-        shown = asyncio.create_task(
-            runtime.ui.show(
-                ApprovalOverlay({"name": "execute", "args": {"command": "pwd"}})
-            )
+        overlay = ApprovalOverlay(
+            {"name": "execute", "args": {"command": "pwd"}}
         )
-        await asyncio.sleep(0.02)
+        shown = asyncio.create_task(runtime.ui.show(overlay))
+        await wait_until(lambda: runtime.active_overlay is overlay)
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
         assert await asyncio.wait_for(shown, 1) is None
@@ -573,7 +584,10 @@ async def test_unregistered_overlay_is_an_explicit_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ctrl_r_real_history_overlay_inserts_without_submitting(tmp_path: Path) -> None:
+async def test_ctrl_r_real_history_overlay_inserts_without_submitting(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     from orcha_agent.tui.history import SQLiteHistory
 
     submitted: list[str] = []
@@ -601,10 +615,10 @@ async def test_ctrl_r_real_history_overlay_inserts_without_submitting(tmp_path: 
         task = asyncio.create_task(runtime.run())
         await asyncio.sleep(0)
         pipe.send_bytes(b"\x12")
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: isinstance(runtime.active_overlay, HistoryOverlay))
         pipe.send_text("chosen")
         pipe.send_bytes(b"\r")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "chosen prompt")
         assert runtime.buffer.text == "chosen prompt"
         assert submitted == []
         pipe.send_bytes(b"\x04")
@@ -715,7 +729,10 @@ def test_tree_overlay_orders_entries_depth_first_by_parent_hierarchy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_select_list_scrolls_long_navigation_to_selected_row() -> None:
+async def test_select_list_scrolls_long_navigation_to_selected_row(
+    wait_until,
+    wait_for_render,
+) -> None:
     picker = SelectList("Long list", [f"item-{index:02d}" for index in range(40)])
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -723,9 +740,21 @@ async def test_select_list_scrolls_long_navigation_to_selected_row() -> None:
         )
         task = asyncio.create_task(runtime.run())
         shown = asyncio.create_task(runtime.ui.show(picker))
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.active_overlay is picker)
         pipe.send_bytes(b"\x1b[6~" * 4)
-        await asyncio.sleep(0.05)
+        await wait_for_render(
+            runtime,
+            lambda: (
+                picker.index == 32
+                and picker.list_window.render_info is not None
+                and picker.list_window.render_info.vertical_scroll <= picker.index
+                and picker.index
+                < (
+                    picker.list_window.render_info.vertical_scroll
+                    + picker.list_window.render_info.window_height
+                )
+            ),
+        )
 
         info = picker.list_window.render_info
         assert info is not None

@@ -389,7 +389,10 @@ async def test_streamed_todo_state_updates_the_hud_before_turn_completion() -> N
     assert seen == [[{"content": "ship", "status": "in_progress"}]]
 
 @pytest.mark.asyncio
-async def test_runtime_tracks_actual_keypress_and_turn_title_headlessly() -> None:
+async def test_runtime_tracks_actual_keypress_and_turn_title_headlessly(
+    wait_until,
+    wait_for_render,
+) -> None:
     now = [0.0]
     output = _Output()
     with create_pipe_input() as pipe:
@@ -412,10 +415,13 @@ async def test_runtime_tracks_actual_keypress_and_turn_title_headlessly() -> Non
         )
         runtime.notifier._clock = lambda: now[0]
         task = asyncio.create_task(runtime.run())
-        await asyncio.sleep(0.02)
+        await wait_for_render(
+            runtime,
+            lambda: runtime.application.renderer._last_screen is not None,
+        )
         now[0] = 7.0
         pipe.send_text("x")
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.notifier.last_keypress == 7.0)
         assert runtime.notifier.last_keypress == 7.0
 
         await runtime.handle_presentation(TurnStart("thread", "hello"))

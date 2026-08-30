@@ -60,10 +60,12 @@ async def test_headless_submit_newline_continuation_dot_and_bash(tmp_path: Path)
     submitted: list[str] = []
     events: list[object] = []
     submitted_event = asyncio.Event()
+    shell_completed = asyncio.Event()
     ctx = _ctx(tmp_path)
     async def capture(event: object) -> None:
         events.append(event)
-
+        if isinstance(event, ToolCallEnd):
+            shell_completed.set()
     ctx._bus.on(object, capture, plugin="test")
     async def submit(text: str) -> None:
         submitted.append(text)
@@ -96,7 +98,7 @@ async def test_headless_submit_newline_continuation_dot_and_bash(tmp_path: Path)
         submitted_event.clear()
         pipe.send_text("!printf ok")
         pipe.send_bytes(b"\r")
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(shell_completed.wait(), 1)
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
 
@@ -132,7 +134,11 @@ async def test_headless_alt_enter_and_shift_enter_insert_newlines(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_history_navigation_and_overlay_selection(tmp_path: Path) -> None:
+async def test_history_navigation_and_overlay_selection(
+    tmp_path: Path,
+    wait_until,
+    wait_for_render,
+) -> None:
     history = SQLiteHistory(tmp_path / "history.db")
     history.append_string("older")
     history.append_string("newer")
@@ -153,12 +159,15 @@ async def test_history_navigation_and_overlay_selection(tmp_path: Path) -> None:
             output=DummyOutput(),
         )
         task = asyncio.create_task(runtime.run())
-        await asyncio.sleep(0.05)
+        await wait_for_render(
+            runtime,
+            lambda: runtime.application.renderer._last_screen is not None,
+        )
         pipe.send_bytes(b"\x1b[A")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "newer")
         assert runtime.buffer.text == "newer"
         pipe.send_bytes(b"\x12")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "chosen")
         assert runtime.buffer.text == "chosen"
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
@@ -167,16 +176,25 @@ async def test_history_navigation_and_overlay_selection(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(tmp_path: Path) -> None:
+async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     submitted: list[str] = []
-    started = asyncio.Event()
+    started = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
+    cancelled = asyncio.Event()
     releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
 
     async def submit(text: str) -> None:
         index = len(submitted)
         submitted.append(text)
-        started.set()
-        await releases[index].wait()
+        started[index].set()
+        try:
+            await releases[index].wait()
+        except asyncio.CancelledError:
+            if index == 2:
+                cancelled.set()
+            raise
 
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(submit, input=pipe, output=DummyOutput())
@@ -184,26 +202,30 @@ async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(tmp_path: Path
         await asyncio.sleep(0)
         pipe.send_text("active")
         pipe.send_bytes(b"\r")
-        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(started[0].wait(), 1)
         pipe.send_text("queued draft")
         pipe.send_bytes(b"\x11")
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.queue.items == ("queued draft",))
         assert runtime.queue.items == ("queued draft",)
         pipe.send_bytes(b"\x1b\x1b[A")
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.buffer.text == "queued draft")
         assert runtime.buffer.text == "queued draft"
         pipe.send_bytes(b"\x11")
         releases[0].set()
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(started[1].wait(), 1)
         assert submitted[:2] == ["active", "queued draft"]
         pipe.send_text("-> third\n-> fourth")
         pipe.send_bytes(b"\r")
         releases[1].set()
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(started[2].wait(), 1)
+        await wait_until(lambda: runtime.queue.items == ("fourth",))
         assert submitted[:3] == ["active", "queued draft", "third"]
         assert runtime.queue.items == ("fourth",)
         pipe.send_bytes(b"\x1b\x1b")
-        await asyncio.sleep(0.6)
+        await asyncio.wait_for(cancelled.wait(), 1)
+        await wait_until(
+            lambda: runtime.buffer.text == "fourth" and not runtime.streaming
+        )
         assert runtime.buffer.text == "fourth"
         assert not runtime.streaming
         releases[2].set()
@@ -212,10 +234,14 @@ async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_ctrl_c_ladder_and_double_escape_tree(tmp_path: Path) -> None:
+async def test_ctrl_c_ladder_and_double_escape_tree(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
     shown: list[object] = []
+    overlay_shown = asyncio.Event()
 
     async def submit(_text: str) -> None:
         started.set()
@@ -227,7 +253,7 @@ async def test_ctrl_c_ladder_and_double_escape_tree(tmp_path: Path) -> None:
 
     async def show(value: object) -> None:
         shown.append(value)
-
+        overlay_shown.set()
     ctx = _ctx(tmp_path)
     ctx.ui = UIFacade(show_overlay=show)
     with create_pipe_input() as pipe:
@@ -236,7 +262,7 @@ async def test_ctrl_c_ladder_and_double_escape_tree(tmp_path: Path) -> None:
         await asyncio.sleep(0)
         pipe.send_text("draft")
         pipe.send_bytes(b"\x03")
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime.buffer.text == "")
         assert runtime.buffer.text == ""
         pipe.send_text("go")
         pipe.send_bytes(b"\r")
@@ -244,16 +270,19 @@ async def test_ctrl_c_ladder_and_double_escape_tree(tmp_path: Path) -> None:
         pipe.send_bytes(b"\x03")
         await asyncio.wait_for(cancelled.wait(), 1)
         pipe.send_bytes(b"\x1b\x1b")
-        await asyncio.sleep(0.6)
+        await asyncio.wait_for(overlay_shown.wait(), 1)
         assert shown == ["tree"]
         pipe.send_bytes(b"\x03")
-        await asyncio.sleep(0.02)
+        await wait_until(lambda: runtime._last_interrupt > 0)
         pipe.send_bytes(b"\x03")
         await asyncio.wait_for(task, 1)
 
 
 @pytest.mark.asyncio
-async def test_external_editor_draft_restore_completion_and_actions(tmp_path: Path) -> None:
+async def test_external_editor_draft_restore_completion_and_actions(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     (tmp_path / "alpha.py").write_text("", encoding="utf-8")
     registry = Registry()
 
@@ -284,30 +313,36 @@ async def test_external_editor_draft_restore_completion_and_actions(tmp_path: Pa
         task = asyncio.create_task(runtime.run())
         await asyncio.sleep(0)
         pipe.send_bytes(b"\x07")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "saved edited")
         assert runtime.buffer.text == "saved edited"
         runtime.buffer.text = "/h"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         pipe.send_bytes(b"\t")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.complete_state is not None)
         assert runtime.buffer.complete_state is not None
         pipe.send_bytes(b"\x1b")
-        await asyncio.sleep(0.6)
+        await wait_until(lambda: runtime.buffer.complete_state is None)
         assert runtime.buffer.complete_state is None
         runtime.buffer.text = "@alp"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         pipe.send_bytes(b"\t")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "@alpha.py")
         assert runtime.buffer.text == "@alpha.py"
         runtime.buffer.text = "alp"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         pipe.send_bytes(b"\t")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: runtime.buffer.text == "alpha.py")
         assert runtime.buffer.text == "alpha.py"
         pipe.send_bytes(b"\x14")
         pipe.send_bytes(b"\x0f")
         pipe.send_bytes(b"\x1bp")
-        await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: (
+                not runtime.ui.thinking_visible
+                and runtime.ui.tools_expanded
+                and "model" in shown
+            )
+        )
         assert runtime.ui.thinking_visible is False
         assert runtime.ui.tools_expanded is True
         assert "model" in shown
@@ -317,7 +352,7 @@ async def test_external_editor_draft_restore_completion_and_actions(tmp_path: Pa
     assert ctx.plugin_states["composer"]["draft"] == "alpha.py"
 
 @pytest.mark.asyncio
-async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
+async def test_empty_submit_aborts_stream_and_dispatches_queue_head(wait_until) -> None:
     submitted: list[str] = []
     active_cancelled = asyncio.Event()
     queued_started = asyncio.Event()
@@ -341,8 +376,7 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
         await asyncio.sleep(0)
         pipe.send_text("active")
         pipe.send_bytes(b"\r")
-        while not runtime.streaming:
-            await asyncio.sleep(0)
+        await wait_until(lambda: runtime.streaming)
         runtime.queue.append("next")
         pipe.send_bytes(b"\r")
         await asyncio.wait_for(active_cancelled.wait(), 1)
@@ -359,6 +393,7 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
 async def test_provider_and_plugin_actions_are_headlessly_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    wait_until,
 ) -> None:
     registry = Registry()
     registry.providers["able"] = SimpleNamespace(
@@ -408,7 +443,14 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
         pipe.send_bytes(b"\x1b[Z")
         pipe.send_bytes(b"\x10")
         pipe.send_bytes(b"\x18")
-        await asyncio.sleep(0.2)
+        await wait_until(
+            lambda: (
+                runtime.thinking_level == "low"
+                and ctx.plugin_states["composer"]["thinking_level"] == "low"
+                and switched == ["second"]
+                and plugin_calls == ["custom"]
+            )
+        )
         assert runtime.thinking_level == "low"
         assert ctx.plugin_states["composer"]["thinking_level"] == "low"
         assert switched == ["second"]
@@ -696,7 +738,10 @@ def test_queue_recovery_merges_older_prompts_before_active_draft(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_shell_error_and_cancellation_always_settle_tool_card(tmp_path: Path) -> None:
+async def test_shell_error_and_cancellation_always_settle_tool_card(
+    tmp_path: Path,
+    wait_until,
+) -> None:
     events: list[object] = []
     ctx = _ctx(tmp_path)
 
@@ -712,8 +757,7 @@ async def test_shell_error_and_cancellation_always_settle_tool_card(tmp_path: Pa
     )
     try:
         task = asyncio.create_task(runtime._run_shell("exec sleep 10"))
-        while runtime._shell_process is None:
-            await asyncio.sleep(0)
+        await wait_until(lambda: runtime._shell_process is not None)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 1)

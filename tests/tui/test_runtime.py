@@ -74,7 +74,9 @@ async def test_application_is_headlessly_driveable_through_submit_and_exit() -> 
 
 
 @pytest.mark.asyncio
-async def test_headless_fake_model_turn_keeps_full_width_composer_frame() -> None:
+async def test_headless_fake_model_turn_keeps_full_width_composer_frame(
+    wait_for_render,
+) -> None:
     width = 72
     output = _SizedDummyOutput(columns=width)
     scrollback = StringIO()
@@ -102,6 +104,19 @@ async def test_headless_fake_model_turn_keeps_full_width_composer_frame() -> Non
         await runtime.handle_presentation(end)
         completed.set()
 
+    def full_width_composer_rendered() -> bool:
+        if not completed.is_set():
+            return False
+        screen = runtime.application.renderer._last_screen
+        rows = (
+            "".join(screen.data_buffer[y][x].char for x in range(width))
+            for y in range(screen.height)
+        )
+        return any(
+            row.startswith("╭──") and row.endswith("╮") and len(row) == width
+            for row in rows
+        )
+
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             submit,
@@ -111,10 +126,12 @@ async def test_headless_fake_model_turn_keeps_full_width_composer_frame() -> Non
             composer_shape="box",
         )
         task = asyncio.create_task(runtime.run())
-        await asyncio.sleep(0)
+        rendered = asyncio.create_task(
+            wait_for_render(runtime, full_width_composer_rendered)
+        )
         pipe.send_text("render the full turn\n")
         await asyncio.wait_for(completed.wait(), timeout=1)
-        await asyncio.sleep(0.05)
+        await rendered
 
         screen = runtime.application.renderer._last_screen
         rows = [
