@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
 import json
 import re
@@ -25,7 +26,7 @@ _READ = frozenset({"read", "read_file"})
 _WRITE = frozenset({"write", "write_file"})
 _EDIT = frozenset({"edit", "edit_file", "apply_patch"})
 _BASH = frozenset({"execute", "bash", "shell"})
-_INLINE = frozenset({"grep", "glob", "web_search"})
+_INLINE = frozenset({"grep", "glob", "ls", "web_search"})
 _MUTED_FRAME = frozenset({"edit", "edit_file", "apply_patch", "task", "ask", "todo"})
 
 
@@ -152,7 +153,11 @@ def _path(args: Mapping[str, Any], cwd: Any = None) -> str:
 
 
 def _selection(args: Mapping[str, Any], line_count: int | None = None) -> str:
-    start = args.get("offset", args.get("start", args.get("start_line")))
+    offset = args.get("offset")
+    if isinstance(offset, int):
+        start = max(0, offset) + 1
+    else:
+        start = args.get("start", args.get("start_line"))
     limit = args.get("limit")
     if isinstance(start, int):
         end = start + ((line_count if line_count is not None else limit) or 1) - 1
@@ -298,7 +303,56 @@ def _diff(value: Any) -> str | None:
     return text if text.startswith(("@@ ", "--- ")) or "\n@@ " in text else None
 
 
-def _read_rows(block: Block, args: Mapping[str, Any], *, expanded: bool) -> tuple[str, list[str | Text]]:
+def _read_source_rows(
+    value: Any, args: Mapping[str, Any]
+) -> tuple[list[tuple[str, str]], int | None, int | None]:
+    lines = _result_text(value).splitlines()
+    parsed: list[tuple[str, str]] = []
+    real_numbers: list[int] = []
+    numbered = False
+    for line in lines:
+        match = re.match(r"^\s*(\d+(?:\.\d+)?)  (.*)$", line)
+        if match:
+            numbered = True
+            marker, source = match.groups()
+            parsed.append((marker, source))
+            real_numbers.append(int(marker.partition(".")[0]))
+        else:
+            parsed.append(("", line))
+    if numbered:
+        return parsed, min(real_numbers), max(real_numbers)
+
+    offset = args.get("offset")
+    if isinstance(offset, int):
+        start = max(0, offset) + 1
+    else:
+        supplied = args.get("start_line", args.get("start", 1))
+        start = supplied if isinstance(supplied, int) else 1
+    generated = [(str(start + index), line) for index, line in enumerate(lines)]
+    end = start + len(generated) - 1 if generated else None
+    return generated, start if generated else None, end
+
+
+def _read_display_rows(
+    source_rows: list[tuple[str, str]], *, expanded: bool, theme: Any
+) -> list[Text]:
+    visible = source_rows if expanded else source_rows[:12]
+    gutter_width = max(2, *(len(marker) for marker, _ in source_rows))
+    rows: list[Text] = []
+    gutter_style = str(theme_value(theme, "dim", theme_value(theme, "muted")))
+    for marker, source in visible:
+        row = Text(f"{marker:>{gutter_width}}│", style=gutter_style)
+        row.append(source[:4000])
+        rows.append(row)
+    hidden = len(source_rows) - len(visible)
+    if hidden:
+        rows.append(Text(f"{' ' * (gutter_width + 1)}… {hidden} more lines {EXPAND_HINT}", style=gutter_style))
+    return rows
+
+
+def _read_rows(
+    block: Block, args: Mapping[str, Any], *, expanded: bool, theme: Any
+) -> tuple[str, list[str | Text]]:
     cwd = block.data.get("cwd")
     calls = block.data.get("calls")
     if isinstance(calls, list) and calls:
@@ -306,21 +360,19 @@ def _read_rows(block: Block, args: Mapping[str, Any], *, expanded: bool) -> tupl
         for index, call in enumerate(calls):
             call_args = call.get("args", {}) if isinstance(call, Mapping) else {}
             result = call.get("result") if isinstance(call, Mapping) else None
-            content = _result_text(result).splitlines()
+            source_rows, first, last = _read_source_rows(result, call_args)
             branch = "└─" if index == len(calls) - 1 else "├─"
-            rows.append(f"{branch} {_path(call_args, cwd)}{_selection(call_args, len(content))}")
-            preview = content if expanded else content[:3]
-            rows.extend(f"   {line[:4000]}" for line in preview)
+            selection = f":{first}-{last}" if first is not None and last is not None else ""
+            rows.append(f"{branch} {_path(call_args, cwd)}{selection}")
+            preview = source_rows if expanded else source_rows[:3]
+            rows.extend(f"   {source[:4000]}" for _marker, source in preview)
         return f"• Read ({len(calls)})", rows
-    content = _result_text(block.data.get("result")).splitlines()
     path = _path(args, cwd)
     if _state(block) == "running":
         return f"⏳ Read: {path}{_selection(args)}", []
-    start = args.get("offset", 1)
-    start = start if isinstance(start, int) else 1
-    digits = max(2, len(str(start + max(0, len(content) - 1))))
-    rows = [f"{start + index:>{digits}}│{line[:4000]}" for index, line in enumerate(content)]
-    return f"• Read {path}{_selection(args, len(content))}", _limited(rows, 12, expanded)
+    source_rows, first, last = _read_source_rows(block.data.get("result"), args)
+    selection = f":{first}-{last}" if first is not None and last is not None else ""
+    return f"• Read {path}{selection}", _read_display_rows(source_rows, expanded=expanded, theme=theme)
 
 
 def _write_rows(block: Block, args: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -382,7 +434,102 @@ def _items_from_result(result: Any, *keys: str) -> list[Any]:
             value = item.get(key)
             if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
                 return list(value)
-    return _result_text(result).splitlines()
+    text = _result_text(result).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        for loader in (json.loads, ast.literal_eval):
+            try:
+                value = loader(text)
+            except (ValueError, SyntaxError, json.JSONDecodeError):
+                continue
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                return list(value)
+    return text.splitlines()
+
+
+def _numeric_value(value: Any, *keys: str) -> int | None:
+    for key in keys:
+        supplied = _value(value, key)
+        if isinstance(supplied, (int, float)) and not isinstance(supplied, bool):
+            return max(0, int(supplied))
+    return None
+
+
+def _path_item(item: Any) -> str:
+    if not isinstance(item, Mapping):
+        return str(item)
+    value = str(item.get("path", item.get("name", item.get("file", ""))))
+    kind = str(item.get("type", item.get("kind", ""))).casefold()
+    is_dir = bool(item.get("is_dir") or item.get("directory") or kind in {"dir", "directory"})
+    return f"{value}/" if is_dir and value and not value.endswith("/") else value
+
+
+def _grep_items(result: Any) -> tuple[list[str], int, int]:
+    structured = _items_from_result(result, "matches")
+    has_structured_matches = any(
+        isinstance(item.get("matches"), Sequence) and not isinstance(item.get("matches"), (str, bytes))
+        for item in _mappings(result)
+    )
+    if has_structured_matches:
+        rows: list[str] = []
+        paths: set[str] = set()
+        for item in structured:
+            if not isinstance(item, Mapping):
+                row = str(item)
+                rows.append(row)
+                paths.add(row.split(":", 1)[0])
+                continue
+            path = str(item.get("path", item.get("file", "")))
+            line = item.get("line", item.get("line_number"))
+            text = str(item.get("text", item.get("content", "")))
+            paths.add(path)
+            rows.append(f"{path}:{line}:{text}" if line is not None else f"{path}:{text}")
+        return rows, len(rows), len(paths - {""})
+
+    raw_lines = _result_text(result).splitlines()
+    rows = []
+    paths: set[str] = set()
+    current_path: str | None = None
+    count_total = 0
+    count_mode = True
+    for line in raw_lines:
+        count_match = re.match(r"^(.+):\s+(\d+)$", line)
+        if count_match and not line.startswith((" ", "\t")):
+            path, count = count_match.groups()
+            paths.add(path)
+            count_total += int(count)
+            rows.append(line)
+            continue
+        count_mode = False
+        if line and not line.startswith((" ", "\t")) and line.endswith(":"):
+            current_path = line[:-1]
+            paths.add(current_path)
+            continue
+        match = re.match(r"^\s+(\d+):\s?(.*)$", line)
+        if match and current_path is not None:
+            number, text = match.groups()
+            rows.append(f"{current_path}:{number}:{text}")
+            continue
+        if line.strip():
+            rows.append(line.strip())
+            paths.add(line.split(":", 1)[0])
+    if count_mode and rows:
+        return rows, count_total, len(paths)
+    return rows, len(rows), len(paths - {""})
+
+
+def _tree_output(header: str, items: list[str], *, total: int, limit: int, item_type: str) -> Text:
+    visible = items[:limit]
+    hidden = max(0, total - len(visible))
+    rows = [header]
+    for index, item in enumerate(visible):
+        branch = "└─" if index == len(visible) - 1 and hidden == 0 else "├─"
+        rows.append(f"  {branch} {item}")
+    if hidden:
+        noun = item_type if hidden == 1 else {"match": "matches"}.get(item_type, f"{item_type}s")
+        rows.append(f"  … {hidden} more {noun} {EXPAND_HINT}")
+    return Text("\n".join(rows))
 
 
 def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: bool, theme: Any) -> Text:
@@ -390,26 +537,39 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
     result = block.data.get("result")
     if state == "error":
         return Text(f"✘ Error: {_result_text(result)[:110]}", style=str(theme_value(theme, "error")))
-    items = _items_from_result(result, "matches", "items", "results")
-    if not items:
-        return Text("⚠ No matches found", style=str(theme_value(theme, "warning")))
-    limit = 24 if expanded else (8 if name == "glob" else 6)
     pattern = str(args.get("pattern", args.get("query", "")))
     if name == "grep":
-        files = {str(item).split(":", 1)[0] for item in items}
-        header = f"🔍 Grep: {pattern}  {len(items)} matches · {len(files)} files · in {args.get('path', args.get('cwd', '.'))}"
-    elif name == "glob":
-        header = f"🔍 Glob: {pattern}  {len(items)} items"
-    else:
-        header = f"🔍 Web Search: {pattern}  {len(items)} results"
-    visible = items[:limit]
-    rows = [header]
-    for index, item in enumerate(visible):
-        branch = "└─" if index == len(visible) - 1 and len(visible) == len(items) else "├─"
-        rows.append(f"  {branch} {str(item)}")
-    if len(items) > limit:
-        rows.append(f"  … {len(items) - limit} more {EXPAND_HINT}")
-    return Text("\n".join(rows))
+        grep_result = None if _result_text(result).strip() == "No matches found" else result
+        items, parsed_total, parsed_files = _grep_items(grep_result)
+        supplied_total = _numeric_value(grep_result, "match_count", "total_matches", "count")
+        supplied_files = _numeric_value(grep_result, "file_count", "files_with_matches")
+        total = parsed_total if supplied_total is None else supplied_total
+        files = parsed_files if supplied_files is None else supplied_files
+        if not items and total == 0:
+            return Text("⚠ No matches found", style=str(theme_value(theme, "warning")))
+        header = f"🔍 Grep: {pattern}  {total} matches · {files} files · in {args.get('path', args.get('cwd', '.'))}"
+        return _tree_output(header, items, total=total, limit=24 if expanded else 6, item_type="match")
+    if name == "ls":
+        items = [_path_item(item) for item in _items_from_result(result, "entries", "items", "files", "paths")]
+        items = [item for item in items if item and item != "No files found"]
+        supplied_total = _numeric_value(result, "count", "total", "total_count")
+        total = len(items) if supplied_total is None else supplied_total
+        if not items and total == 0:
+            return Text("⚠ Empty directory", style=str(theme_value(theme, "warning")))
+        path = _path(args) or "."
+        return _tree_output(f"📂 Ls: {path}  {total} items", items, total=total, limit=24 if expanded else 8, item_type="item")
+
+    items = [_path_item(item) for item in _items_from_result(result, "matches", "items", "results", "files", "paths")]
+    items = [item for item in items if item and item not in {"No files found", "No files found matching pattern"}]
+    supplied_total = _numeric_value(result, "count", "total", "total_count", "result_count")
+    total = len(items) if supplied_total is None else supplied_total
+    if not items and total == 0:
+        empty = "No files found" if name == "glob" else "No results found"
+        return Text(f"⚠ {empty}", style=str(theme_value(theme, "warning")))
+    label = "Glob" if name == "glob" else "Web Search"
+    noun = "items" if name == "glob" else "results"
+    limit = 24 if expanded else 8 if name == "glob" else 6
+    return _tree_output(f"🔍 {label}: {pattern}  {total} {noun}", items, total=total, limit=limit, item_type=noun.removesuffix("s"))
 
 
 def _task_rows(result: Any, theme: Any) -> tuple[str, list[str]]:
@@ -504,7 +664,7 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     sections: dict[int, str] | None = None
     edit = False
     if name in _READ:
-        header, rows = _read_rows(block, args, expanded=expanded)
+        header, rows = _read_rows(block, args, expanded=expanded, theme=theme)
     elif name in _WRITE:
         header, rows = _write_rows(block, args)
     elif name in _EDIT:
