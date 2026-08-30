@@ -333,6 +333,20 @@ class _PromptScript:
         self.responses = responses
         self.prompts: list[str] = []
         self._next_response = 0
+        self._submit: Any = None
+        self.application = SimpleNamespace(exit=lambda: None)
+
+    def runtime(self, submit: Any, **_kwargs: Any) -> "_PromptScript":
+        self._submit = submit
+        return self
+
+    async def run(self) -> None:
+        while True:
+            try:
+                response = await self.prompt_async("> ")
+            except EOFError:
+                return
+            await self._submit(response)
 
     async def prompt_async(self, message: str) -> str:
         self.prompts.append(message)
@@ -673,24 +687,21 @@ def test_bottom_toolbar_joins_nonempty_segments_and_isolates_failures(
     def fail(_ctx: AppContext) -> str:
         raise RuntimeError("segment failed")
 
-    api.add_status_segment(
-        "model",
-        lambda _ctx: '<style fg="ansicyan">model</style>',
-        priority=10,
-    )
+    api.add_status_segment("model", lambda _ctx: "model", priority=10)
     api.add_status_segment("broken", fail, priority=20)
     api.add_status_segment("empty", lambda _ctx: "", priority=30)
     api.add_status_segment("missing", lambda _ctx: None, priority=35)
     api.add_status_segment("mode", lambda _ctx: "ask", priority=40)
 
     fragments = to_formatted_text(app_module._bottom_toolbar(ctx))
+    plain = "".join(text for _style, text in fragments)
 
-    assert "".join(text for _style, text in fragments) == (
-        "model · !broken · ask"
-    )
-    model_styles = [style for style, text in fragments if text == "model"]
+    assert plain.index("model") < plain.index("ask") < plain.index("!broken")
+    assert "empty" not in plain
+    assert "<style" not in plain
+    model_styles = [style for style, text in fragments if "model" in text]
     assert len(model_styles) == 1
-    assert "ansicyan" in model_styles[0]
+    assert "class:text" in model_styles[0]
 
 
 @pytest.mark.asyncio
@@ -701,20 +712,19 @@ async def test_run_app_configures_live_bottom_toolbar_without_building_a_model(
     captured: dict[str, Any] = {}
     prompt = _PromptScript()
 
-    def prompt_session(**kwargs: Any) -> _PromptScript:
+    def application_runtime(submit: Any, **kwargs: Any) -> _PromptScript:
         captured.update(kwargs)
-        return prompt
+        return prompt.runtime(submit)
 
     monkeypatch.setattr(app_module, "ConsoleOutput", _RecordingConsole)
-    monkeypatch.setattr(app_module, "PromptSession", prompt_session)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", application_runtime)
     monkeypatch.setattr(app_module, "load_plugins", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
 
     status = await run_app(_config(tmp_path))
 
     assert status == 0
-    assert callable(captured["bottom_toolbar"])
-    assert captured["refresh_interval"] == 0.5
+    assert callable(captured["status"])
 
 
 @pytest.mark.asyncio
@@ -1005,14 +1015,14 @@ async def test_run_app_continues_after_cancelled_turn_and_emits_app_exit(
     class _Prompt:
         calls = 0
 
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
+        def __init__(self, submit: Any, **_kwargs: Any) -> None:
+            self._submit = submit
+            self.application = SimpleNamespace(exit=lambda: None)
 
-        async def prompt_async(self, _message: str) -> str:
+        async def run(self) -> None:
             type(self).calls += 1
-            if type(self).calls == 1:
-                return "Cancel this turn"
-            raise EOFError
+            await self._submit("Cancel this turn")
+            type(self).calls += 1
 
     async def build_cancelled_graph(*_args: Any, **_kwargs: Any) -> _StreamGraph:
         return _cancelled_graph()
@@ -1030,7 +1040,7 @@ async def test_run_app_continues_after_cancelled_turn_and_emits_app_exit(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", _Prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", _Prompt)
     monkeypatch.setattr(app_module, "build_agent", build_cancelled_graph)
     monkeypatch.setattr(app_module, "load_plugins", load_test_plugins)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
@@ -1055,14 +1065,14 @@ async def test_run_app_continues_after_cancelled_command_and_emits_app_exit(
     class Prompt:
         calls = 0
 
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
+        def __init__(self, submit: Any, **_kwargs: Any) -> None:
+            self._submit = submit
+            self.application = SimpleNamespace(exit=lambda: None)
 
-        async def prompt_async(self, _message: str) -> str:
+        async def run(self) -> None:
             type(self).calls += 1
-            if type(self).calls == 1:
-                return "/compact"
-            raise EOFError
+            await self._submit("/compact")
+            type(self).calls += 1
 
     async def cancelled_command(*_args: Any, **_kwargs: Any) -> bool:
         raise asyncio.CancelledError
@@ -1080,7 +1090,7 @@ async def test_run_app_continues_after_cancelled_command_and_emits_app_exit(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", Prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", Prompt)
     monkeypatch.setattr(app_module, "dispatch_command", cancelled_command)
     monkeypatch.setattr(app_module, "load_plugins", load_test_plugins)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
@@ -1167,7 +1177,7 @@ async def test_run_app_hints_for_registered_commands_missing_a_slash(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "build_agent", record_build)
     monkeypatch.setattr(AppContext, "ensure_agent", record_ensure)
@@ -1233,7 +1243,7 @@ async def test_run_app_sends_a_non_command_first_word_to_the_model(
         raise AssertionError("usable agent must not be rebuilt")
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "build_agent", forbidden_build)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
@@ -1275,7 +1285,7 @@ async def test_run_app_provider_free_commands_never_construct_a_model(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
 
@@ -1314,7 +1324,7 @@ async def test_run_app_failed_first_turn_prints_provider_hints_and_reprompts(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
 
@@ -1353,7 +1363,7 @@ async def test_run_app_failed_model_command_prints_provider_hints(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
 
@@ -1421,7 +1431,7 @@ async def test_run_app_model_switch_builds_before_the_following_turn(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "build_agent", build_selected_model)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
@@ -1488,7 +1498,7 @@ async def test_first_model_command_cleans_candidate_history_before_lazy_swap(
 
     monkeypatch.setattr(app_module, "SessionStore", lambda _path: store)
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "build_agent", build_candidate)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(
@@ -1926,6 +1936,11 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
         session=session,
         plugin_states={"approval": approval_state, "scratch": scratch_state},
     )
+    ctx.ui = SimpleNamespace(
+        prepare_session_switch=lambda: scratch_state.update(
+            {"draft": "captured by runtime"}
+        )
+    )
     rebuilt: list[tuple[Path, str | list[str], str, set[str]]] = []
     replacement_graph = object()
 
@@ -1959,7 +1974,7 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
     assert scratch_state == {}
     assert session.plugin_states["current"] == {
         "approval": {"always_allowed": ["execute"]},
-        "scratch": {"draft": "keep before resume"},
+        "scratch": {"draft": "captured by runtime"},
     }
     assert session.operations[:3] == [
         (
@@ -1972,7 +1987,7 @@ async def test_resume_restores_saved_cwd_and_model_before_rebuild(
             "set_plugin_state",
             "current",
             "scratch",
-            {"draft": "keep before resume"},
+            {"draft": "captured by runtime"},
         ),
         ("all_plugin_state", "saved"),
     ]
@@ -1996,12 +2011,21 @@ async def test_resume_build_failure_rolls_back_thread_config_agent_and_states(
         plugin_states={"saved": {"approval": {"always_allowed": ["write_file"]}}},
     )
     approval_state = {"always_allowed": ["execute"]}
+    composer_state = {"draft": "before resume"}
     old_graph = object()
     ctx = _context(
         tmp_path,
         agent=old_graph,
         session=session,
-        plugin_states={"approval": approval_state},
+        plugin_states={
+            "approval": approval_state,
+            "composer": composer_state,
+        },
+    )
+    ctx.ui = SimpleNamespace(
+        prepare_session_switch=lambda: composer_state.update(
+            {"draft": "captured before failure"}
+        )
     )
     old_cfg = ctx.cfg
 
@@ -2018,6 +2042,7 @@ async def test_resume_build_failure_rolls_back_thread_config_agent_and_states(
     assert ctx.cfg is old_cfg
     assert ctx.agent is old_graph
     assert approval_state == {"always_allowed": ["execute"]}
+    assert composer_state == {"draft": "captured before failure"}
 
 
 @pytest.mark.asyncio
@@ -2229,6 +2254,13 @@ async def test_clear_keeps_session_and_plugin_state_while_seeding_empty_thread(
     )
     old_session = ctx.session_id
     old_thread = ctx.thread_id
+    runtime_clears = 0
+
+    async def clear_scrollback() -> None:
+        nonlocal runtime_clears
+        runtime_clears += 1
+
+    ctx.ui = SimpleNamespace(clear=clear_scrollback)
 
     await ctx.clear()
 
@@ -2241,7 +2273,8 @@ async def test_clear_keeps_session_and_plugin_state_while_seeding_empty_thread(
         ctx.thread_config,
         {"messages": [], "todos": [], "files": {}},
     )
-    assert ctx.console.clear_calls == 1
+    assert runtime_clears == 1
+    assert ctx.console.clear_calls == 0
     thread_switches = [
         event for event in ctx.bus.events if isinstance(event, ThreadSwitch)
     ]
@@ -2326,7 +2359,7 @@ async def test_run_app_lists_sessions_and_returns_zero_without_prompting(
         )
     console = _RecordingConsole()
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", _fail_if_prompt_is_constructed)
 
     status = await run_app(replace(cfg, list_sessions=True))
 
@@ -2391,7 +2424,7 @@ async def test_run_app_resume_override_cleans_only_across_providers_before_first
 
     monkeypatch.setattr(app_module, "SessionStore", lambda _path: store)
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "build_agent", build_candidate)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(
@@ -2435,7 +2468,7 @@ async def test_run_app_unknown_resume_returns_one_without_prompting(
     cfg = replace(_config(tmp_path), resume="missing-session")
     console = _RecordingConsole()
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", _fail_if_prompt_is_constructed)
 
     status = await run_app(cfg)
 
@@ -2453,7 +2486,7 @@ async def test_run_app_unopenable_database_returns_one_and_names_path(
     cfg = replace(_config(tmp_path), db_path=database_path)
     console = _RecordingConsole()
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", _fail_if_prompt_is_constructed)
 
     status = await run_app(cfg)
 
@@ -3068,7 +3101,7 @@ async def test_run_app_app_exit_records_normal_session_diagnostic(
     console = _RecordingConsole()
     prompt = _PromptScript("hello")
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(
         app_module,
         "build_agent",
@@ -3197,7 +3230,7 @@ async def test_run_app_resume_accepts_unique_session_prefix(
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
 
@@ -3219,7 +3252,7 @@ async def test_run_app_resume_rejects_ambiguous_session_prefix_without_prompting
         store.create(tmp_path, "old:model", thread_id="team-a")
     console = _RecordingConsole()
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", _fail_if_prompt_is_constructed)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", _fail_if_prompt_is_constructed)
 
     status = await run_app(replace(cfg, resume="team-"))
 
@@ -3386,11 +3419,19 @@ async def test_new_session_clears_console_after_success(tmp_path: Path) -> None:
     with SessionStore(tmp_path / "new-session-console.sqlite") as store:
         ctx = _real_context(tmp_path, store, None, session_id="old-session")
         old_session = ctx.session_id
+        runtime_clears = 0
+
+        async def clear_scrollback() -> None:
+            nonlocal runtime_clears
+            runtime_clears += 1
+
+        ctx.ui = SimpleNamespace(clear=clear_scrollback)
 
         await ctx.new_session()
 
         assert ctx.session_id != old_session
-        assert ctx.console.clear_calls == 1
+        assert runtime_clears == 1
+        assert ctx.console.clear_calls == 0
         assert [(event.old, event.new) for event in _session_switches(ctx)] == [
             (old_session, ctx.session_id)
         ]
@@ -3735,7 +3776,7 @@ async def test_startup_resume_recovers_checkpoint_before_warning_and_normal_exit
         return []
 
     monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
-    monkeypatch.setattr(app_module, "PromptSession", lambda **_kwargs: prompt)
+    monkeypatch.setattr(app_module, "ApplicationRuntime", prompt.runtime)
     monkeypatch.setattr(app_module, "load_plugins", load_runtime)
     monkeypatch.setattr(app_module, "_history_path", lambda: tmp_path / "history")
 
@@ -4052,3 +4093,24 @@ async def test_lazy_pending_reseed_failure_keeps_persisted_thread_null(
         assert store.get_thread(pending_thread) is None
         assert ledger.leaf(session_id) == prior_leaf
         assert _thread_switches(ctx) == []
+
+
+def test_application_runtime_accepts_real_app_context(tmp_path: Path) -> None:
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from orcha_agent.tui.runtime import ApplicationRuntime
+
+    async def submit(_text: str) -> None:
+        return None
+
+    ctx = _context(tmp_path)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            input=pipe,
+            output=DummyOutput(),
+            ctx=ctx,
+        )
+    assert ctx.queue is runtime.queue
+    assert ctx.ui is runtime.ui

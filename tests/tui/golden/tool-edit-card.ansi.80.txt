@@ -1,0 +1,6 @@
+<ESC>[90m+--- ✔ Edit: src/demo.py:9 ⟦+1/-1⟧ --------------------------------------------+<ESC>[0m
+<ESC>[90m|<ESC>[0m<ESC>[2;90m…<ESC>[0m<ESC>[90m                                                                             <ESC>[0m<ESC>[90m|<ESC>[0m
+<ESC>[90m|<ESC>[0m<ESC>[90m   9│<ESC>[0m<ESC>[2;90mcontext<ESC>[0m<ESC>[90m                                                                  <ESC>[0m<ESC>[90m|<ESC>[0m
+<ESC>[90m|<ESC>[0m<ESC>[31m- 10│<ESC>[0m<ESC>[7;31mold<ESC>[0m<ESC>[31m <ESC>[0m<ESC>[31mvalue<ESC>[0m<ESC>[90m                                                                <ESC>[0m<ESC>[90m|<ESC>[0m
+<ESC>[90m|<ESC>[0m<ESC>[32m+ 10│<ESC>[0m<ESC>[7;32mnew<ESC>[0m<ESC>[32m <ESC>[0m<ESC>[32mvalue<ESC>[0m<ESC>[90m                                                                <ESC>[0m<ESC>[90m|<ESC>[0m
+<ESC>[90m+------------------------------------------------------------------------------+<ESC>[0m

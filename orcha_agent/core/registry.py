@@ -9,7 +9,30 @@ ProviderFactory: TypeAlias = Callable[[str, Mapping[str, Any]], Any]
 BackendFactory: TypeAlias = Callable[[Any], Any]
 RendererMatch: TypeAlias = str | Callable[[Any], bool]
 Renderer: TypeAlias = Callable[[Any], Any | None]
+BlockRenderer: TypeAlias = Callable[..., Any]
 AvailabilityCheck: TypeAlias = Callable[[], str | None]
+CompleterFunction: TypeAlias = Callable[[Any], Any]
+KeybindingHandler: TypeAlias = Callable[[Any, Any], Any]
+OverlayFactory: TypeAlias = Callable[..., Any]
+CORE_KEY_ACTIONS = frozenset(
+    {
+        "submit",
+        "newline",
+        "queue",
+        "dequeue",
+        "toggle_thinking",
+        "cycle_thinking_level",
+        "expand_tools",
+        "model_picker",
+        "cycle_model",
+        "history_search",
+        "external_editor",
+        "clear_screen",
+        "interrupt",
+        "exit",
+        "tree",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,13 +83,45 @@ class RendererRegistration:
     render: Renderer
     name: str
 
+@dataclass(frozen=True, slots=True)
+class BlockRendererRegistration:
+    plugin: str
+    priority: int
+    kind: str
+    render: BlockRenderer
+
 
 @dataclass(frozen=True, slots=True)
 class StatusSegmentRegistration:
     name: str
     plugin: str
     priority: int
-    render: Callable[[Any], str | None]
+    render: Callable[[Any], Any | None]
+
+
+@dataclass(frozen=True, slots=True)
+class CompleterRegistration:
+    plugin: str
+    priority: int
+    trigger: str
+    fn: CompleterFunction
+
+
+@dataclass(frozen=True, slots=True)
+class KeybindingRegistration:
+    plugin: str
+    priority: int
+    action: str
+    handler: KeybindingHandler
+    default: str | Sequence[str]
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayRegistration:
+    plugin: str
+    priority: int
+    name: str
+    factory: OverlayFactory
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,8 +172,12 @@ class Registry:
 
         self.middleware: list[MiddlewareRegistration] = []
         self.renderers: list[RendererRegistration] = []
+        self.block_renderers: list[BlockRendererRegistration] = []
         self.status_segments: list[StatusSegmentRegistration] = []
+        self.completers: list[CompleterRegistration] = []
+        self.keybindings: dict[str, KeybindingRegistration] = {}
         self.subagents: list[SubagentRegistration] = []
+        self.overlays: dict[str, OverlayRegistration] = {}
         self.prompt_fragments: list[PromptFragment] = []
 
         self._tool_owners: dict[str, str] = {}
@@ -129,8 +188,14 @@ class Registry:
         self._mode_owners: dict[str, str] = {}
         self._middleware_owners: dict[str, str] = {}
         self._status_segment_owners: dict[str, str] = {}
+        self._completer_owners: dict[str, str] = {}
+        self._keybinding_owners: dict[str, str] = {
+            action: "<core>" for action in CORE_KEY_ACTIONS
+        }
         self._renderer_owners: dict[object, str] = {}
+        self._block_renderer_owners: dict[str, str] = {}
         self._subagent_owners: dict[str, str] = {}
+        self._overlay_owners: dict[str, str] = {}
 
     @staticmethod
     def _claim(
@@ -303,6 +368,38 @@ class Registry:
         )
         self.renderers.sort(key=lambda entry: (entry.priority, entry.plugin, entry.name))
 
+    def _add_block_renderer(
+        self,
+        plugin: str,
+        kind: str,
+        render: BlockRenderer,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "block renderer",
+            kind,
+            plugin,
+            self._block_renderer_owners,
+            replace=replace,
+        )
+        if replace:
+            self.block_renderers[:] = [
+                entry for entry in self.block_renderers if entry.kind != kind
+            ]
+        self.block_renderers.append(
+            BlockRendererRegistration(
+                plugin=plugin,
+                priority=priority,
+                kind=kind,
+                render=render,
+            )
+        )
+        self.block_renderers.sort(
+            key=lambda entry: (entry.priority, entry.plugin, entry.kind)
+        )
+
     def _add_subagent(
         self,
         plugin: str,
@@ -337,7 +434,7 @@ class Registry:
         self,
         plugin: str,
         name: str,
-        render: Callable[[Any], str | None],
+        render: Callable[[Any], Any | None],
         *,
         priority: int = 100,
         replace: bool = False,
@@ -363,6 +460,86 @@ class Registry:
         )
         self.status_segments.sort(key=lambda entry: (entry.priority, entry.name))
 
+    def _add_completer(
+        self,
+        plugin: str,
+        trigger: str,
+        fn: CompleterFunction,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "completer",
+            trigger,
+            plugin,
+            self._completer_owners,
+            replace=replace,
+        )
+        if replace:
+            self.completers[:] = [
+                entry for entry in self.completers if entry.trigger != trigger
+            ]
+        self.completers.append(
+            CompleterRegistration(
+                plugin=plugin,
+                priority=priority,
+                trigger=trigger,
+                fn=fn,
+            )
+        )
+        self.completers.sort(
+            key=lambda entry: (entry.priority, entry.plugin, entry.trigger)
+        )
+
+    def _add_keybinding(
+        self,
+        plugin: str,
+        action: str,
+        handler: KeybindingHandler,
+        default: str | Sequence[str],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "keybinding",
+            action,
+            plugin,
+            self._keybinding_owners,
+            replace=replace,
+        )
+        self.keybindings[action] = KeybindingRegistration(
+            plugin=plugin,
+            priority=priority,
+            action=action,
+            handler=handler,
+            default=default,
+        )
+
+    def _add_overlay(
+        self,
+        plugin: str,
+        name: str,
+        factory: OverlayFactory,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "overlay",
+            name,
+            plugin,
+            self._overlay_owners,
+            replace=replace,
+        )
+        self.overlays[name] = OverlayRegistration(
+            plugin=plugin,
+            priority=priority,
+            name=name,
+            factory=factory,
+        )
+
     def _add_prompt_fragment(
         self,
         plugin: str,
@@ -381,15 +558,23 @@ __all__ = [
     "AvailabilityCheck",
     "AuthRegistration",
     "BackendFactory",
+    "BlockRenderer",
+    "BlockRendererRegistration",
     "BackendRegistration",
     "CommandHandler",
     "CommandRegistration",
+    "CompleterFunction",
+    "CompleterRegistration",
+    "KeybindingHandler",
+    "KeybindingRegistration",
     "MiddlewareRegistration",
     "PromptFragment",
     "ProviderFactory",
     "ProviderRegistration",
     "Registry",
     "Renderer",
+    "OverlayFactory",
+    "OverlayRegistration",
     "RendererMatch",
     "RendererRegistration",
     "StatusSegmentRegistration",

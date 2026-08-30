@@ -9,7 +9,7 @@ import pytest
 from orcha_agent import __main__ as entrypoint
 from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.plugin import PluginAPI
-from orcha_agent.tui import app as tui_app
+from orcha_agent.tui import runtime as tui_runtime
 
 
 @pytest.mark.parametrize("trusted", [False, True], ids=["untrusted", "trusted"])
@@ -100,13 +100,13 @@ def test_main_login_passes_mode_to_auth_plugin_without_starting_repl(
     async def unexpected_run_app(_cfg: object) -> int:
         raise AssertionError("login command must not start run_app")
 
-    def unexpected_prompt_session(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("login command must not create PromptSession")
+    def unexpected_application(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("login command must not create an Application")
 
     monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
     monkeypatch.setattr(entrypoint, "load_plugins", fake_load_plugins)
     monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
-    monkeypatch.setattr(tui_app, "PromptSession", unexpected_prompt_session)
+    monkeypatch.setattr(tui_runtime, "Application", unexpected_application)
 
     with pytest.raises(SystemExit) as exc_info:
         entrypoint.main()
@@ -163,8 +163,8 @@ def test_main_login_reports_auth_failure_without_starting_repl(
     async def unexpected_run_app(_cfg: object) -> int:
         raise AssertionError("failed login must not start run_app")
 
-    def unexpected_prompt_session(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("failed login must not create PromptSession")
+    def unexpected_application(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("failed login must not create an Application")
 
     monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
     monkeypatch.setattr(entrypoint, "load_plugins", fake_load_plugins)
@@ -174,7 +174,7 @@ def test_main_login_reports_auth_failure_without_starting_repl(
         lambda: SimpleNamespace(error=error_messages.append),
     )
     monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
-    monkeypatch.setattr(tui_app, "PromptSession", unexpected_prompt_session)
+    monkeypatch.setattr(tui_runtime, "Application", unexpected_application)
 
     with pytest.raises(SystemExit) as exc_info:
         entrypoint.main()

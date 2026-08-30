@@ -15,10 +15,15 @@ PLUGIN = PluginSpec(name="commands_model", version="1.0.0")
 
 async def _model(ctx: Any, args: str) -> None:
     if not args.strip():
+        ui = getattr(ctx, "ui", None)
+        if ui is not None and hasattr(ui, "show"):
+            try:
+                await ui.show("model")
+                return
+            except RuntimeError:
+                pass
         cfg = ctx.cfg
-        current = (
-            cfg.model if isinstance(cfg.model, str) else ",".join(cfg.model)
-        )
+        current = cfg.model if isinstance(cfg.model, str) else ",".join(cfg.model)
         subagent_value = cfg.subagent_model or cfg.model
         summarizer_value = cfg.summarizer_model or cfg.model
         subagent = (

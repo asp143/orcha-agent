@@ -312,6 +312,32 @@ def test_core_config_can_disable_banner(tmp_path: Path) -> None:
     assert cfg.banner is False
 
 
+def test_ui_banner_overrides_legacy_core_and_notify_defaults_off(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text("[core]\nbanner = false\n\n[ui]\nbanner = true\n")
+
+    cfg = _load(tmp_path, user_config_path=user_config)
+
+    assert cfg.banner is True
+    assert cfg.notify is False
+
+
+def test_ui_can_enable_notifications(tmp_path: Path) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text("[ui]\nnotify = true\n")
+
+    assert _load(tmp_path, user_config_path=user_config).notify is True
+
+
+@pytest.mark.parametrize("name", ["banner", "notify"])
+def test_stage7_ui_flags_require_toml_booleans(tmp_path: Path, name: str) -> None:
+    user_config = tmp_path / "user.toml"
+    user_config.write_text(f'[ui]\n{name} = "yes"\n')
+
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=user_config)
+
+
 def test_ui_flags_and_per_model_pricing_survive_toml_loading(tmp_path: Path) -> None:
     user_config = tmp_path / "user.toml"
     user_config.write_text(
@@ -410,3 +436,106 @@ def test_save_core_value_appends_core_table_when_missing(tmp_path: Path) -> None
     save_core_value(path, "model", "x:y")
     assert path.read_text() == '[ui]\nicons = false\n\n[core]\nmodel = "x:y"\n'
     assert _load(tmp_path, user_config_path=path).model == "x:y"
+
+def test_ui_theme_and_symbols_parse_with_icon_compatibility(tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit.toml"
+    explicit.write_text(
+        '[ui]\ntheme = "nord"\nsymbols = "unicode"\nicons = false\n'
+    )
+    legacy = tmp_path / "legacy.toml"
+    legacy.write_text('[ui]\nicons = false\n')
+
+    explicit_cfg = _load(tmp_path, user_config_path=explicit)
+    legacy_cfg = _load(tmp_path, user_config_path=legacy)
+
+    assert explicit_cfg.theme == "nord"
+    assert explicit_cfg.symbols == "unicode"
+    assert explicit_cfg.icons is False
+    assert legacy_cfg.symbols == "ascii"
+
+
+def test_ui_theme_and_symbols_have_maintainable_defaults(tmp_path: Path) -> None:
+    cfg = _load(tmp_path)
+
+    assert cfg.theme == "dark"
+    assert cfg.symbols is None
+
+
+@pytest.mark.parametrize("shape", ["box", "claude", "borderless"])
+def test_ui_composer_accepts_supported_shapes(tmp_path: Path, shape: str) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(f'[ui]\ncomposer = "{shape}"\n', encoding="utf-8")
+    assert _load(tmp_path, user_config_path=config).composer == shape
+
+
+def test_ui_composer_rejects_unknown_shape(tmp_path: Path) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text('[ui]\ncomposer = "floating"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=config)
+
+@pytest.mark.parametrize("value", ['["box"]', '{ shape = "box" }'])
+def test_ui_composer_rejects_non_string_values(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(f"[ui]\ncomposer = {value}\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=config)
+
+
+def test_ui_statusline_defaults_are_maintainable(tmp_path: Path) -> None:
+    statusline = _load(tmp_path).statusline
+    assert statusline.preset == "default"
+    assert statusline.separator == "powerline-thin"
+    assert statusline.left is None
+    assert statusline.right is None
+    assert statusline.transparent is False
+
+
+def test_ui_statusline_groups_and_style_survive_toml_loading(tmp_path: Path) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(
+        """
+[ui.statusline]
+preset = "full"
+separator = "slash"
+left = ["model", "path", "plugin.custom"]
+right = ["context", "cost"]
+transparent = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    statusline = _load(tmp_path, user_config_path=config).statusline
+    assert statusline.preset == "full"
+    assert statusline.separator == "slash"
+    assert statusline.left == ("model", "path", "plugin.custom")
+    assert statusline.right == ("context", "cost")
+    assert statusline.transparent is True
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('preset = "wide"', "preset"),
+        ('separator = "dots"', "separator"),
+        ('left = "model"', "left"),
+        ('right = ["model", 4]', "right"),
+        ('left = [""]', "left"),
+        ('left = ["bad name"]', "left"),
+        ('transparent = "yes"', "transparent"),
+    ],
+)
+def test_ui_statusline_rejects_invalid_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    body: str,
+    message: str,
+) -> None:
+    config = tmp_path / "ui.toml"
+    config.write_text(f"[ui.statusline]\n{body}\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=config)
+    assert message in capsys.readouterr().err

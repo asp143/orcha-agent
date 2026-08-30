@@ -1,0 +1,1 @@
+<ESC>[2;90m⎇ branched to thread.2<ESC>[0m

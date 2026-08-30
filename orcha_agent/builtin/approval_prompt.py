@@ -1,44 +1,60 @@
-"""Interactive approval for human-in-the-loop tool requests."""
+"""Fail-closed adapter from graph interrupts to the shared TUI approval overlay."""
 
 from __future__ import annotations
+import asyncio
 
-import json
 from typing import Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
-from prompt_toolkit import PromptSession
 
-from orcha_agent.core.events import InterruptRaised
+from orcha_agent.core.events import AppStart, InterruptRaised
 from orcha_agent.core.plugin import PluginAPI, PluginSpec, Resolved
 
 PLUGIN = PluginSpec(name="approval_prompt", version="1.0.0", priority=1000)
+
+_ctx: Any = None
 
 
 async def _prompt_action(
     name: str,
     args: dict[str, Any],
     description: str | None,
-) -> str:
-    detail = description or json.dumps(args, ensure_ascii=False, default=str)
-    session: PromptSession[str] = PromptSession()
-    return await session.prompt_async(f"Allow {name}: {detail}? [y/n/always] ")
+) -> Any:
+    """Open the registered approval overlay without creating a nested prompt."""
+
+    if _ctx is None:
+        return "reject"
+    ui = getattr(_ctx, "ui", None)
+    if ui is None or not hasattr(ui, "show"):
+        return "reject"
+    action = {"name": name, "args": args}
+    if description is not None:
+        action["description"] = description
+    try:
+        return await ui.show("approval", action=action)
+    except (Exception, KeyboardInterrupt, asyncio.CancelledError):
+        return "reject"
 
 
 async def _choice(name: str, args: dict[str, Any], description: str | None) -> str:
-    while True:
-        try:
-            answer = (await _prompt_action(name, args, description)).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return "reject"
-        if answer in {"y", "yes"}:
+    try:
+        answer = await _prompt_action(name, args, description)
+    except (Exception, KeyboardInterrupt, asyncio.CancelledError):
+        return "reject"
+    if isinstance(answer, str):
+        normalized = answer.strip().casefold()
+        if normalized in {"y", "yes", "approve"}:
             return "approve"
-        if answer in {"n", "no"}:
-            return "reject"
-        if answer in {"a", "always"}:
+        if normalized in {"a", "always"}:
             return "always"
+    return "reject"
 
 
 def register(api: PluginAPI) -> None:
+    async def capture_context(event: AppStart) -> None:
+        global _ctx
+        _ctx = event.ctx
+
     async def handle_approval(event: InterruptRaised) -> Resolved | None:
         request = cast(HITLRequest, event.payload)
         actions = request.get("action_requests")
@@ -80,4 +96,5 @@ def register(api: PluginAPI) -> None:
             api.request_rebuild()
         return Resolved(resume_value={"decisions": decisions})
 
+    api.on(AppStart, capture_context, priority=1000)
     api.on(InterruptRaised, handle_approval, priority=1000)

@@ -1,0 +1,1 @@
+<ESC>[36m❊ Thinking · 144 · 18.0 toks/s<ESC>[0m

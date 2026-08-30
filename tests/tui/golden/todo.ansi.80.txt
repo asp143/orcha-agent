@@ -1,0 +1,4 @@
+<ESC>[90m+--- ☑ Todo · 2 tasks ---------------------------------------------------------+<ESC>[0m
+<ESC>[90m| <ESC>[0m<ESC>[9;32m☑ add renderers                                                             <ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m|<ESC>[0m
+<ESC>[90m| <ESC>[0m<ESC>[36m☐ stabilize goldens                                                         <ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m|<ESC>[0m
+<ESC>[90m+------------------------------------------------------------------------------+<ESC>[0m

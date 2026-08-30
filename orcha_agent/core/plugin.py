@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 if TYPE_CHECKING:
     from .auth import AuthFlow
     from .events import Event, EventBus
-    from .registry import Registry, Renderer, RendererMatch
+    from .registry import BlockRenderer, Registry, Renderer, RendererMatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,10 +140,26 @@ class PluginAPI:
             replace=replace,
         )
 
+    def add_block_renderer(
+        self,
+        kind: str,
+        render: BlockRenderer,
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_block_renderer(
+            self.name,
+            kind,
+            render,
+            priority=priority,
+            replace=replace,
+        )
+
     def add_status_segment(
         self,
         name: str,
-        render: Callable[[Any], str | None],
+        render: Callable[[Any], Any | None],
         *,
         priority: int = 100,
         replace: bool = False,
@@ -152,6 +168,56 @@ class PluginAPI:
             self.name,
             name,
             render,
+            priority=priority,
+            replace=replace,
+        )
+
+    def add_completer(
+        self,
+        trigger: str,
+        fn: Callable[[Any], Any],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_completer(
+            self.name,
+            trigger,
+            fn,
+            priority=priority,
+            replace=replace,
+        )
+
+    def add_keybinding(
+        self,
+        action: str,
+        handler: Callable[[Any, Any], Any],
+        default: str | Sequence[str] = "",
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_keybinding(
+            self.name,
+            action,
+            handler,
+            default,
+            priority=priority,
+            replace=replace,
+        )
+
+    def add_overlay(
+        self,
+        name: str,
+        factory: Callable[..., Any],
+        *,
+        priority: int = 100,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_overlay(
+            self.name,
+            name,
+            factory,
             priority=priority,
             replace=replace,
         )

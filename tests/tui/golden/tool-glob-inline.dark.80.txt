@@ -1,0 +1,3 @@
+🔍 Glob: **/*.py  2 items
+  ├─ src/a.py
+  └─ src/b.py

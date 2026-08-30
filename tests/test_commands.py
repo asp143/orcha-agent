@@ -55,6 +55,20 @@ def _context(
     return SimpleNamespace(console=ConsoleOutput(console), agent=None), output
 
 
+class _ThemeUI:
+    def __init__(self) -> None:
+        self.selected: list[str] = []
+        self.shown: list[object] = []
+
+    def set_theme(self, name: str) -> SimpleNamespace:
+        self.selected.append(name)
+        return SimpleNamespace(id=name)
+
+    async def show(self, overlay: object) -> None:
+        self.shown.append(overlay)
+
+
+
 def _auth_flow(
     calls: list[tuple[object, ...]],
     *,
@@ -191,6 +205,57 @@ async def test_unknown_slash_command_is_handled_without_calling_model() -> None:
     rendered = output.getvalue().lower()
     assert "unknown command" in rendered
     assert "/missing" in rendered
+
+
+@pytest.mark.asyncio
+async def test_theme_command_applies_and_persists_selection() -> None:
+    registry = Registry()
+    commands_core.register(_api(registry, EventBus()))
+    ctx, output = _context()
+    ui = _ThemeUI()
+    persisted: list[dict[str, dict[str, str]]] = []
+    ctx.ui = ui
+    ctx.plugin_states = {}
+    ctx.persist_plugin_states = lambda: persisted.append(
+        {
+            plugin: dict(state)
+            for plugin, state in ctx.plugin_states.items()
+        }
+    )
+
+    assert await dispatch_command(registry, ctx, "/theme nord") is True
+
+    assert ui.selected == ["nord"]
+    assert ctx.plugin_states["commands_core"]["theme"] == "nord"
+    assert persisted == [{"commands_core": {"theme": "nord"}}]
+    assert "Theme: nord" in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_theme_command_without_argument_delegates_to_overlay() -> None:
+    registry = Registry()
+    commands_core.register(_api(registry, EventBus()))
+    ctx, _output = _context()
+    ui = _ThemeUI()
+    ctx.ui = ui
+
+    assert await dispatch_command(registry, ctx, "/theme") is True
+    assert ui.shown == ["theme"]
+
+
+@pytest.mark.asyncio
+async def test_theme_command_handles_unavailable_theme_cleanly() -> None:
+    registry = Registry()
+    commands_core.register(_api(registry, EventBus()))
+    ctx, output = _context()
+    ctx.ui = SimpleNamespace(
+        set_theme=lambda _name: (_ for _ in ()).throw(KeyError("missing"))
+    )
+    ctx.plugin_states = {}
+
+    assert await dispatch_command(registry, ctx, "/theme missing") is True
+    assert "Unknown theme: missing" in output.getvalue()
+    assert ctx.plugin_states == {}
 
 
 @pytest.mark.asyncio

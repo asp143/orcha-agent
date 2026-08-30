@@ -1,0 +1,17 @@
+{
+  "name": "Nord",
+  "vars": {
+    "bg": "#2e3440", "surface": "#3b4252", "surface2": "#4c566a", "fg": "#eceff4", "muted": "#d8dee9",
+    "accent": "#88c0d0", "green": "#a3be8c", "red": "#bf616a", "yellow": "#ebcb8b", "purple": "#b48ead", "blue": "#81a1c1"
+  },
+  "colors": {
+    "accent": "$accent", "border": "$surface2", "borderAccent": "$blue", "borderMuted": "$muted", "success": "$green", "error": "$red", "warning": "$yellow", "muted": "$muted", "dim": "$muted", "text": "$fg",
+    "thinkingText": "$muted", "selectedBg": "$surface2", "userMessageBg": "$surface", "customMessageBg": "$surface", "toolPendingBg": "$surface", "toolSuccessBg": "$surface", "toolErrorBg": "$surface", "statusLineBg": "$surface",
+    "userMessageText": "$fg", "toolTitle": "$accent", "toolOutput": "$fg", "mdHeading": "$purple", "mdLink": "$blue", "mdLinkUrl": "$accent", "mdCode": "$yellow", "mdCodeBlock": "$fg", "mdCodeBlockBorder": "$surface2",
+    "mdQuote": "$muted", "mdQuoteBorder": "$blue", "mdHr": "$surface2", "mdListBullet": "$accent", "toolDiffAdded": "$green", "toolDiffRemoved": "$red", "toolDiffContext": "$muted",
+    "syntaxComment": "$muted", "syntaxKeyword": "$purple", "syntaxFunction": "$blue", "syntaxVariable": "$fg", "syntaxString": "$green", "syntaxNumber": "$yellow", "syntaxType": "$accent", "syntaxOperator": "$red", "syntaxPunctuation": "$muted",
+    "thinkingOff": "$muted", "thinkingLow": "$accent", "thinkingMedium": "$blue", "thinkingHigh": "$purple", "thinkingMax": "$red", "bashMode": "$yellow", "statusLineSep": "$surface2", "statusLineModel": "$blue", "statusLinePath": "$accent",
+    "statusLineGitClean": "$green", "statusLineGitDirty": "$yellow", "statusLineContext": "$purple", "statusLineCost": "$green", "statusLineSubagents": "$accent"
+  },
+  "symbols": {"preset": "nerd", "overrides": {}}
+}

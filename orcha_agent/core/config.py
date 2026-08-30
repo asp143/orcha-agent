@@ -15,6 +15,81 @@ from typing import Any, Mapping, Sequence
 DEFAULT_MODEL = "anthropic:claude-opus-5"
 DEFAULT_MEMORY = ("AGENTS.md", "CLAUDE.md")
 
+STATUSLINE_PRESETS = frozenset(
+    {"default", "minimal", "compact", "full", "nerd", "ascii"}
+)
+STATUSLINE_SEPARATORS = frozenset(
+    {"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StatusLineConfig:
+    preset: str = "default"
+    separator: str = "powerline-thin"
+    left: tuple[str, ...] | None = None
+    right: tuple[str, ...] | None = None
+    transparent: bool = False
+
+
+def _statusline_group(
+    value: object,
+    name: str,
+    parser: argparse.ArgumentParser,
+) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        parser.error(f"[ui.statusline] {name} must be a list of segment names")
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        parser.error(
+            f"[ui.statusline] {name} must contain only non-empty segment names"
+        )
+    if not all(
+        item[0].isalnum()
+        and all(char.isalnum() or char in "._-" for char in item)
+        for item in value
+    ):
+        parser.error(
+            f"[ui.statusline] {name} contains an invalid segment name"
+        )
+    normalized = tuple(item.strip() for item in value)
+    if len(set(normalized)) != len(normalized):
+        parser.error(f"[ui.statusline] {name} must not contain duplicate names")
+    return normalized
+
+
+def _statusline_config(
+    value: object,
+    parser: argparse.ArgumentParser,
+) -> StatusLineConfig:
+    if not isinstance(value, Mapping):
+        parser.error("[ui.statusline] must be a TOML table")
+    preset = value.get("preset", "default")
+    if not isinstance(preset, str) or preset not in STATUSLINE_PRESETS:
+        parser.error(
+            "[ui.statusline] preset must be default, minimal, compact, full, "
+            "nerd, or ascii"
+        )
+    separator = value.get("separator", "powerline-thin")
+    if not isinstance(separator, str) or separator not in STATUSLINE_SEPARATORS:
+        parser.error(
+            "[ui.statusline] separator must be powerline, powerline-thin, "
+            "slash, pipe, block, none, or ascii"
+        )
+    transparent = value.get("transparent", False)
+    if not isinstance(transparent, bool):
+        parser.error("[ui.statusline] transparent must be true or false")
+    return StatusLineConfig(
+        preset=preset,
+        separator=separator,
+        left=_statusline_group(value.get("left"), "left", parser),
+        right=_statusline_group(value.get("right"), "right", parser),
+        transparent=transparent,
+    )
+
+
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
@@ -43,10 +118,21 @@ class Config:
     command: str = "repl"
     login_prefix: str | None = None
     login_mode: str = "auto"
+    gallery_tool: str | None = None
+    gallery_state: str | None = None
+    gallery_width: int | None = None
+    gallery_expanded: bool = False
+    gallery_plain: bool = False
     banner: bool = True
+    notify: bool = False
     statusbar: bool = True
     icons: bool = True
     thinking: str = "summary"
+    theme: str = "dark"
+    symbols: str | None = None
+    composer: str = "box"
+    statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
+
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
@@ -82,6 +168,18 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--device", dest="login_mode", action="store_const", const="device")
     modes.add_argument("--paste", dest="login_mode", action="store_const", const="paste")
     login.set_defaults(login_mode="auto")
+    gallery = subcommands.add_parser(
+        "gallery",
+        help="render built-in TUI blocks and lifecycle states",
+    )
+    gallery.add_argument("--tool", metavar="NAME")
+    gallery.add_argument(
+        "--state",
+        choices=("streaming", "progress", "success", "error"),
+    )
+    gallery.add_argument("--width", type=int, metavar="N")
+    gallery.add_argument("--expanded", action="store_true")
+    gallery.add_argument("--plain", action="store_true")
     return parser
 
 
@@ -303,6 +401,35 @@ def load_config(
     thinking = str(ui.get("thinking", "summary"))
     if thinking not in {"summary", "off", "all"}:
         parser.error("[ui] thinking must be summary, off, or all")
+    theme = ui.get("theme", "dark")
+    if not isinstance(theme, str) or not theme.strip():
+        parser.error("[ui] theme must be a non-empty string")
+    explicit_symbols = ui.get("symbols")
+    if "symbols" not in ui:
+        symbols = None if bool(ui.get("icons", True)) else "ascii"
+    elif isinstance(explicit_symbols, str) and explicit_symbols in {
+        "unicode",
+        "nerd",
+        "ascii",
+    }:
+        symbols = explicit_symbols
+    else:
+        parser.error("[ui] symbols must be unicode, nerd, or ascii")
+    composer = ui.get("composer", "box")
+    if not isinstance(composer, str) or composer not in {
+        "box",
+        "claude",
+        "borderless",
+    }:
+        parser.error("[ui] composer must be box, claude, or borderless")
+    statusline = _statusline_config(ui.get("statusline", {}), parser)
+    if "banner" in ui and not isinstance(ui["banner"], bool):
+        parser.error("[ui] banner must be true or false")
+    if "notify" in ui and not isinstance(ui["notify"], bool):
+        parser.error("[ui] notify must be true or false")
+    banner = ui.get("banner", core.get("banner", True))
+    notify = ui.get("notify", False)
+
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
@@ -317,10 +444,20 @@ def load_config(
         command=args.command or "repl",
         login_prefix=getattr(args, "prefix", None),
         login_mode=getattr(args, "login_mode", "auto"),
-        banner=bool(core.get("banner", True)),
+        gallery_tool=getattr(args, "tool", None),
+        gallery_state=getattr(args, "state", None),
+        gallery_width=getattr(args, "width", None),
+        gallery_expanded=getattr(args, "expanded", False),
+        gallery_plain=getattr(args, "plain", False),
+        banner=bool(banner),
+        notify=bool(notify),
         statusbar=bool(ui.get("statusbar", True)),
         icons=bool(ui.get("icons", True)),
         thinking=thinking,
+        theme=theme,
+        symbols=symbols,
+        composer=composer,
+        statusline=statusline,
         pricing={
             str(model_name): {
                 str(key): float(value)

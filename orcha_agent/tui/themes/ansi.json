@@ -1,0 +1,14 @@
+{
+  "name": "ANSI",
+  "vars": {},
+  "colors": {
+    "accent": "", "border": "", "borderAccent": "", "borderMuted": "", "success": "", "error": "", "warning": "", "muted": "", "dim": "", "text": "",
+    "thinkingText": "", "selectedBg": "", "userMessageBg": "", "customMessageBg": "", "toolPendingBg": "", "toolSuccessBg": "", "toolErrorBg": "", "statusLineBg": "",
+    "userMessageText": "", "toolTitle": "", "toolOutput": "", "mdHeading": "", "mdLink": "", "mdLinkUrl": "", "mdCode": "", "mdCodeBlock": "", "mdCodeBlockBorder": "",
+    "mdQuote": "", "mdQuoteBorder": "", "mdHr": "", "mdListBullet": "", "toolDiffAdded": "", "toolDiffRemoved": "", "toolDiffContext": "",
+    "syntaxComment": "", "syntaxKeyword": "", "syntaxFunction": "", "syntaxVariable": "", "syntaxString": "", "syntaxNumber": "", "syntaxType": "", "syntaxOperator": "", "syntaxPunctuation": "",
+    "thinkingOff": "", "thinkingLow": "", "thinkingMedium": "", "thinkingHigh": "", "thinkingMax": "", "bashMode": "", "statusLineSep": "", "statusLineModel": "", "statusLinePath": "",
+    "statusLineGitClean": "", "statusLineGitDirty": "", "statusLineContext": "", "statusLineCost": "", "statusLineSubagents": ""
+  },
+  "symbols": {"preset": "unicode", "overrides": {}}
+}

@@ -1,0 +1,5 @@
+<ESC>[2m…<ESC>[0m
+<ESC>[90m   1│<ESC>[0m<ESC>[2;90mdef run():<ESC>[0m
+<ESC>[31m-  2│<ESC>[0m<ESC>[7;31m·<ESC>[0m<ESC>[7;31m·<ESC>[0m<ESC>[31mreturn<ESC>[0m<ESC>[31m <ESC>[0m<ESC>[31m'<ESC>[0m<ESC>[7;31mold<ESC>[0m<ESC>[31m'<ESC>[0m
+<ESC>[32m+  2│<ESC>[0m<ESC>[7;32m→<ESC>[0m<ESC>[32mreturn<ESC>[0m<ESC>[32m <ESC>[0m<ESC>[32m'<ESC>[0m<ESC>[7;32mnew<ESC>[0m<ESC>[32m'<ESC>[0m
+<ESC>[90m   3│<ESC>[0m<ESC>[2;90mcontext<ESC>[0m
