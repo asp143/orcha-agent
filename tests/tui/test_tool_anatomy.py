@@ -75,7 +75,7 @@ def test_tool_headers_stay_single_line_and_shorten_paths_at_common_widths() -> N
         assert len(lines) == 4
         assert len(lines[1]) == width
         assert basename in lines[1]
-        assert ("…" in lines[1]) is (width < 120)
+        assert "…" in lines[1]
         assert cwd not in lines[1]
 
 
@@ -274,9 +274,10 @@ def test_generic_args_hint_and_degradation_rows() -> None:
     single = _plain(value, rows=1)
 
     assert "└─ alpha=1 beta=two" in full
-    assert len(folded.splitlines()) == 2 and folded.startswith("╭─ Custom · 4.0s")
+    assert len(folded.strip().splitlines()) == 2
+    assert folded.lstrip().startswith("╭─ Custom · Elapsed 4s")
     assert folded.splitlines()[-1] == "╰"
-    assert single == "⣾ Custom · 4.0s\n"
+    assert single.strip() == "⣾ Custom · Elapsed 4s"
     assert render(value, DEFAULT_THEME, 80, 0, False) is None
 
 

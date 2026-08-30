@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import difflib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -223,14 +224,50 @@ def _box_char(theme: Any, name: str, default: str, attr: str) -> str:
     return str(getattr(box_value, attr, default))
 
 
+def _format_seconds(value: float) -> str:
+    rounded = round(value, 1)
+    return str(int(rounded)) if rounded.is_integer() else f"{rounded:.1f}"
+
+
+def _timing_label(block: Block, state: str) -> str:
+    key = "elapsed" if state == "running" else "duration"
+    supplied = block.data.get(key)
+    if not isinstance(supplied, (int, float)) or isinstance(supplied, bool):
+        return ""
+    value = float(supplied)
+    if not math.isfinite(value) or value < 0:
+        return ""
+    prefix = "Elapsed" if state == "running" else "Took"
+    return f"{prefix} {_format_seconds(value)}s"
+
+
+def _header_with_timing(header: str | Text, block: Block, state: str, theme: Any) -> Text:
+    value = header.copy() if isinstance(header, Text) else Text(_one_line(header))
+    timing = _timing_label(block, state)
+    if timing:
+        muted = str(theme_value(theme, "dim", theme_value(theme, "muted")))
+        value.append(f" {theme_symbol(theme, 'sep.thin', '·')} ", style=muted)
+        value.append(timing, style=muted)
+    return value
+
+
+def _card_background_token(state: str) -> str:
+    if state == "error":
+        return "toolErrorBg"
+    if state in {"running", "pending", "warning"}:
+        return "toolPendingBg"
+    return "toolSuccessBg"
+
+
 def _frame(
-    header: str,
+    header: str | Text,
     rows: list[str | Text],
     *,
     width: int,
     budget_rows: int,
     theme: Any,
     border_token: str,
+    state: str,
     sections: Mapping[int, str] | None = None,
     edit: bool = False,
 ) -> Text:
@@ -245,10 +282,22 @@ def _frame(
     tee_right = _box_char(theme, "teeRight", "├", "row_left")
     tee_left = _box_char(theme, "teeLeft", "┤", "row_right")
     output = Text()
-    header = _middle_ellipsis(_one_line(header), max(0, width - 8))
-    header_text = f" {header} " if header else ""
-    top_fill = max(0, width - 6 - cell_len(header_text))
-    _append_line(output, Text(f"{tl}{h * 3}{header_text}{h * top_fill}{h}{tr}", style=border))
+    header_value = header.copy() if isinstance(header, Text) else Text(_one_line(header))
+    if "\n" in header_value.plain or "\r" in header_value.plain:
+        header_value = Text(_one_line(header_value.plain))
+    max_header_width = max(0, width - 8)
+    if header_value.cell_len > max_header_width:
+        header_value = Text(_middle_ellipsis(header_value.plain, max_header_width))
+    header_width = header_value.cell_len
+    header_text_width = header_width + 2 if header_width else 0
+    top_fill = max(0, width - 6 - header_text_width)
+    top = Text(f"{tl}{h * 3}", style=border)
+    if header_width:
+        top.append(" ")
+        top.append(header_value)
+        top.append(" ")
+    top.append(f"{h * top_fill}{h}{tr}", style=border)
+    _append_line(output, top)
     capacity = max(0, budget_rows - 2)
     for index, row in enumerate(rows[:capacity]):
         if sections and index in sections:
@@ -269,6 +318,9 @@ def _frame(
         framed.append(v, style=border)
         _append_line(output, framed)
     _append_line(output, Text(f"{bl}{h * (width - 2)}{br}", style=border))
+    background = theme_value(theme, _card_background_token(state), None)
+    if background is not None:
+        output.stylize(f"on {background}")
     return output
 
 
@@ -418,7 +470,11 @@ def _bash_rows(block: Block, args: Mapping[str, Any], expanded: bool) -> tuple[l
     rows.append("")
     rows.extend(Text.from_ansi(line) for line in output)
     result = block.data.get("result")
-    wall = _value(result, "wall_time", block.data.get("elapsed", 0.0))
+    wall = _value(
+        result,
+        "wall_time",
+        block.data.get("elapsed") if _state(block) == "running" else block.data.get("duration", 0.0),
+    )
     footer = f"⟦Wall: {float(wall):.1f}s | Exit: {_exit_code(result) if _exit_code(result) is not None else '—'}"
     if args.get("timeout") is not None:
         footer += f" | Timeout: {args['timeout']}s"
@@ -519,25 +575,48 @@ def _grep_items(result: Any) -> tuple[list[str], int, int]:
     return rows, len(rows), len(paths - {""})
 
 
-def _tree_output(header: str, items: list[str], *, total: int, limit: int, item_type: str) -> Text:
+def _timed_inline_header(text: str, timing: str, theme: Any) -> Text:
+    header = Text(text)
+    if timing:
+        muted = str(theme_value(theme, "dim", theme_value(theme, "muted")))
+        header.append(f" {theme_symbol(theme, 'sep.thin', '·')} ", style=muted)
+        header.append(timing, style=muted)
+    return header
+
+
+def _tree_output(header: str | Text, items: list[str], *, total: int, limit: int, item_type: str) -> Text:
     visible = items[:limit]
     hidden = max(0, total - len(visible))
-    rows = [header]
+    output = header.copy() if isinstance(header, Text) else Text(header)
     for index, item in enumerate(visible):
         branch = "└─" if index == len(visible) - 1 and hidden == 0 else "├─"
-        rows.append(f"  {branch} {item}")
+        output.append(f"\n  {branch} {item}")
     if hidden:
         noun = item_type if hidden == 1 else {"match": "matches"}.get(item_type, f"{item_type}s")
-        rows.append(f"  … {hidden} more {noun} {EXPAND_HINT}")
-    return Text("\n".join(rows))
+        output.append(f"\n  … {hidden} more {noun} {EXPAND_HINT}")
+    return output
 
 
 def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: bool, theme: Any) -> Text:
     state = _state(block)
     result = block.data.get("result")
-    if state == "error":
-        return Text(f"✘ Error: {_result_text(result)[:110]}", style=str(theme_value(theme, "error")))
     pattern = str(args.get("pattern", args.get("query", "")))
+    timing = _timing_label(block, state)
+    if name == "ls":
+        detail = _path(args) or "."
+    elif name == "web_search":
+        detail = pattern
+    else:
+        detail = pattern or _path(args)
+    if state == "running":
+        title = f"{_glyph(block, state, theme)} {_label(name)}{f': {detail}' if detail else ''}"
+        return _timed_inline_header(title, timing, theme)
+    if state == "error":
+        title = f"✘ {_label(name)}{f': {detail}' if detail else ''}"
+        output = _timed_inline_header(title, timing, theme)
+        output.append("\n")
+        output.append(_result_text(result)[:110] or "Unknown error", style=str(theme_value(theme, "error")))
+        return output
     if name == "grep":
         grep_result = None if _result_text(result).strip() == "No matches found" else result
         items, parsed_total, parsed_files = _grep_items(grep_result)
@@ -547,7 +626,11 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
         files = parsed_files if supplied_files is None else supplied_files
         if not items and total == 0:
             return Text("⚠ No matches found", style=str(theme_value(theme, "warning")))
-        header = f"🔍 Grep: {pattern}  {total} matches · {files} files · in {args.get('path', args.get('cwd', '.'))}"
+        header = _timed_inline_header(
+            f"🔍 Grep: {pattern}  {total} matches · {files} files · in {args.get('path', args.get('cwd', '.'))}",
+            timing,
+            theme,
+        )
         return _tree_output(header, items, total=total, limit=24 if expanded else 6, item_type="match")
     if name == "ls":
         items = [_path_item(item) for item in _items_from_result(result, "entries", "items", "files", "paths")]
@@ -557,7 +640,13 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
         if not items and total == 0:
             return Text("⚠ Empty directory", style=str(theme_value(theme, "warning")))
         path = _path(args) or "."
-        return _tree_output(f"📂 Ls: {path}  {total} items", items, total=total, limit=24 if expanded else 8, item_type="item")
+        return _tree_output(
+            _timed_inline_header(f"📂 Ls: {path}  {total} items", timing, theme),
+            items,
+            total=total,
+            limit=24 if expanded else 8,
+            item_type="item",
+        )
 
     items = [_path_item(item) for item in _items_from_result(result, "matches", "items", "results", "files", "paths")]
     items = [item for item in items if item and item not in {"No files found", "No files found matching pattern"}]
@@ -569,7 +658,13 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
     label = "Glob" if name == "glob" else "Web Search"
     noun = "items" if name == "glob" else "results"
     limit = 24 if expanded else 8 if name == "glob" else 6
-    return _tree_output(f"🔍 {label}: {pattern}  {total} {noun}", items, total=total, limit=limit, item_type=noun.removesuffix("s"))
+    return _tree_output(
+        _timed_inline_header(f"🔍 {label}: {pattern}  {total} {noun}", timing, theme),
+        items,
+        total=total,
+        limit=limit,
+        item_type=noun.removesuffix("s"),
+    )
 
 
 def _task_rows(result: Any, theme: Any) -> tuple[str, list[str]]:
@@ -641,7 +736,8 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
         agents = _items_from_result(block.data.get("result", {}), "agents", "tasks")
         detail = f"{len(agents)} agents"
     separator = theme_symbol(theme, "sep.thin", "·")
-    compact = f"{label}{f' {separator} {detail}' if detail else ''} {separator} {float(block.data.get('elapsed', 0.0)):.1f}s"
+    timing = _timing_label(block, state)
+    compact = f"{label}{f' {separator} {detail}' if detail else ''}{f' {separator} {timing}' if timing else ''}"
     if budget_rows == 1:
         return Text(f"{_glyph(block, state, theme)} {compact}", style=str(theme_value(theme, "toolTitle")))
     if budget_rows == 2:
@@ -652,7 +748,7 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     if name in _INLINE:
         return _inline_rows(block, name, args, expanded, theme)
     if state == "error" and name not in _BASH:
-        header = f"✘ {label}{f' {detail}' if detail else ''}"
+        header = _header_with_timing(f"✘ {label}{f' {detail}' if detail else ''}", block, state, theme)
         return _frame(
             header,
             _result_text(block.data.get("result")).splitlines() or ["Unknown error"],
@@ -660,6 +756,7 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
             budget_rows=budget_rows,
             theme=theme,
             border_token="error",
+            state=state,
         )
     sections: dict[int, str] | None = None
     edit = False
@@ -670,7 +767,7 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     elif name in _EDIT:
         header, rows = _edit_rows(block, args, theme, width, expanded); edit = True
     elif name in _BASH:
-        header = ""; rows, sections = _bash_rows(block, args, expanded)
+        header = f"{_glyph(block, state, theme)} Bash"; rows, sections = _bash_rows(block, args, expanded)
     elif name == "task":
         header, rows = _task_rows(block.data.get("result", block.data.get("progress", {})), theme)
     elif name == "todo":
@@ -678,7 +775,18 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     else:
         header = f"{_glyph(block, state, theme)} {label}{f': {detail}' if detail else ''}"
         rows = _generic_rows(args, block.data.get("result"), expanded)
-    return _frame(header, rows, width=width, budget_rows=budget_rows, theme=theme, border_token=_border_token(name, state), sections=sections, edit=edit)
+    timed_header = _header_with_timing(header, block, state, theme)
+    return _frame(
+        timed_header,
+        rows,
+        width=width,
+        budget_rows=budget_rows,
+        theme=theme,
+        border_token=_border_token(name, state),
+        state=state,
+        sections=sections,
+        edit=edit,
+    )
 
 
 def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Group | Text | None:

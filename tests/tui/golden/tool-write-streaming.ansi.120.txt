@@ -1,17 +1,17 @@
 
-<ESC>[36m+--- Write: src/new.py ------------------------------------------------------------------------------------------------+<ESC>[0m
-<ESC>[36m| … (content above)                                                                                                    <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 3                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 4                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 5                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 6                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 7                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 8                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 9                                                                                                               <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 10                                                                                                              <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 11                                                                                                              <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 12                                                                                                              <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 13                                                                                                              <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| line 14                                                                                                              <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m| ⣻ (streaming)                                                                                                        <ESC>[0m<ESC>[36m|<ESC>[0m
-<ESC>[36m+----------------------------------------------------------------------------------------------------------------------+<ESC>[0m
+<ESC>[36;40m+--- Write: src/new.py <ESC>[0m<ESC>[36;40m------------------------------------------------------------------------------------------------+<ESC>[0m
+<ESC>[36;40m| … (content above)                                                                                                    <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 3                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 4                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 5                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 6                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 7                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 8                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 9                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 10                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 11                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 12                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 13                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 14                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| ⣻ (streaming)                                                                                                        <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m+----------------------------------------------------------------------------------------------------------------------+<ESC>[0m

@@ -30,6 +30,41 @@ def _settled(**data: Any) -> GalleryBlockFixture:
     return GalleryBlockFixture(data, BlockState.SETTLED)
 
 
+def _tool_states(
+    name: str,
+    *,
+    args: dict[str, Any],
+    result: Any,
+    error: str,
+) -> dict[GalleryState, GalleryBlockFixture]:
+    return {
+        "streaming": _active(
+            name=name,
+            args=args,
+            spinner_frame=1,
+            elapsed=0.4,
+        ),
+        "progress": _active(
+            name=name,
+            args=args,
+            spinner_frame=4,
+            elapsed=3.0,
+        ),
+        "success": _settled(
+            name=name,
+            args=args,
+            result=result,
+            duration=1.2,
+        ),
+        "error": _settled(
+            name=name,
+            args=args,
+            result={"status": "error", "error": error},
+            duration=0.8,
+        ),
+    }
+
+
 _DIFF = (
     "--- orcha_agent/tui/gallery.py\n"
     "+++ orcha_agent/tui/gallery.py\n"
@@ -38,6 +73,78 @@ _DIFF = (
     "-  return 'before'\n"
     "+  return 'after'"
 )
+
+
+TOOL_GALLERY_FIXTURES: dict[
+    str,
+    dict[GalleryState, GalleryBlockFixture],
+] = {
+    "execute": _tool_states(
+        "execute",
+        args={"command": "uv run pytest -q tests/tui"},
+        result={"stdout": "753 passed in 13.91s", "exit_code": 0},
+        error="gallery assertion failed",
+    ),
+    "ls": _tool_states(
+        "ls",
+        args={"path": "orcha_agent/tui"},
+        result={
+            "entries": [
+                {"path": "blocks", "type": "directory"},
+                {"path": "gallery.py", "type": "file"},
+                {"path": "runtime.py", "type": "file"},
+            ],
+            "count": 3,
+        },
+        error="directory is not readable",
+    ),
+    "read_file": _tool_states(
+        "read_file",
+        args={"path": "orcha_agent/tui/blocks/tool.py", "offset": 40},
+        result="\n".join(f"{line:>2}  source line {line}" for line in range(41, 56)),
+        error="file is not readable",
+    ),
+    "write_file": _tool_states(
+        "write_file",
+        args={
+            "path": "tmp/gallery.py",
+            "content": "\n".join(f"line {line}" for line in range(15)),
+        },
+        result="Wrote 15 lines",
+        error="destination is read-only",
+    ),
+    "edit_file": _tool_states(
+        "edit_file",
+        args={"path": "orcha_agent/tui/gallery.py"},
+        result={"diff": _DIFF},
+        error="edit did not apply",
+    ),
+    "delete": _tool_states(
+        "delete",
+        args={"path": "tmp/obsolete.txt"},
+        result="Deleted tmp/obsolete.txt",
+        error="file is protected",
+    ),
+    "glob": _tool_states(
+        "glob",
+        args={"pattern": "**/*.py"},
+        result={"matches": [f"src/{index}.py" for index in range(10)], "count": 12},
+        error="glob root is not readable",
+    ),
+    "grep": _tool_states(
+        "grep",
+        args={"pattern": "renderer", "path": "orcha_agent/tui"},
+        result={
+            "matches": [
+                {"path": "gallery.py", "line": 29, "text": "def _block(renderer, state):"},
+                {"path": "blocks/tool.py", "line": 648, "text": "def _render_impl(...):"},
+            ],
+            "match_count": 2,
+            "file_count": 2,
+        },
+        error="search path is not readable",
+    ),
+}
 
 _WELCOME = {
     "logo": [
@@ -89,32 +196,7 @@ GALLERY_FIXTURES: dict[
             tokens_per_second=12.0,
         ),
     },
-    "tool": {
-        "streaming": _active(
-            name="execute",
-            args={"command": "uv run pytest tests/tui"},
-            spinner_frame=1,
-            elapsed=0.4,
-        ),
-        "progress": _active(
-            name="execute",
-            args={"command": "uv run pytest tests/tui"},
-            spinner_frame=4,
-            elapsed=2.3,
-        ),
-        "success": _settled(
-            name="execute",
-            args={"command": "uv run pytest tests/tui"},
-            result={"stdout": "753 passed in 13.91s", "exit_code": 0},
-            elapsed=13.9,
-        ),
-        "error": _settled(
-            name="execute",
-            args={"command": "uv run pytest tests/tui"},
-            result={"stderr": "gallery assertion failed", "exit_code": 1},
-            elapsed=1.2,
-        ),
-    },
+    "tool": TOOL_GALLERY_FIXTURES["execute"],
     "diff": {
         "streaming": _active(text=f"{_DIFF}\n-unfinished"),
         "progress": _active(text=_DIFF),
@@ -145,6 +227,12 @@ GALLERY_FIXTURES: dict[
         "success": _settled(agents=[{"id": "scan", "name": "Scan", "status": "success", "requests": 4, "elapsed": 8}]),
         "error": _settled(agents=[{"id": "scan", "name": "Scan", "status": "error", "requests": 3, "elapsed": 5}]),
     },
+    "working": {
+        "streaming": _active(message="Working… (Esc to interrupt)", spinner_frame=1),
+        "progress": _active(message="Retrying in 2s… (Esc to cancel)", spinner_frame=4, level="warning"),
+        "success": _settled(message="Turn completed.", spinner_frame=7),
+        "error": _settled(message="Retry failed.", spinner_frame=9, level="warning"),
+    },
     "queue": {
         "streaming": _active(prompts=["finish renderer fixtures"]),
         "progress": _active(prompts=["finish renderer fixtures", "run focused tests"]),
@@ -164,5 +252,6 @@ __all__ = [
     "GALLERY_FIXTURES",
     "GALLERY_STATES",
     "GalleryBlockFixture",
+    "TOOL_GALLERY_FIXTURES",
     "GalleryState",
 ]

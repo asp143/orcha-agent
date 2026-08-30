@@ -201,8 +201,8 @@ def test_transcript_content_blocks_own_only_a_leading_blank_row() -> None:
     ("rows", "expected", "forbidden"),
     [
         (3, "$ pytest -q", "output line"),
-        (2, "╭─ Bash · pytest -q · 1.2s", "output line"),
-        (1, "✔ Bash · pytest -q · 1.2s", "output line"),
+        (2, "╭─ Bash · pytest -q · Took 1.2s", "output line"),
+        (1, "✔ Bash · pytest -q · Took 1.2s", "output line"),
         (0, "", "Bash"),
     ],
 )
@@ -217,7 +217,7 @@ def test_tool_degrades_with_observable_row_budget(
             name="execute",
             args={"command": "pytest -q"},
             result={"stdout": "output line", "exit_code": 0},
-            elapsed=1.25,
+            duration=1.25,
         ),
         THEME,
         80,
@@ -473,6 +473,107 @@ def test_grouped_reads_and_diffs_share_collapsed_preview_caps() -> None:
     assert "24.py" in grouped_expanded
     assert "context 20" in diff_collapsed
     assert "context 24" in diff_expanded
+
+
+def test_tool_cards_tint_every_row_and_use_state_timing_contract() -> None:
+    theme = {
+        **THEME,
+        "colors": {
+            **THEME["colors"],
+            "accent": "#0a0b0c",
+            "dim": "#111213",
+            "error": "#1a1b1c",
+            "toolPendingBg": "#010203",
+            "toolSuccessBg": "#040506",
+            "toolErrorBg": "#070809",
+        },
+    }
+    cases = (
+        (
+            Block(
+                id="pending",
+                kind="tool",
+                state=BlockState.ACTIVE,
+                data={
+                    "name": "read_file",
+                    "args": {"path": "a.py"},
+                    "elapsed": 3.0,
+                    "duration": 99.0,
+                    "leading_spacer": False,
+                },
+            ),
+            "Elapsed 3s",
+            (1, 2, 3),
+            "38;2;10;11;12",
+        ),
+        (
+            Block(
+                id="success",
+                kind="tool",
+                state=BlockState.SETTLED,
+                data={
+                    "name": "read_file",
+                    "args": {"path": "a.py"},
+                    "result": "one",
+                    "elapsed": 99.0,
+                    "duration": 1.2,
+                    "leading_spacer": False,
+                },
+            ),
+            "Took 1.2s",
+            (4, 5, 6),
+            "38;2;17;18;19",
+        ),
+        (
+            Block(
+                id="error",
+                kind="tool",
+                state=BlockState.SETTLED,
+                data={
+                    "name": "write_file",
+                    "args": {"path": "readonly.py"},
+                    "result": {"status": "error", "error": "permission denied"},
+                    "duration": 2.0,
+                    "leading_spacer": False,
+                },
+            ),
+            "Took 2s",
+            (7, 8, 9),
+            "38;2;26;27;28",
+        ),
+    )
+
+    for value, timing, background, border in cases:
+        stream = StringIO()
+        card = render_tool(value, theme, 80, 20, False)
+        assert isinstance(card, Text)
+        console = Console(
+            file=stream,
+            width=80,
+            force_terminal=True,
+            color_system="truecolor",
+            no_color=False,
+        )
+        console.print(card)
+        raw = stream.getvalue()
+        rendered = Text.from_ansi(raw).plain
+        assert timing in rendered
+        assert "99" not in rendered
+        offset = 0
+        for line in card.plain.splitlines(keepends=True):
+            if line.rstrip("\n"):
+                color = card.get_style_at_offset(console, offset).bgcolor
+                assert color is not None
+                assert tuple(color.get_truecolor()) == background
+            offset += len(line)
+        timing_style = card.get_style_at_offset(console, card.plain.index(timing))
+        assert timing_style.color is not None
+        assert tuple(timing_style.color.get_truecolor()) == (17, 18, 19)
+        assert border in raw
+
+    error_lines = Text.from_ansi(stream.getvalue()).plain.splitlines()
+    assert "Write" in error_lines[0]
+    assert "permission denied" in error_lines[1]
 
 
 def test_subagent_assistant_is_dim_and_indented_two_columns() -> None:

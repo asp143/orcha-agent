@@ -14,6 +14,7 @@ from rich.console import Console
 from .blocks import DEFAULT_RENDERERS
 from .frame import Block
 from .gallery_fixtures import GALLERY_FIXTURES, GALLERY_STATES, GalleryState
+from .gallery_fixtures.blocks import TOOL_GALLERY_FIXTURES
 from .theme import Theme, load_themes, select_theme
 
 _MIN_WIDTH = 40
@@ -26,10 +27,15 @@ def _width(requested: object) -> int:
     return max(_MIN_WIDTH, min(_MAX_WIDTH, value))
 
 
-def _block(renderer: str, state: GalleryState) -> Block:
-    fixture = GALLERY_FIXTURES[renderer][state]
+def _block(renderer: str, state: GalleryState, tool_name: str | None = None) -> Block:
+    fixture = (
+        TOOL_GALLERY_FIXTURES[tool_name][state]
+        if renderer == "tool" and tool_name is not None
+        else GALLERY_FIXTURES[renderer][state]
+    )
+    suffix = f"-{tool_name}" if tool_name is not None else ""
     return Block(
-        id=f"gallery-{renderer}-{state}",
+        id=f"gallery-{renderer}{suffix}-{state}",
         kind=renderer,
         state=fixture.state,
         data=deepcopy(fixture.data),
@@ -43,9 +49,10 @@ def _renderable(
     theme: Theme,
     width: int,
     expanded: bool,
+    tool_name: str | None = None,
 ) -> Any:
     return DEFAULT_RENDERERS[renderer](
-        _block(renderer, state),
+        _block(renderer, state, tool_name),
         theme,
         width,
         200,
@@ -77,15 +84,20 @@ def render_gallery_state(
     """Render one fixture through the production renderer."""
 
     stream = StringIO()
-    renderable = _renderable(
-        renderer,
-        state,
-        theme=theme,
-        width=_width(width),
-        expanded=expanded,
-    )
-    if renderable is not None:
-        _console(stream, width=_width(width), plain=plain).print(renderable)
+    console = _console(stream, width=_width(width), plain=plain)
+    for tool_name in _tool_names(renderer):
+        if tool_name is not None:
+            console.print(f"  · {tool_name}", style="dim")
+        renderable = _renderable(
+            renderer,
+            state,
+            theme=theme,
+            width=_width(width),
+            expanded=expanded,
+            tool_name=tool_name,
+        )
+        if renderable is not None:
+            console.print(renderable)
     return stream.getvalue()
 
 
@@ -99,6 +111,10 @@ def _theme(cfg: object, file: TextIO) -> Theme:
     )
     requested = str(getattr(cfg, "theme", "dark"))
     return select_theme(themes, requested)
+
+
+def _tool_names(renderer: str) -> tuple[str | None, ...]:
+    return tuple(TOOL_GALLERY_FIXTURES) if renderer == "tool" else (None,)
 
 
 def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
@@ -131,15 +147,19 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
         )
         for state in states:
             console.print(f"  · {state}", style="dim")
-            renderable = _renderable(
-                renderer,
-                state,
-                theme=theme,
-                width=width,
-                expanded=expanded,
-            )
-            if renderable is not None:
-                console.print(renderable)
+            for tool_name in _tool_names(renderer):
+                if tool_name is not None:
+                    console.print(f"    · {tool_name}", style="dim")
+                renderable = _renderable(
+                    renderer,
+                    state,
+                    theme=theme,
+                    width=width,
+                    expanded=expanded,
+                    tool_name=tool_name,
+                )
+                if renderable is not None:
+                    console.print(renderable)
     return 0
 
 
