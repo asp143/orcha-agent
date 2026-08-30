@@ -243,8 +243,12 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
             await registry.wait_activity(caller, ids=ids, timeout_s=timeout_s)
             messages = registry.drain_messages(caller)
             settled = [run for run in registry.jobs(caller, ids=ids) if run.terminal and not run.delivered]
-            if settled: await registry.deliver(caller, (run.id for run in settled))
-            return {"messages": messages, "jobs": [_job(run) for run in settled], "timed_out": not messages and not settled}
+            claimed = (
+                await registry.deliver(caller, (run.id for run in settled))
+                if settled
+                else []
+            )
+            return {"messages": messages, "jobs": [_job(run) for run in claimed], "timed_out": not messages and not claimed}
         if op == "jobs":
             jobs = registry.jobs(caller)
             pending = [run for run in jobs if run.terminal and not run.delivered]

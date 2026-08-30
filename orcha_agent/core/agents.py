@@ -6,7 +6,7 @@ import asyncio
 import re
 import secrets
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from time import monotonic
@@ -40,6 +40,16 @@ AbortReason = Literal["cancel", "timeout", "budget", "shutdown"]
 _TERMINAL = frozenset({"done", "failed", "aborted"})
 _WRAP_UP = "Wrap up and yield now."
 _WAKE = object()
+
+
+def _restored_status(value: Any) -> AgentStatusName:
+    if value == "done":
+        return "done"
+    if value == "failed":
+        return "failed"
+    if value == "aborted":
+        return "aborted"
+    return "parked"
 
 
 class _RunEventBus:
@@ -141,6 +151,38 @@ class AgentRun:
     def terminal(self) -> bool:
         return self.status in _TERMINAL
 
+    def _job_data(self, *, delivered: bool | None = None) -> dict[str, Any]:
+        return {
+            "run_id": self.id,
+            "name": self.name,
+            "agent_type": self.agent_type.name,
+            "parent_id": self.parent_id,
+            "parent_session": self.parent_session,
+            "session_id": self.session_id,
+            "thread_id": self.thread_id,
+            "depth": self.depth,
+            "output_schema": self.output_schema,
+            "schema_mode": self.schema_mode,
+            "blocking": self.blocking,
+            "requests": self.requests,
+            "tool_calls": self.tool_calls,
+            "tokens_in": self.tokens_in,
+            "tokens_out": self.tokens_out,
+            "cost": self.cost,
+            "last_tool": self.last_tool,
+            "partial_findings": self.partial_findings,
+            "validation_attempts": self.validation_attempts,
+            "yield_count": self.yield_count,
+            "last_yield": self.last_yield,
+            "status": self.status,
+            "abort_reason": self.abort_reason,
+            "result": self.result,
+            "schema_overridden": self.schema_overridden,
+            "delivered": self.delivered if delivered is None else delivered,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
     async def ensure_agent(self) -> bool:
         if self.agent is not None:
             return True
@@ -240,6 +282,7 @@ class AgentRun:
     ) -> None:
         self.status = status
         self.updated_at = datetime.now(UTC)
+        self.owner._persist_job(self)
         async with self._status_changed:
             self._status_changed.notify_all()
         await self.owner.bus.emit(
@@ -355,19 +398,6 @@ class AgentRun:
                 },
             ),
         )
-        Ledger(self.session).append(
-            self.parent_session,
-            CustomEntry(
-                custom_type="agent_job",
-                data={
-                    "run_id": self.id,
-                    "status": status,
-                    "result": result,
-                    "schema_overridden": self.schema_overridden,
-                    "delivered": False,
-                },
-            ),
-        )
         await self._set_status(status, self.abort_reason)
         await self.owner.bus.emit(
             AgentFinished(
@@ -405,7 +435,212 @@ class AgentRegistry:
         self._runs: dict[str, AgentRun] = {}
         self._order: list[str] = []
         self._mailboxes: dict[str, deque[dict[str, Any]]] = {}
+        self._views: dict[
+            str,
+            tuple[
+                dict[str, AgentRun],
+                list[str],
+                dict[str, deque[dict[str, Any]]],
+            ],
+        ] = {}
         self._changed = asyncio.Condition()
+        self._delivery_lock = asyncio.Lock()
+        self._hydrate_parent(parent_session_id, "main", 0, set())
+
+    def _persist_job(self, run: AgentRun, *, delivered: bool | None = None) -> None:
+        Ledger(self.session).append(
+            run.parent_session,
+            CustomEntry(
+                custom_type="agent_job",
+                data=run._job_data(delivered=delivered),
+            ),
+        )
+
+    def _session_for_job(
+        self, parent_session: str, run_id: str, data: Mapping[str, Any]
+    ) -> Any:
+        session_id = data.get("session_id")
+        if isinstance(session_id, str):
+            if info := self.session.get(session_id):
+                return info
+
+        candidates = self.session.children(parent_session)
+        for info in candidates:
+            if run_id in Ledger(self.session).latest_custom(
+                info.thread_id, "agent_result", key="run_id"
+            ):
+                return info
+
+        # Forked parent ledgers retain child job entries while the immutable child
+        # session still points at the source parent session. Legacy job payloads
+        # did not carry session_id, so fall back to the globally unique run id.
+        direct_ids = {info.thread_id for info in candidates}
+        for info in self.session.list():
+            if info.thread_id in direct_ids or info.parent_session is None:
+                continue
+            if run_id in Ledger(self.session).latest_custom(
+                info.thread_id, "agent_result", key="run_id"
+            ):
+                return info
+        return None
+
+    @staticmethod
+    def _timestamp(value: Any, fallback: datetime) -> datetime:
+        if not isinstance(value, str):
+            return fallback
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return fallback
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+    def _hydrate_parent(
+        self,
+        parent_session: str,
+        parent_id: str,
+        depth: int,
+        visited_sessions: set[str],
+    ) -> None:
+        if parent_session in visited_sessions:
+            return
+        visited_sessions.add(parent_session)
+        jobs = Ledger(self.session).latest_custom(
+            parent_session, "agent_job", key="run_id"
+        )
+        for run_id, entry in jobs.items():
+            if run_id in self._runs or not isinstance(entry.data, Mapping):
+                continue
+            data = entry.data
+            info = self._session_for_job(parent_session, run_id, data)
+            if info is None or info.current_thread is None:
+                continue
+            type_name = data.get("agent_type")
+            if not isinstance(type_name, str):
+                type_name = "task"
+            spec = self.registry.agent_types.get(type_name)
+            if spec is None:
+                spec = self.registry.agent_types.get("task")
+            if spec is None:
+                continue
+            name = data.get("name")
+            if not isinstance(name, str) or not name:
+                name = info.title or spec.name
+            output_schema = data.get("output_schema")
+            if isinstance(output_schema, Mapping):
+                output_schema = dict(output_schema)
+            elif output_schema is not None:
+                output_schema = None
+            schema_mode = (
+                "strict" if data.get("schema_mode") == "strict" else "permissive"
+            )
+            run = AgentRun(
+                self,
+                run_id=run_id,
+                name=name,
+                agent_type=spec,
+                parent_id=parent_id,
+                parent_session=parent_session,
+                session_id=info.thread_id,
+                thread_id=info.current_thread,
+                cfg=replace(self.cfg, model=info.model),
+                depth=depth,
+                output_schema=output_schema,
+                schema_mode=schema_mode,
+                blocking=bool(data.get("blocking", spec.blocking)),
+            )
+            run.status = _restored_status(data.get("status"))
+            run.result = data.get("result")
+            run.schema_overridden = bool(data.get("schema_overridden", False))
+            run.delivered = data.get("delivered") is True
+            child_result = Ledger(self.session).latest_custom(
+                run.session_id, "agent_result", key="run_id"
+            ).get(run.id)
+            if child_result is not None and isinstance(child_result.data, Mapping):
+                child_status = child_result.data.get("status")
+                if child_status in _TERMINAL:
+                    run.status = child_status
+                    run.result = child_result.data.get("result")
+                    run.schema_overridden = bool(
+                        child_result.data.get("schema_overridden", False)
+                    )
+            elif run.status not in _TERMINAL:
+                for child_entry in reversed(Ledger(self.session).path(run.session_id)):
+                    if (
+                        isinstance(child_entry, CustomEntry)
+                        and child_entry.custom_type == "session_exit"
+                        and isinstance(child_entry.data, Mapping)
+                        and child_entry.data.get("kind") == "aborted"
+                    ):
+                        reason = child_entry.data.get("reason")
+                        run.status = "aborted"
+                        run.result = {"error": reason or "aborted"}
+                        if reason in {"cancel", "timeout", "budget", "shutdown"}:
+                            run.abort_reason = reason
+                        break
+            for attribute in (
+                "requests",
+                "tool_calls",
+                "tokens_in",
+                "tokens_out",
+                "validation_attempts",
+                "yield_count",
+            ):
+                value = data.get(attribute)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    setattr(run, attribute, value)
+            cost = data.get("cost")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                run.cost = float(cost)
+            last_tool = data.get("last_tool")
+            if isinstance(last_tool, str):
+                run.last_tool = last_tool
+            partial_findings = data.get("partial_findings")
+            if isinstance(partial_findings, list):
+                run.partial_findings = list(partial_findings)
+            run.last_yield = data.get("last_yield")
+            abort_reason = data.get("abort_reason")
+            if abort_reason in {"cancel", "timeout", "budget", "shutdown"}:
+                run.abort_reason = abort_reason
+            run.created_at = self._timestamp(data.get("created_at"), run.created_at)
+            run.updated_at = self._timestamp(
+                data.get("updated_at"),
+                self._timestamp(entry.ts, run.created_at),
+            )
+            if run._runtime_deadline is not None:
+                elapsed = max(
+                    0.0, (datetime.now(UTC) - run.created_at).total_seconds()
+                )
+                run._runtime_deadline = monotonic() + max(
+                    0.0, self.cfg.agents.max_runtime_s - elapsed
+                )
+            self._runs[run.id] = run
+            self._order.append(run.id)
+            self._hydrate_parent(
+                run.session_id, run.id, run.depth + 1, visited_sessions
+            )
+
+    def retarget(
+        self, parent_session_id: str, cfg: Config | None = None
+    ) -> None:
+        """Point the registry at one active parent ledger and hydrate its runs."""
+        if cfg is not None:
+            self.cfg = cfg
+        if parent_session_id == self.parent_session_id:
+            return
+        self._views[self.parent_session_id] = (
+            self._runs,
+            self._order,
+            self._mailboxes,
+        )
+        self.parent_session_id = parent_session_id
+        restored = self._views.pop(parent_session_id, None)
+        if restored is not None:
+            self._runs, self._order, self._mailboxes = restored
+            return
+        self._runs = {}
+        self._order = []
+        self._mailboxes = {}
+        self._hydrate_parent(parent_session_id, "main", 0, set())
 
     async def _notify(self) -> None:
         async with self._changed:
@@ -521,6 +756,7 @@ class AgentRegistry:
             schema_mode=schema_mode,
             blocking=blocking or spec.blocking,
         )
+        self._persist_job(run)
         self._runs[run.id] = run
         self._order.append(run.id)
         await self.bus.emit(
@@ -593,10 +829,14 @@ class AgentRegistry:
         return run
 
     async def shutdown(self) -> None:
-        for run in self.list():
+        runs = list(self._runs.values())
+        for stored_runs, _order, _mailboxes in self._views.values():
+            runs.extend(stored_runs.values())
+        unique_runs = list({run.id: run for run in runs}.values())
+        for run in unique_runs:
             if not run.terminal:
                 await run.request_abort("shutdown")
-        pending = [run.task for run in self.list() if run.task is not None]
+        pending = [run.task for run in unique_runs if run.task is not None]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
@@ -667,31 +907,33 @@ class AgentRegistry:
     async def deliver(
         self, parent: str, ids: Iterable[str] | None = None
     ) -> list[AgentRun]:
-        delivered = [
-            run
-            for run in self.jobs(parent, ids)
-            if run.terminal and not run.delivered
-        ]
-        for run in delivered:
-            run.delivered = True
-            Ledger(self.session).append(
-                run.parent_session,
-                CustomEntry(
-                    custom_type="agent_job",
-                    data={
-                        "run_id": run.id,
-                        "status": run.status,
-                        "result": run.result,
-                        "schema_overridden": run.schema_overridden,
-                        "delivered": True,
-                    },
-                ),
+        async with self._delivery_lock:
+            delivered = [
+                run
+                for run in self.jobs(parent, ids)
+                if run.terminal and not run.delivered
+            ]
+            if not delivered:
+                return []
+            parent_sessions = {run.parent_session for run in delivered}
+            if len(parent_sessions) != 1:
+                raise RuntimeError("Agent jobs for one parent span multiple sessions")
+            Ledger(self.session).append_many(
+                parent_sessions.pop(),
+                [
+                    CustomEntry(
+                        custom_type="agent_job",
+                        data=run._job_data(delivered=True),
+                    )
+                    for run in delivered
+                ],
             )
-        if delivered:
-            await self.bus.emit(
-                AgentDelivered(parent_id=parent, run_ids=tuple(run.id for run in delivered))
-            )
-            await self._notify()
+            for run in delivered:
+                run.delivered = True
+        await self.bus.emit(
+            AgentDelivered(parent_id=parent, run_ids=tuple(run.id for run in delivered))
+        )
+        await self._notify()
         return delivered
 
     async def wait_all(

@@ -633,6 +633,25 @@ class SessionStore:
             (thread_id,),
         ).fetchone()
         return self._session(row)
+    def children(self, parent_session: str) -> list[SessionInfo]:
+        """Return sessions directly owned by one parent session."""
+        with self.saver.lock:
+            rows = self._connection.execute(
+                """
+                SELECT thread_id, cwd, model, created, title, mode,
+                       leaf_id, current_thread, parent_session
+                FROM sessions
+                WHERE parent_session = ?
+                ORDER BY created
+                """,
+                (parent_session,),
+            ).fetchall()
+        return [
+            session
+            for row in rows
+            if (session := self._session(row)) is not None
+        ]
+
 
     def exists(self, thread_id: str) -> bool:
         return self.get(thread_id) is not None

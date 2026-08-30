@@ -640,6 +640,27 @@ class Ledger:
                 (session_id,),
             ).fetchall()
         return self._path_from_rows(rows, leaf_id)
+    def latest_custom(
+        self,
+        session_id: str,
+        custom_type: str,
+        *,
+        key: str,
+    ) -> dict[str, CustomEntry]:
+        """Fold one custom entry stream on the active ledger path."""
+        latest: dict[str, CustomEntry] = {}
+        for entry in self.path(session_id):
+            if (
+                not isinstance(entry, CustomEntry)
+                or entry.custom_type != custom_type
+                or not isinstance(entry.data, Mapping)
+            ):
+                continue
+            value = entry.data.get(key)
+            if isinstance(value, str):
+                latest[value] = entry
+        return latest
+
 
     def all(self, session_id: str) -> list[Entry]:
         with self.store.saver.lock:

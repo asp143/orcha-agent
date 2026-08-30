@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import signal
 import shlex
@@ -33,6 +34,7 @@ from rich.console import Console
 
 from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import (
+    AgentFinished,
     AppExit,
     AppStart,
     Event,
@@ -556,6 +558,12 @@ class ApplicationRuntime:
             self.ui.subagents = []
             self.title.set_turn(False)
             await self.notifier.notify("Orcha", "Turn complete")
+        elif (
+            isinstance(event, AgentFinished)
+            and event.parent_id == "main"
+            and not self._shutting_down
+        ):
+            self._track(self._submit_serially(None))
         elif isinstance(event, ToolCallStart) and event.name == "task":
             label = str(
                 event.args.get("description")
@@ -1078,6 +1086,38 @@ class ApplicationRuntime:
         else:
             await self._submit(text)
 
+    @staticmethod
+    def _agent_delivery_notification(runs: list[Any]) -> str:
+        lines = ["<system-notification>"]
+        for index, run in enumerate(runs):
+            if index:
+                lines.append("")
+            lines.append(f"Job {run.id} ({run.name}) finished: {run.status}")
+            lines.append(
+                json.dumps(run.result, ensure_ascii=False, sort_keys=True)
+            )
+        lines.append("</system-notification>")
+        return "\n".join(lines)
+
+    async def _claim_agent_delivery(self) -> str | None:
+        agents = getattr(self.ctx, "agents", None)
+        if agents is None:
+            return None
+        runs = [
+            run
+            for run in agents.jobs("main")
+            if run.terminal and not run.delivered
+        ]
+        if not runs:
+            return None
+        notification = self._agent_delivery_notification(runs)
+        delivered = await agents.deliver("main", (run.id for run in runs))
+        if not delivered:
+            return None
+        if [run.id for run in delivered] != [run.id for run in runs]:
+            return self._agent_delivery_notification(delivered)
+        return notification
+
     def _track(
         self,
         awaitable: Awaitable[Any],
@@ -1092,9 +1132,15 @@ class ApplicationRuntime:
             future.add_done_callback(self._terminal_pending.discard)
         return future
 
-    async def _submit_serially(self, text: str) -> None:
+    async def _submit_serially(self, text: str | None) -> None:
         async with self._submit_lock:
-            current: str | None = text
+            if self._shutting_down:
+                return
+            pending_user = text
+            current = await self._claim_agent_delivery()
+            if current is None:
+                current = pending_user
+                pending_user = None
             while current is not None:
                 self.streaming = True
                 self._active_turn = asyncio.create_task(self._dispatch_submission(current))
@@ -1110,7 +1156,12 @@ class ApplicationRuntime:
                     self.application.invalidate()
                 if self._shutting_down:
                     break
-                current = self.queue.pop()
+                current = await self._claim_agent_delivery()
+                if current is None and pending_user is not None:
+                    current = pending_user
+                    pending_user = None
+                elif current is None:
+                    current = self.queue.pop()
                 if current is not None:
                     self.application.invalidate()
 
@@ -1291,6 +1342,7 @@ class ApplicationRuntime:
         await self._drain(self._pending)
 
     async def run(self) -> None:
+        self._track(self._submit_serially(None))
         try:
             await self.application.run_async()
         except EOFError:

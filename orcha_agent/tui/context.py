@@ -252,8 +252,7 @@ class AppContext:
 
     def _retarget_agents(self) -> None:
         if self.agents is not None:
-            self.agents.parent_session_id = self.session_id
-            self.agents.cfg = self.cfg
+            self.agents.retarget(self.session_id, self.cfg)
 
     def persist_plugin_states(self) -> None:
         for plugin, state in self.plugin_states.items():
