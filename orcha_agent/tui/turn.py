@@ -496,6 +496,8 @@ async def run_turn(host: TurnHost, text: str) -> None:
     except Exception as exc:
         if not await _render(host, exc, emit=False):
             _console_call(host, "error", f"{type(exc).__name__}: {exc}")
+        if getattr(host, "raise_turn_errors", False):
+            raise
     finally:
         try:
             host.capture_turn()

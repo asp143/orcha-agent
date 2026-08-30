@@ -92,6 +92,40 @@ def _statusline_config(
 
 
 @dataclass(frozen=True, slots=True)
+class AgentsConfig:
+    max_concurrency: int = 8
+    max_depth: int = 2
+    idle_ttl_s: float = 420
+    max_runtime_s: float = 0
+    soft_request_budget: int = 200
+
+
+def _agents_config(value: Any, parser: argparse.ArgumentParser) -> AgentsConfig:
+    if not isinstance(value, Mapping):
+        parser.error("agents must be a TOML table")
+    fields = {
+        "max_concurrency": (8, 1),
+        "max_depth": (2, 0),
+        "idle_ttl_s": (420, 0),
+        "max_runtime_s": (0, 0),
+        "soft_request_budget": (200, 1),
+    }
+    normalized: dict[str, int | float] = {}
+    for name, (default, minimum) in fields.items():
+        raw = value.get(name, default)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < minimum:
+            parser.error(f"[agents] {name} must be a number >= {minimum}")
+        normalized[name] = raw
+    return AgentsConfig(
+        max_concurrency=int(normalized["max_concurrency"]),
+        max_depth=int(normalized["max_depth"]),
+        idle_ttl_s=float(normalized["idle_ttl_s"]),
+        max_runtime_s=float(normalized["max_runtime_s"]),
+        soft_request_budget=int(normalized["soft_request_budget"]),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
 
@@ -132,6 +166,8 @@ class Config:
     symbols: str | None = None
     composer: str = "box"
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
+    model_roles: dict[str, str | list[str]] = field(default_factory=dict)
+    agents: AgentsConfig = field(default_factory=AgentsConfig)
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
@@ -391,13 +427,25 @@ def load_config(
     plugins = values.get("plugins", {})
     ui = values.get("ui", {})
     pricing = values.get("pricing", {})
+    agents = values.get("agents", {})
     if not all(
         isinstance(table, dict)
-        for table in (models, providers, plugins, ui, pricing)
+        for table in (models, providers, plugins, ui, pricing, agents)
     ):
         _parser().error(
-            "models, providers, plugins, ui, and pricing must be TOML tables"
+            "models, providers, plugins, ui, pricing, and agents must be TOML tables"
         )
+    raw_roles = models.get("roles", {})
+    if not isinstance(raw_roles, Mapping):
+        parser.error("[models.roles] must be a TOML table")
+    model_aliases = {key: value for key, value in models.items() if key != "roles"}
+    model_roles = {
+        str(role): normalize_model_spec(spec)
+        for role, spec in raw_roles.items()
+    }
+    if subagent_model is not None:
+        model_roles.setdefault("task", subagent_model)
+    agent_config = _agents_config(agents, parser)
     thinking = str(ui.get("thinking", "summary"))
     if thinking not in {"summary", "off", "all"}:
         parser.error("[ui] thinking must be summary, off, or all")
@@ -458,6 +506,8 @@ def load_config(
         symbols=symbols,
         composer=composer,
         statusline=statusline,
+        model_roles=model_roles,
+        agents=agent_config,
         pricing={
             str(model_name): {
                 str(key): float(value)
@@ -471,7 +521,10 @@ def load_config(
         list_sessions=args.list_sessions,
         strict_plugins=args.strict_plugins,
         plugin_dirs=plugin_dirs,
-        models=dict(models),
+        models={
+            str(key): normalize_model_spec(value)
+            for key, value in model_aliases.items()
+        },
         providers={key: dict(value) for key, value in providers.items() if isinstance(value, Mapping)},
         plugins=dict(plugins),
         trust_cwd=trust_cwd,

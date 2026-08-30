@@ -28,6 +28,39 @@ class AgentBuildAfter(Event):
 
 
 @dataclass(slots=True)
+class AgentSpawned(Event):
+    run_id: str
+    parent_id: str
+    name: str
+    agent_type: str
+
+
+@dataclass(slots=True)
+class AgentStatus(Event):
+    run_id: str
+    parent_id: str
+    name: str
+    agent_type: str
+    status: str
+    reason: str | None = None
+
+
+@dataclass(slots=True)
+class AgentFinished(Event):
+    run_id: str
+    parent_id: str
+    name: str
+    agent_type: str
+    result: Any
+
+
+@dataclass(slots=True)
+class AgentDelivered(Event):
+    parent_id: str
+    run_ids: tuple[str, ...]
+
+
+@dataclass(slots=True)
 class TurnStart(Event):
     thread_id: str
     text: str
@@ -164,6 +197,10 @@ class EventBus:
 __all__ = [
     "AgentBuildAfter",
     "AgentBuildBefore",
+    "AgentDelivered",
+    "AgentFinished",
+    "AgentSpawned",
+    "AgentStatus",
     "AppExit",
     "AppStart",
     "Event",

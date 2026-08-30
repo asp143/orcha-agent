@@ -1326,6 +1326,31 @@ def _register_theme_refresh(
         priority=9_000,
     )
 
+async def _run_runtime(ctx: AppContext, runtime: Any, bus: EventBus) -> int:
+    shutdown_completed = False
+    try:
+        await bus.emit(AppStart(ctx=ctx))
+        if hasattr(runtime, "flush_early_notifications"):
+            runtime.flush_early_notifications()
+        if ctx._reseed_pending() and ctx.agent is not None:
+            await ctx.ensure_agent()
+        if ctx.rebuild_requested:
+            await ctx.rebuild()
+        if ctx.cfg.resume:
+            ctx._warn_interrupted_resume()
+        await runtime.run()
+        ctx.persist_plugin_states()
+        ctx.record_exit("normal")
+        if ctx.agents is not None:
+            await ctx.agents.shutdown()
+            shutdown_completed = True
+        await bus.emit(AppExit())
+        return 0
+    finally:
+        if ctx.agents is not None and not shutdown_completed:
+            await ctx.agents.shutdown()
+
+
 async def run_app(cfg: Config) -> int:
     """Compose plugins and run the interactive terminal application."""
 
@@ -1513,17 +1538,4 @@ async def run_app(cfg: Config) -> int:
                     ctx.console.console,
                     transcript=runtime.transcript,
                 )
-        await bus.emit(AppStart(ctx=ctx))
-        if hasattr(runtime, "flush_early_notifications"):
-            runtime.flush_early_notifications()
-        if ctx._reseed_pending() and ctx.agent is not None:
-            await ctx.ensure_agent()
-        if ctx.rebuild_requested:
-            await ctx.rebuild()
-        if cfg.resume:
-            ctx._warn_interrupted_resume()
-        await runtime.run()
-        ctx.persist_plugin_states()
-        ctx.record_exit("normal")
-        await bus.emit(AppExit())
-        return 0
+        return await _run_runtime(ctx, runtime, bus)
