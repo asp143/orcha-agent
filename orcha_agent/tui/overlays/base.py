@@ -105,10 +105,14 @@ class ScrollableContent:
             ("class:muted", f" ({current}/{count})  "),
         ]
         hints = (
-            (format_key_bindings(("j", "k")), "navigate"),
-            (format_key_bindings(("pageup", "pagedown")), "page"),
-            (format_key_bindings(("enter",)), action),
-            (format_key_bindings(("escape",)), "close"),
+            ((format_key_bindings(("escape",)), "close"),)
+            if count == 0
+            else (
+                (format_key_bindings(("j", "k")), "navigate"),
+                (format_key_bindings(("pageup", "pagedown")), "page"),
+                (format_key_bindings(("enter",)), action),
+                (format_key_bindings(("escape",)), "close"),
+            )
         )
         for offset, (key, description) in enumerate(hints):
             if offset:

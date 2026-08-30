@@ -732,6 +732,86 @@ def test_tree_overlay_orders_entries_depth_first_by_parent_hierarchy() -> None:
     ]
 
 
+def test_session_labels_fall_back_to_first_prompt_and_shorten_home_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    cwd = home / "work" / "client" / "packages" / "deep" / "repo"
+    monkeypatch.setenv("HOME", str(home))
+    sessions = [
+        SimpleNamespace(
+            thread_id="prompt-title",
+            title=None,
+            cwd=str(cwd),
+            created="2099-01-01T00:00:00+00:00",
+        ),
+        SimpleNamespace(
+            thread_id="untitled",
+            title=None,
+            cwd=str(home / "short" / "cwd"),
+            created="2099-01-01T00:00:00+00:00",
+        ),
+    ]
+    entries = {
+        "prompt-title": [
+            SimpleNamespace(
+                message={
+                    "type": "human",
+                    "data": {"content": "  First\nprompt  "},
+                }
+            )
+        ],
+        "untitled": [],
+    }
+    ctx = SimpleNamespace(
+        session=SimpleNamespace(list=lambda: sessions),
+        ledger=SimpleNamespace(
+            all=lambda session_id: entries[session_id],
+            count=lambda session_id: 3 if session_id == "prompt-title" else 0,
+        ),
+        resume=lambda _value: asyncio.sleep(0),
+    )
+
+    rendered = SessionOverlay(ctx).render_text()
+
+    assert "First prompt · now · ~/work/client/…/deep/repo · 3 entries" in rendered
+    assert "Untitled · now · ~/short/cwd · 0 entries" in rendered
+
+
+@pytest.mark.asyncio
+async def test_empty_tree_stays_open_with_close_hint() -> None:
+    ctx = SimpleNamespace(
+        ledger=SimpleNamespace(
+            all=lambda _session_id: [],
+            leaf=lambda _session_id: None,
+        ),
+        session_id="empty",
+        branch=lambda _value: asyncio.sleep(0),
+    )
+    overlay = TreeOverlay(ctx)
+
+    assert "No conversation yet" in overlay.render_text()
+    assert ("class:dim", "Esc") in overlay._scroll_footer("select")
+    assert ("class:muted", " close") in overlay._scroll_footer("select")
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
+        )
+        task = asyncio.create_task(runtime.run())
+        shown = asyncio.create_task(runtime.ui.show(overlay))
+        await asyncio.sleep(0.02)
+        pipe.send_bytes(b"\r")
+        await asyncio.sleep(0.02)
+        assert not shown.done()
+        assert not overlay.done
+        pipe.send_bytes(b"\x1b")
+        assert await asyncio.wait_for(shown, 1) is None
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+
 @pytest.mark.asyncio
 async def test_select_list_scrolls_long_navigation_to_selected_row() -> None:
     picker = SelectList("Long list", [f"item-{index:02d}" for index in range(40)])
