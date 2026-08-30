@@ -22,6 +22,7 @@ from orcha_agent.tui.overlays import (
     HelpOverlay,
     HistoryOverlay,
     ModelOverlay,
+    KeyBindingsOverlay,
     Overlay,
     SelectList,
     SessionOverlay,
@@ -270,8 +271,14 @@ async def test_history_help_and_ask_overlays_return_specified_shapes(tmp_path: P
 
     help_overlay = HelpOverlay(ctx)
     assert "/help" in help_overlay.text
-    assert "escape escape" in help_overlay.text
+    assert "Esc Esc" in help_overlay.text
     assert await _drive_overlay(help_overlay, b"\x1b") is None
+
+    key_overlay = KeyBindingsOverlay(ctx)
+    fragments = key_overlay.card.fragments()
+    assert ("class:dim", "Enter") in fragments
+    assert ("class:muted", " submit") in fragments
+    assert await _drive_overlay(key_overlay, b"\x1b") is None
 
     questions = [
         {

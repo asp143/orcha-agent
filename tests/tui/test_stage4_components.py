@@ -13,7 +13,12 @@ from orcha_agent.core.plugin import PluginAPI
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.complete import ComposerCompleter, PathIndex
 from orcha_agent.tui.history import SQLiteHistory
-from orcha_agent.tui.keys import DEFAULT_BINDINGS, load_keybindings
+from orcha_agent.tui.keys import (
+    DEFAULT_BINDINGS,
+    format_key_bindings,
+    format_key_name,
+    load_keybindings,
+)
 from orcha_agent.tui.queue import PromptQueue, split_submission
 
 
@@ -235,6 +240,27 @@ def test_every_default_action_has_a_valid_effective_binding() -> None:
     effective = load_keybindings(user_path=Path("/path/that/does/not/exist"))
     assert set(effective) == set(DEFAULT_BINDINGS)
     assert all(effective[action] for action in DEFAULT_BINDINGS)
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected"),
+    [
+        ("c-o", "Ctrl+O"),
+        ("escape p", "Alt+P"),
+        ("s-tab", "Shift+Tab"),
+        ("escape enter", "Alt+Enter"),
+        ("escape escape", "Esc Esc"),
+    ],
+)
+def test_key_names_use_human_labels_for_prompt_toolkit_bindings(
+    binding: str,
+    expected: str,
+) -> None:
+    assert format_key_name(binding) == expected
+
+
+def test_key_binding_lists_use_compact_hint_separator() -> None:
+    assert format_key_bindings(("enter", "c-j")) == "Enter/Ctrl+J"
 
 
 def test_key_conflicts_use_prompt_toolkit_canonical_sequences(tmp_path: Path) -> None:
