@@ -99,8 +99,12 @@ def test_user_bubble_emits_full_width_background_cells_to_a_terminal() -> None:
     terminal_text = Text.from_ansi(raw).plain
 
     assert "48;5;236" in raw
-    assert terminal_text == f" visible terminal bubble{' ' * 16}\n"
-    assert len(terminal_text.rstrip("\n")) == 40
+    assert terminal_text == (
+        f"{' ' * 40}\n"
+        f" visible terminal bubble{' ' * 16}\n"
+        f"{' ' * 40}\n"
+    )
+    assert all(len(line) == 40 for line in terminal_text.splitlines())
 
 
 def test_assistant_returns_rich_markdown_for_accumulated_text() -> None:
