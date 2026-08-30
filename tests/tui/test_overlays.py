@@ -155,6 +155,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse() -> None:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
         )
+        base_float_count = len(runtime.application.layout.container.floats)
         task = asyncio.create_task(runtime.run())
         first = SelectList("First", ["one"])
         second = SelectList("Second", ["two"])
@@ -163,7 +164,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse() -> None:
         await asyncio.sleep(0.02)
         assert runtime.active_overlay is first
         assert runtime.application.mouse_support()
-        assert len(runtime.application.layout.container.floats) == 2
+        assert len(runtime.application.layout.container.floats) == base_float_count + 1
         pipe.send_bytes(b"\r")
         assert await asyncio.wait_for(first_result, 1) == "one"
         await asyncio.sleep(0.02)
@@ -172,7 +173,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse() -> None:
         assert await asyncio.wait_for(second_result, 1) is None
         assert runtime.active_overlay is None
         assert not runtime.application.mouse_support()
-        assert len(runtime.application.layout.container.floats) == 1
+        assert len(runtime.application.layout.container.floats) == base_float_count
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
 

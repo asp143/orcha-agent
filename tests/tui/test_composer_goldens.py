@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from prompt_toolkit.completion import Completion
+from prompt_toolkit.utils import get_cwidth
 
 from orcha_agent.tui.composer import Composer
 
@@ -74,3 +76,57 @@ def test_box_composer_scrollbar_replaces_only_the_right_border() -> None:
     assert lines[1].endswith("│")
     assert lines[2].endswith("█")
     assert lines[3].endswith("─╯")
+
+
+def test_completion_surface_is_bounded_and_keeps_selected_item_visible() -> None:
+    composer = Composer(shape="box")
+    composer.buffer.text = "/he"
+    composer.buffer.cursor_position = len(composer.buffer.text)
+    completions = [
+        Completion(name, display=name, display_meta=f"{name} help")
+        for name in ("help", "history", "hub", "handoff", "health", "hello", "hooks")
+    ]
+    composer.buffer.complete_state = composer.buffer._set_completions(completions)
+    assert composer.buffer.complete_state is not None
+    composer.buffer.complete_state.complete_index = 5
+
+    fragments = composer.completion_fragments(48)
+    rendered = "".join(text for _style, text in fragments)
+    lines = rendered.splitlines()
+
+    assert len(lines) == 5
+    assert any(line.startswith("→ /hello") and "(6/7)" in line for line in lines)
+    assert all(sum(get_cwidth(character) for character in line) <= 48 for line in lines)
+
+
+def test_completion_surface_hides_descriptions_at_narrow_width() -> None:
+    composer = Composer()
+    composer.buffer.text = "/h"
+    composer.buffer.cursor_position = len(composer.buffer.text)
+    composer.buffer.complete_state = composer.buffer._set_completions(
+        [Completion("help", display="help", display_meta="Show command help")]
+    )
+    composer.buffer.complete_state.complete_index = 0
+
+    wide = "".join(text for _style, text in composer.completion_fragments(80))
+    narrow = "".join(text for _style, text in composer.completion_fragments(40))
+
+    assert "Show command help" in wide
+    assert "Show command help" not in narrow
+
+
+def test_at_completion_highlights_each_fuzzy_matched_character() -> None:
+    composer = Composer()
+    composer.buffer.text = "@ap"
+    composer.buffer.cursor_position = len(composer.buffer.text)
+    composer.buffer.complete_state = composer.buffer._set_completions(
+        [Completion("@alpha.py", display="alpha.py")]
+    )
+    composer.buffer.complete_state.complete_index = 0
+
+    fragments = composer.completion_fragments(80)
+    matched = "".join(
+        text for style, text in fragments if style == "class:completion.match"
+    )
+
+    assert matched == "ap"

@@ -23,10 +23,9 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import DynamicKeyBindings, KeyBindings, merge_key_bindings
-from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
@@ -93,18 +92,12 @@ def _completion_style(theme: Any) -> Any:
 
     menu = Style.from_dict(
         {
-            "completion-menu.completion": (
-                f"fg:{color('text')} bg:{color('statusLineBg')}"
-            ),
-            "completion-menu.completion.current": (
-                f"fg:{color('text')} bg:{color('selectedBg')}"
-            ),
-            "completion-menu.meta.completion": (
-                f"fg:{color('muted')} bg:{color('statusLineBg')}"
-            ),
-            "completion-menu.meta.completion.current": (
-                f"fg:{color('text')} bg:{color('selectedBg')}"
-            ),
+            "completion": f"fg:{color('text')}",
+            "completion.arrow": f"fg:{color('accent')} bold",
+            "completion.label": f"fg:{color('text')}",
+            "completion.match": f"fg:{color('accent')} bold",
+            "completion.meta": f"fg:{color('muted')}",
+            "completion.counter": f"fg:{color('dim')}",
         }
     )
     return merge_styles([base, menu])
@@ -405,6 +398,7 @@ class ApplicationRuntime:
                         height=self._hud_height,
                         dont_extend_height=True,
                     ),
+                    self.composer.completion_container,
                     self.composer.container,
                     Window(
                         FormattedTextControl(self._status),
@@ -412,13 +406,7 @@ class ApplicationRuntime:
                     ),
                 ]
             ),
-            floats=[
-                Float(
-                    xcursor=True,
-                    ycursor=True,
-                    content=CompletionsMenu(max_height=8, scroll_offset=1),
-                )
-            ],
+            floats=[],
         )
         self._root = root
         kwargs: dict[str, Any] = {}

@@ -16,7 +16,6 @@ from orcha_agent.tui.history import SQLiteHistory
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 from orcha_agent.tui.theme import load_themes
 from prompt_toolkit.layout.dimension import to_dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
 
 
 def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
@@ -284,7 +283,9 @@ async def test_external_editor_draft_restore_completion_and_actions(tmp_path: Pa
         task = asyncio.create_task(runtime.run())
         await asyncio.sleep(0)
         pipe.send_bytes(b"\x07")
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(1):
+            while runtime.buffer.text != "saved edited":
+                await asyncio.sleep(0)
         assert runtime.buffer.text == "saved edited"
         runtime.buffer.text = "/h"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
@@ -467,7 +468,7 @@ async def test_ctrl_d_aborts_streaming_turn_before_exit() -> None:
         await asyncio.wait_for(task, 1)
 
 
-def test_completion_menu_float_uses_theme_selection_style(tmp_path: Path) -> None:
+def test_completion_surface_sits_immediately_above_composer(tmp_path: Path) -> None:
     theme = load_themes(home=tmp_path)["dark"]
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -478,13 +479,14 @@ def test_completion_menu_float_uses_theme_selection_style(tmp_path: Path) -> Non
             output=DummyOutput(),
         )
         root = runtime.application.layout.container
-        assert len(root.floats) == 1
-        assert isinstance(root.floats[0].content, CompletionsMenu)
+        children = root.content.children
+        composer_index = children.index(runtime.composer.container)
+        assert children[composer_index - 1] is runtime.composer.completion_container
+        assert root.floats == []
         selected = runtime.application.style.get_attrs_for_style_str(
-            "class:completion-menu.completion.current"
+            "class:completion.arrow"
         )
-        assert selected.bgcolor is not None
-
+        assert selected.color is not None
 
 @pytest.mark.parametrize("shape", ["box", "claude", "borderless"])
 def test_composer_container_has_exact_dynamic_content_height(
