@@ -12,7 +12,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 
-from .base import Anchor, Overlay
+from .base import Anchor, Overlay, ScrollableContent
 
 T = TypeVar("T")
 
@@ -30,7 +30,7 @@ def _fuzzy(query: str, text: str) -> bool:
     return False
 
 
-class SelectList(Overlay, Generic[T]):
+class SelectList(ScrollableContent, Overlay, Generic[T]):
     """A deterministic fuzzy-filtered picker driven entirely by key events."""
 
     def __init__(
@@ -52,9 +52,8 @@ class SelectList(Overlay, Generic[T]):
         self.items = tuple(items)
         self.label = label
         self.multi = multi
-        self.page_size = max(1, page_size)
+        self._init_scrolling(page_size)
         self.empty_text = empty_text
-        self.index = 0
         self._selected: set[int] = set()
         self._on_accept = on_accept
         self._on_change = on_change
@@ -79,28 +78,17 @@ class SelectList(Overlay, Generic[T]):
         if prefix is not None:
             body_parts.extend([prefix, Window(char="─", height=1, style="class:overlay.divider")])
         self.list_window = Window(self.list_control, always_hide_cursor=True)
-        body_parts.append(self.list_window)
+        self.footer_control = FormattedTextControl(
+            lambda: self._scroll_footer("select")
+        )
+        body_parts.extend(
+            [
+                self.list_window,
+                Window(self.footer_control, height=1, wrap_lines=False),
+            ]
+        )
         bindings = KeyBindings()
-
-        @bindings.add("up")
-        def _up(event: Any) -> None:
-            self._move(-1)
-            event.app.invalidate()
-
-        @bindings.add("down")
-        def _down(event: Any) -> None:
-            self._move(1)
-            event.app.invalidate()
-
-        @bindings.add("pageup")
-        def _page_up(event: Any) -> None:
-            self._move(-self.page_size)
-            event.app.invalidate()
-
-        @bindings.add("pagedown")
-        def _page_down(event: Any) -> None:
-            self._move(self.page_size)
-            event.app.invalidate()
+        self._bind_navigation(bindings)
 
         @bindings.add(" ")
         def _toggle(event: Any) -> None:
@@ -161,13 +149,10 @@ class SelectList(Overlay, Generic[T]):
         self.index = 0
         self._changed()
 
-    def _move(self, delta: int) -> None:
-        filtered = self._filtered_pairs()
-        if not filtered:
-            self.index = 0
-            self._changed()
-            return
-        self.index = min(len(filtered) - 1, max(0, self.index + delta))
+    def _scroll_count(self) -> int:
+        return len(self._filtered_pairs())
+
+    def _scroll_changed(self) -> None:
         self._changed()
 
     def _changed(self) -> None:
@@ -232,7 +217,8 @@ class SelectList(Overlay, Generic[T]):
         return fragments
 
     def render_text(self) -> str:
-        return "".join(fragment[1] for fragment in self._fragments())
+        fragments = [*self._fragments(), *self._scroll_footer("select")]
+        return "".join(fragment[1] for fragment in fragments)
 
 
 __all__ = ["SelectList"]

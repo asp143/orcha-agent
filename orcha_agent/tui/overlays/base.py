@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
 
 from prompt_toolkit.application.current import get_app
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Dimension
 from prompt_toolkit.layout.containers import Float, HSplit, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+
+from orcha_agent.tui.keys import format_key_bindings
+
+from .hints import key_hint
 
 Anchor = Literal["center", "bottom"]
 
@@ -55,6 +59,64 @@ def _bordered(title: str, body: Any) -> Any:
         height=1,
     )
     return HSplit([top, middle, bottom])
+
+
+class ScrollableContent:
+    """Shared clamped selection state, navigation, and footer rendering."""
+
+    index: int
+    page_size: int
+
+    def _init_scrolling(self, page_size: int) -> None:
+        self.index = 0
+        self.page_size = max(1, page_size)
+
+    def _scroll_count(self) -> int:
+        raise NotImplementedError
+
+    def _scroll_changed(self) -> None:
+        return None
+
+    def _move(self, delta: int) -> None:
+        count = self._scroll_count()
+        self.index = 0 if count == 0 else min(count - 1, max(0, self.index + delta))
+        self._scroll_changed()
+
+    def _bind_navigation(self, bindings: KeyBindings) -> None:
+        movements = (
+            ("up", -1),
+            ("k", -1),
+            ("down", 1),
+            ("j", 1),
+            ("pageup", -self.page_size),
+            ("pagedown", self.page_size),
+        )
+        for key, delta in movements:
+
+            @bindings.add(key)
+            def _navigate(event: Any, delta: int = delta) -> None:
+                self._move(delta)
+                event.app.invalidate()
+
+    def _scroll_footer(self, action: str) -> StyleAndTextTuples:
+        count = self._scroll_count()
+        current = self.index + 1 if count else 0
+        fragments: StyleAndTextTuples = [
+            ("class:muted", f" ({current}/{count})  "),
+        ]
+        hints = (
+            (format_key_bindings(("j", "k")), "navigate"),
+            (format_key_bindings(("pageup", "pagedown")), "page"),
+            (format_key_bindings(("enter",)), action),
+            (format_key_bindings(("escape",)), "close"),
+        )
+        for offset, (key, description) in enumerate(hints):
+            if offset:
+                fragments.append(("class:muted", " · "))
+            fragments.extend(key_hint(key, description, formatted=True))
+        return fragments
+
+
 
 
 class Overlay(Float):
@@ -109,8 +171,11 @@ class Overlay(Float):
 
     def _width(self) -> int:
         columns, _ = self._terminal_size()
-        available = max(1, columns - self.margin * 2)
-        return max(4, min(80, available))
+        columns = max(1, columns)
+        if columns < 4:
+            return columns
+        available = max(4, columns - self.margin * 2)
+        return min(80, available, columns)
 
     @property
     def inner_width(self) -> int:
@@ -122,10 +187,13 @@ class Overlay(Float):
 
     def _height(self) -> int:
         _, rows = self._terminal_size()
-        available = max(1, rows - self.margin * 2)
+        rows = max(1, rows)
+        if rows < 3:
+            return rows
+        available = max(3, rows - self.margin * 2)
         maximum = max(self.min_height, int(rows * self.height_percent))
         needed = max(self.min_height, self._needed_height(available))
-        return max(3, min(available, maximum, needed))
+        return min(rows, max(3, min(available, maximum, needed)))
 
     def body_rows(self, terminal_rows: int | None = None) -> int:
         if terminal_rows is None:
@@ -133,10 +201,12 @@ class Overlay(Float):
         _, current_rows = self._terminal_size()
         if terminal_rows == current_rows:
             return max(0, self._height() - 2)
-        available = max(1, terminal_rows - self.margin * 2)
+        if terminal_rows < 3:
+            return 0
+        available = max(3, terminal_rows - self.margin * 2)
         maximum = max(self.min_height, int(terminal_rows * self.height_percent))
         needed = max(self.min_height, self._needed_height(available))
-        return max(0, min(available, maximum, needed) - 2)
+        return max(0, min(terminal_rows, available, maximum, needed) - 2)
 
     @staticmethod
     def render_lines(
@@ -196,6 +266,60 @@ class Overlay(Float):
 
     def __await__(self):
         return self.wait().__await__()
+class ScrollableOverlay(ScrollableContent, Overlay):
+    """Scrollable static content using the same navigation grammar as pickers."""
+
+    def __init__(
+        self,
+        title: str,
+        rows: Sequence[StyleAndTextTuples],
+        *,
+        page_size: int = 8,
+        width: float = 0.72,
+        height: float = 0.62,
+    ) -> None:
+        self.rows = tuple(tuple(row) for row in rows)
+        self._init_scrolling(page_size)
+        self.content_control = FormattedTextControl(self._content_fragments, focusable=True)
+        self.content_window = Window(self.content_control, always_hide_cursor=True)
+        self.footer_control = FormattedTextControl(lambda: self._scroll_footer("close"))
+        bindings = KeyBindings()
+        self._bind_navigation(bindings)
+        body = HSplit(
+            [
+                self.content_window,
+                Window(self.footer_control, height=1, wrap_lines=False),
+            ]
+        )
+        Overlay.__init__(
+            self,
+            title,
+            body,
+            width=width,
+            height=height,
+            bindings=bindings,
+        )
+
+    def _scroll_count(self) -> int:
+        return len(self.rows)
+
+    def _content_fragments(self) -> StyleAndTextTuples:
+        fragments: StyleAndTextTuples = []
+        for offset, row in enumerate(self.rows):
+            if offset == self.index:
+                fragments.append(("[SetCursorPosition]", ""))
+            fragments.extend(row)
+            if not row or not row[-1][1].endswith("\n"):
+                fragments.append(("", "\n"))
+        return fragments
+
+    def render_text(self) -> str:
+        fragments = [*self._content_fragments(), *self._scroll_footer("close")]
+        return "".join(text for _style, text in fragments)
+
+    @property
+    def focus_target(self) -> Any:
+        return self.content_control
 
 
-__all__ = ["Anchor", "Overlay"]
+__all__ = ["Anchor", "Overlay", "ScrollableContent", "ScrollableOverlay"]

@@ -678,6 +678,16 @@ def test_narrow_overlay_keeps_four_columns_of_chrome(
     assert overlay.inner_width == 22
 
 
+def test_overlays_never_exceed_tiny_terminal_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overlay = SelectList("Pick", ["one"])
+    monkeypatch.setattr(overlay, "_terminal_size", lambda: (3, 2))
+
+    assert overlay._width() == 3
+    assert overlay._height() == 2
+
+
 def test_ask_and_approval_dialogs_use_content_aware_heights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -744,6 +754,36 @@ async def test_select_list_scrolls_long_navigation_to_selected_row() -> None:
         assert await asyncio.wait_for(shown, 1) is None
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_select_list_supports_vim_navigation_and_fixed_position_counter() -> None:
+    picker = SelectList("Long list", [f"item-{index:02d}" for index in range(12)])
+
+    assert "(1/12)" in picker.render_text()
+    assert await _drive_overlay(picker, "j\r") == "item-01"
+    assert "(2/12)" in picker.render_text()
+
+    picker = SelectList("Long list", [f"item-{index:02d}" for index in range(12)])
+    assert await _drive_overlay(picker, b"\x1b[6~k\r") == "item-07"
+
+
+@pytest.mark.asyncio
+async def test_help_static_content_uses_shared_page_navigation() -> None:
+    ctx = SimpleNamespace(
+        ui=SimpleNamespace(effective_keys={"submit": ("enter",)}),
+        registry=SimpleNamespace(
+            commands={
+                f"command-{index:02d}": SimpleNamespace(help=f"Help {index}")
+                for index in range(20)
+            }
+        ),
+    )
+    overlay = HelpOverlay(ctx)
+    assert "(1/24)" in overlay.render_text()
+    assert await _drive_overlay(overlay, b"\x1b[6~\x1b") is None
+    assert overlay.index == 8
+    assert "(9/24)" in overlay.render_text()
 
 
 @pytest.mark.asyncio
