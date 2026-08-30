@@ -130,3 +130,17 @@ def test_at_completion_highlights_each_fuzzy_matched_character() -> None:
     )
 
     assert matched == "ap"
+
+
+def test_empty_composer_uses_exact_dim_placeholder() -> None:
+    composer = Composer()
+
+    assert composer.placeholder_fragments() == [
+        (
+            "class:composer.placeholder",
+            "Ask anything · / commands · @ files · ! shell",
+        )
+    ]
+
+    composer.buffer.text = "x"
+    assert composer.placeholder_fragments() == []

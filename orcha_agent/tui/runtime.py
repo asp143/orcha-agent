@@ -68,7 +68,7 @@ from .context import (
 )
 from .frame import Block, Frame, FrameScheduler
 from .history import SQLiteHistory, history_path
-from .keys import create_key_bindings, load_keybindings
+from .keys import create_key_bindings, format_key_bindings, load_keybindings
 from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
@@ -98,6 +98,7 @@ def _completion_style(theme: Any) -> Any:
             "completion.match": f"fg:{color('accent')} bold",
             "completion.meta": f"fg:{color('muted')}",
             "completion.counter": f"fg:{color('dim')}",
+            "composer.placeholder": f"fg:{color('dim')}",
         }
     )
     return merge_styles([base, menu])
@@ -350,6 +351,7 @@ class ApplicationRuntime:
             registry=completion_registry,
             warn=self._notify,
         )
+        self._effective_keys = effective
         self.ui.effective_keys = effective
         self.ui.prepare_session_switch = self.prepare_session_switch
         handlers = self._action_handlers()
@@ -513,7 +515,19 @@ class ApplicationRuntime:
             )
         if self.queue:
             blocks.append(
-                self._hud_block("queue", {"prompts": list(self.queue.items[:7])})
+                self._hud_block(
+                    "queue",
+                    {
+                        "prompts": [
+                            {"text": item.text, "mode": item.mode}
+                            for item in self.queue.entries
+                        ],
+                        "dequeue_hint": format_key_bindings(
+                            effective
+                            for effective in self._effective_keys.get("dequeue", ())
+                        ),
+                    },
+                )
             )
         return blocks
 
@@ -679,19 +693,18 @@ class ApplicationRuntime:
         draft = state.get("draft")
         saved_queue = state.get("queue")
         has_draft = isinstance(draft, str) and bool(draft)
-        has_queue = (
+        restored_queue = (
             isinstance(saved_queue, list)
             and bool(saved_queue)
-            and all(isinstance(prompt, str) for prompt in saved_queue)
+            and self.queue.restore(saved_queue)
         )
-        if not has_draft and not has_queue:
+        if not has_draft and not restored_queue:
             return
         if has_draft:
             self.buffer.text = draft
             self.buffer.cursor_position = len(draft)
             state.pop("draft", None)
-        if has_queue:
-            self.queue.extend(saved_queue)
+        if restored_queue:
             state.pop("queue", None)
         self._persist_state()
 
@@ -705,7 +718,7 @@ class ApplicationRuntime:
         else:
             state.pop("draft", None)
         if self.queue:
-            state["queue"] = list(self.queue.items)
+            state["queue"] = self.queue.dump()
         else:
             state.pop("queue", None)
         state["thinking_level"] = self.thinking_level
@@ -745,22 +758,26 @@ class ApplicationRuntime:
         buffer.reset(append_to_history=True)
         if text == ".":
             text = "keep going"
+        if self.streaming and text.startswith("/"):
+            self._track(self._dispatch_submission(text))
+            return False
         prompts = split_submission(text)
         is_batch = len(prompts) > 1
         if self.streaming:
-            self.queue.extend(prompts)
+            mode = "steer" if self.queue.steering_open else "follow_up"
+            self.queue.extend(prompts, mode=mode)
             self.application.invalidate()
             return False
         first = prompts.pop(0)
         if is_batch:
-            self.queue.extend(prompts)
+            self.queue.extend(prompts, mode="follow_up")
         self._track(self._submit_serially(first))
         return False
 
     def _action_handlers(self) -> dict[str, Callable[[Any], None]]:
         return {
             "submit": self._submit_action,
-            "newline": lambda event: event.current_buffer.insert_text("\n"),
+            "newline": self._newline_or_followup,
             "queue": self._queue_draft,
             "dequeue": self._dequeue,
             "toggle_thinking": lambda _event: self._toggle_thinking(),
@@ -802,9 +819,15 @@ class ApplicationRuntime:
             return
         text = event.current_buffer.text.strip()
         if text:
-            self.queue.extend(split_submission(text))
+            self.queue.extend(split_submission(text), mode="follow_up")
             event.current_buffer.reset(append_to_history=False)
             event.app.invalidate()
+
+    def _newline_or_followup(self, event: Any) -> None:
+        if self.streaming:
+            self._queue_draft(event)
+            return
+        event.current_buffer.insert_text("\n")
 
     def _dequeue(self, event: Any) -> None:
         text = self.queue.pop_last()
@@ -865,7 +888,7 @@ class ApplicationRuntime:
         if text:
             state["draft"] = text
         if self.queue:
-            state["queue"] = list(self.queue.items)
+            state["queue"] = self.queue.dump()
         if text or self.queue:
             self._persist_state()
         if self.streaming:
@@ -1102,12 +1125,13 @@ class ApplicationRuntime:
                 except Exception as exc:
                     self.transcript.append_banner(f"{type(exc).__name__}: {exc}")
                 finally:
+                    self.queue.close_steering()
                     self._active_turn = None
                     self.streaming = False
                     self.application.invalidate()
                 if self._shutting_down:
                     break
-                current = self.queue.pop()
+                current = self.queue.pop(mode="follow_up")
                 if current is not None:
                     self.application.invalidate()
 

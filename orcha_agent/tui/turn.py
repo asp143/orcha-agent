@@ -24,6 +24,8 @@ from orcha_agent.core.events import (
 from orcha_agent.core.plugin import Handled, Resolved
 
 from .context import AppContext
+from .queue import PromptQueue
+
 from .transcript import _matches
 async def _render(ctx: AppContext, event: object, *, emit: bool = True) -> bool:
     transcript = getattr(ctx, "transcript", None)
@@ -376,6 +378,28 @@ async def _updates_event(
     return None
 
 
+def _pop_steering(ctx: AppContext) -> str | None:
+    queue = getattr(ctx, "queue", None)
+    if not isinstance(queue, PromptQueue):
+        return None
+    return queue.pop(mode="steer")
+
+def _open_steering(ctx: AppContext) -> None:
+    queue = getattr(ctx, "queue", None)
+    if isinstance(queue, PromptQueue):
+        queue.open_steering()
+
+
+def _close_steering(ctx: AppContext, *, promote_pending: bool = False) -> None:
+    queue = getattr(ctx, "queue", None)
+    if isinstance(queue, PromptQueue):
+        queue.close_steering(promote_pending=promote_pending)
+
+
+def _user_input(text: str) -> dict[str, list[dict[str, str]]]:
+    return {"messages": [{"role": "user", "content": text}]}
+
+
 async def _run_turn(ctx: AppContext, text: str) -> None:
     if not await ctx.ensure_agent():
         return
@@ -385,7 +409,8 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
         if title:
             ctx.session.set_title(ctx.session_id, title)
     await ctx._bus.emit(TurnStart(thread_id=ctx.thread_id, text=text))
-    next_input: Any = {"messages": [{"role": "user", "content": text}]}
+    _open_steering(ctx)
+    next_input: Any = _user_input(text)
     tool_calls = _ToolCallBuffer()
     model_labels = _ModelLabelBuffer()
     seen_results: set[str] = set()
@@ -395,17 +420,26 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     try:
         while True:
             resolution: Resolved | None = None
+            static_tool_boundary = False
             async for stream_item in ctx.agent.astream(
                 next_input,
                 config=ctx.thread_config,
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
+                interrupt_after=["tools"],
             ):
                 if len(stream_item) == 3:
                     namespace, mode, data = stream_item
                 else:
                     mode, data = stream_item
                     namespace = ()
+                if (
+                    not namespace
+                    and mode == "updates"
+                    and isinstance(data, dict)
+                    and data.get("__interrupt__") == ()
+                ):
+                    static_tool_boundary = True
                 if mode == "messages":
                     file_diffs = await _message_event(
                         ctx,
@@ -425,16 +459,34 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
                     )
                     if candidate is not None:
                         resolution = candidate
-            if resolution is None:
-                break
-            next_input = Command(resume=resolution.resume_value)
+            if resolution is not None:
+                next_input = Command(resume=resolution.resume_value)
+                continue
+            if static_tool_boundary:
+                steering = _pop_steering(ctx)
+                next_input = (
+                    Command(update=_user_input(steering))
+                    if steering is not None
+                    else None
+                )
+                continue
+            _close_steering(ctx)
+            steering = _pop_steering(ctx)
+            if steering is not None:
+                _open_steering(ctx)
+                next_input = _user_input(steering)
+                continue
+            break
     except asyncio.CancelledError:
+        _close_steering(ctx, promote_pending=True)
         cancelled = True
         ctx.console.warning("interrupted")
     except Exception as exc:
+        _close_steering(ctx, promote_pending=True)
         if not await _render(ctx, exc, emit=False):
             ctx.console.error(f"{type(exc).__name__}: {exc}")
     finally:
+        _close_steering(ctx)
         try:
             ctx.capture_turn()
             if cancelled:

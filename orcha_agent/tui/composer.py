@@ -16,10 +16,12 @@ from prompt_toolkit.layout.containers import AnyContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import Margin, ScrollbarMargin
+from prompt_toolkit.layout.processors import BeforeInput, ConditionalProcessor
 from prompt_toolkit.utils import get_cwidth
 
 _SHAPES = frozenset({"box", "claude", "borderless"})
 _PADDING_X = 2
+_PLACEHOLDER = "Ask anything · / commands · @ files · ! shell"
 
 
 def _width(value: str) -> int:
@@ -170,7 +172,15 @@ class Composer:
             multiline=True,
             accept_handler=accept_handler,
         )
-        self.control = BufferControl(buffer=self.buffer)
+        self.control = BufferControl(
+            buffer=self.buffer,
+            input_processors=[
+                ConditionalProcessor(
+                    BeforeInput(self.placeholder_fragments),
+                    filter=Condition(lambda: not self.buffer.text),
+                )
+            ],
+        )
         self.input_window = Window(
             self.control,
             height=lambda: Dimension.exact(
@@ -277,6 +287,11 @@ class Composer:
             return 80
         return max(1, app.output.get_size().columns)
 
+
+    def placeholder_fragments(self) -> StyleAndTextTuples:
+        if self.buffer.text:
+            return []
+        return [("class:composer.placeholder", _PLACEHOLDER)]
 
     def completion_row_count(self) -> int:
         state = self.buffer.complete_state

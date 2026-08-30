@@ -160,11 +160,57 @@ class BlockRendererDispatcher:
                     )
         return cache[key]
 
+def render_queue(
+    block: Block,
+    theme: Any,
+    width: int,
+    budget_rows: int,
+    expanded: bool,
+) -> Text:
+    del expanded
+    raw_prompts = block.data.get("prompts", ())
+    prompts = (
+        list(raw_prompts)
+        if isinstance(raw_prompts, Sequence)
+        and not isinstance(raw_prompts, (str, bytes))
+        else []
+    )
+    has_overflow = len(prompts) > 5
+    visible_count = min(
+        5,
+        max(0, budget_rows - 1 - (1 if has_overflow else 0)),
+    )
+    visible = prompts[-visible_count:] if visible_count else []
+    hidden = len(prompts) - len(visible)
+    lines: list[Text] = []
+    dim = str(theme_value(theme, "dim", "dim"))
+    if hidden:
+        lines.append(Text(f"─── ↑ {hidden} more ───", style=dim))
+    for item in visible:
+        if isinstance(item, Mapping):
+            mode = str(item.get("mode", "follow_up"))
+            value = str(item.get("text", ""))
+        else:
+            mode = "follow_up"
+            value = str(item)
+        label = "Steering" if mode == "steer" else "Follow-up"
+        lines.append(Text(f"{label}: {' '.join(value.split())}", style=dim))
+    hint = str(block.data.get("dequeue_hint", "Alt+Up"))
+    lines.append(Text(f"↳ {hint} to edit queued", style=dim))
+    rendered = Text()
+    for index, line in enumerate(lines[: max(0, budget_rows)]):
+        line.truncate(max(1, width), overflow="ellipsis")
+        rendered.append(line)
+        if index < min(len(lines), budget_rows) - 1:
+            rendered.append("\n")
+    return rendered
+
+
 
 from .assistant import render as render_assistant
 from .banner import render as render_banner
 from .diff import render as render_diff
-from .hud import render_queue, render_subagents, render_todo
+from .hud import render_subagents, render_todo
 from .marker import render as render_marker
 from .thinking import render as render_thinking
 from .tool import render as render_tool
