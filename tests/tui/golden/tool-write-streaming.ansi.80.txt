@@ -1,3 +1,4 @@
+
 <ESC>[36m+--- Write: src/new.py --------------------------------------------------------+<ESC>[0m
 <ESC>[36m| … (content above)                                                            <ESC>[0m<ESC>[36m|<ESC>[0m
 <ESC>[36m| line 3                                                                       <ESC>[0m<ESC>[36m|<ESC>[0m

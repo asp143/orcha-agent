@@ -140,6 +140,7 @@ class Frame:
         *,
         width: int | None = None,
         measure: Callable[[Block, int], int] | None = None,
+        minimum: Callable[[Block], int] | None = None,
     ) -> list[ViewportItem]:
         """Allocate measured visual rows newest-first in transcript order."""
         if width is not None:
@@ -150,9 +151,27 @@ class Frame:
         candidates = [
             block for block in self.blocks if block.state is not BlockState.COMMITTED
         ]
-        selected = candidates[-budget:]
-        allocations = {block.id: 1 for block in selected}
-        remaining = budget - len(selected)
+
+        def minimum_rows(block: Block) -> int:
+            return max(1, minimum(block)) if minimum is not None else 1
+
+        newest: list[Block] = []
+        remaining = budget
+        for block in reversed(candidates):
+            required = minimum_rows(block)
+            if required <= remaining:
+                newest.append(block)
+                remaining -= required
+                continue
+            if not newest:
+                newest.append(block)
+                remaining = 0
+            break
+        selected = list(reversed(newest))
+        allocations = {
+            block.id: min(minimum_rows(block), budget)
+            for block in selected
+        }
 
         def desired(block: Block) -> int:
             if block.kind == "tool":
@@ -176,7 +195,10 @@ class Frame:
             for block in group:
                 if remaining == 0:
                     break
-                extra = min(remaining, max(0, desired(block) - 1))
+                extra = min(
+                    remaining,
+                    max(0, desired(block) - allocations[block.id]),
+                )
                 allocations[block.id] += extra
                 remaining -= extra
         return [ViewportItem(block, allocations[block.id]) for block in selected]

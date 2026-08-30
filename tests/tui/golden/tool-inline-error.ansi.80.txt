@@ -1,1 +1,2 @@
+
 <ESC>[31m✘ Error: permission denied<ESC>[0m

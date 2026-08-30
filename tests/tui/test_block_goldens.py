@@ -375,6 +375,16 @@ def test_block_golden(
     assert golden.read_text() == actual
 
 
+def test_transcript_content_goldens_have_one_leading_blank_row() -> None:
+    for sample in SAMPLES:
+        if sample.block.kind not in {"thinking", "assistant", "tool"}:
+            continue
+        captured = _capture(sample, ANSI_THEME, 80)
+        assert captured.startswith("\n")
+        assert not captured.startswith("\n\n")
+        assert not captured.endswith("\n\n")
+
+
 def test_width_sensitive_goldens_are_distinct() -> None:
     sample = next(sample for sample in SAMPLES if sample.name == "user")
 

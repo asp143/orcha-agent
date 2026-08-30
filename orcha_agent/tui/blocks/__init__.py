@@ -6,10 +6,17 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from rich import box
+from rich.console import Group
+from rich.text import Text
 
 from orcha_agent.tui.frame import Block
 
 BlockRenderer = Callable[[Block, Any, int, int, bool], Any]
+LEADING_SPACER_KINDS = frozenset({"assistant", "thinking", "tool"})
+
+
+def with_leading_spacer(renderable: Any) -> Group:
+    return Group(Text(""), renderable)
 
 DEFAULT_THEME: dict[str, Any] = {
     "id": "default",
@@ -183,8 +190,10 @@ __all__ = [
     "BlockRendererDispatcher",
     "DEFAULT_RENDERERS",
     "DEFAULT_THEME",
+    "LEADING_SPACER_KINDS",
     "theme_id",
+    "theme_spinner",
     "theme_symbol",
     "theme_value",
-    "theme_spinner",
+    "with_leading_spacer",
 ]

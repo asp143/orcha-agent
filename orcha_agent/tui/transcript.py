@@ -41,12 +41,31 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _thinking_text(part: Mapping[str, Any]) -> str:
+def _thinking_fragments(
+    part: Mapping[str, Any],
+) -> list[tuple[tuple[str, Any] | None, str]]:
     if part.get("type") == "reasoning":
-        return _text(part.get("summary"))
+        summary = part.get("summary")
+        if isinstance(summary, (list, tuple)):
+            fragments: list[tuple[tuple[str, Any] | None, str]] = []
+            for position, item in enumerate(summary):
+                part_key: tuple[str, Any] | None = ("position", position)
+                if isinstance(item, Mapping) and "index" in item:
+                    part_key = ("index", item["index"])
+                fragments.append((part_key, _text(item)))
+            return fragments
+        return [(None, _text(summary))]
     if part.get("type") == "thinking":
-        return _text(part.get("thinking"))
-    return ""
+        return [(None, _text(part.get("thinking")))]
+    return []
+
+
+def _reasoning_run_key(part: Mapping[str, Any]) -> tuple[str, Any] | None:
+    if "index" in part:
+        return ("index", part["index"])
+    if part.get("id") is not None:
+        return ("id", part["id"])
+    return None
 
 
 def _reasoning_tokens(chunk: Any) -> int | None:
@@ -79,6 +98,7 @@ class Transcript:
         self.registry = registry
         self.scheduler = scheduler
         self._source_blocks: dict[tuple[str, str], Block] = {}
+        self._source_tails: dict[str, Block] = {}
         self._tools: dict[str, Block] = {}
         self._read_groups: dict[str, Block] = {}
 
@@ -152,6 +172,7 @@ class Transcript:
                 if prior.state is BlockState.ACTIVE:
                     prior.settle()
             self._source_blocks.clear()
+            self._source_tails.clear()
             self._tools.clear()
             self._read_groups.clear()
             if self._legacy(event):
@@ -206,6 +227,7 @@ class Transcript:
 
     def _tool_start(self, event: ToolCallStart) -> None:
         source = str(event.source_id or "main")
+        self._source_tails.pop(source, None)
         block = self._read_groups.get(source) if event.name == "read_file" else None
         can_group = (
             block is not None
@@ -269,21 +291,37 @@ class Transcript:
         if self.scheduler is not None:
             self.scheduler.request_invalidate()
 
-    def _source_block(self, source_id: str, kind: str, role: str) -> Block:
+    def _source_block(
+        self,
+        source_id: str,
+        kind: str,
+        role: str,
+        *,
+        run_key: tuple[str, Any] | None = None,
+    ) -> Block:
         key = (source_id, kind)
         block = self._source_blocks.get(key)
-        if block is not None:
+        if (
+            block is not None
+            and self._source_tails.get(source_id) is block
+            and (
+                kind != "thinking"
+                or run_key is None
+                or block.data.get("run_key") == run_key
+            )
+        ):
             return block
         data: dict[str, Any] = {"text": "", "role": role}
         if kind == "assistant":
-            data.update(role=role, subagent=role == "subagent" or role.startswith("subagent:"))
+            data.update(
+                role=role,
+                subagent=role == "subagent" or role.startswith("subagent:"),
+            )
+        else:
+            data.update(run_key=run_key, summary_part=None)
         block = self.frame.add(kind, data, source_id=source_id)
-        if kind == "thinking":
-            assistant = self._source_blocks.get((source_id, "assistant"))
-            if assistant is not None:
-                self.frame.blocks.remove(block)
-                self.frame.blocks.insert(self.frame.blocks.index(assistant), block)
         self._source_blocks[key] = block
+        self._source_tails[source_id] = block
         return block
 
     def _model_chunk(self, event: ModelChunk) -> None:
@@ -293,25 +331,49 @@ class Transcript:
         thinking_seen = False
         usage_tokens = _reasoning_tokens(event.chunk)
         for part in parts:
-            if isinstance(part, Mapping) and part.get("type") in {"reasoning", "thinking"}:
-                content = _thinking_text(part)
-                kind = "thinking"
-            else:
-                content = _text(part)
-                kind = "assistant"
+            if (
+                isinstance(part, Mapping)
+                and part.get("type") in {"reasoning", "thinking"}
+            ):
+                run_key = _reasoning_run_key(part)
+                for summary_part, content in _thinking_fragments(part):
+                    if not content:
+                        continue
+                    block = self._source_block(
+                        source_id,
+                        "thinking",
+                        event.role,
+                        run_key=run_key,
+                    )
+                    prior = str(block.data["text"])
+                    previous_part = block.data.get("summary_part")
+                    separator = (
+                        "\n"
+                        if prior
+                        and summary_part is not None
+                        and previous_part is not None
+                        and summary_part != previous_part
+                        else ""
+                    )
+                    accumulated = f"{prior}{separator}{content}"
+                    changes: dict[str, Any] = {
+                        "text": accumulated,
+                        "summary_part": summary_part,
+                        "reasoning_tokens": (
+                            usage_tokens
+                            if usage_tokens is not None
+                            else max(1, (len(accumulated) + 3) // 4)
+                        ),
+                    }
+                    block.update(changes)
+                    thinking_seen = True
+                continue
+
+            content = _text(part)
             if not content:
                 continue
-            block = self._source_block(source_id, kind, event.role)
-            accumulated = f"{block.data['text']}{content}"
-            changes: dict[str, Any] = {"text": accumulated}
-            if kind == "thinking":
-                thinking_seen = True
-                changes["reasoning_tokens"] = (
-                    usage_tokens
-                    if usage_tokens is not None
-                    else max(1, (len(accumulated) + 3) // 4)
-                )
-            block.update(changes)
+            block = self._source_block(source_id, "assistant", event.role)
+            block.update(text=f"{block.data['text']}{content}")
         if usage_tokens is not None:
             thinking = self._source_blocks.get((source_id, "thinking"))
             if (
@@ -353,6 +415,11 @@ class Transcript:
             for key, block in self._source_blocks.items()
             if block.id not in committed
         }
+        self._source_tails = {
+            key: block
+            for key, block in self._source_tails.items()
+            if block.id not in committed
+        }
         self._tools = {
             key: block
             for key, block in self._tools.items()
@@ -366,6 +433,7 @@ class Transcript:
     def clear(self) -> None:
         self.frame.blocks.clear()
         self._source_blocks.clear()
+        self._source_tails.clear()
         self._tools.clear()
         self._read_groups.clear()
 

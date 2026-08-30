@@ -10,11 +10,12 @@ from dataclasses import replace
 from typing import Any
 
 from rich.cells import cell_len, set_cell_size
+from rich.console import Group
 from rich.text import Text
 
 from orcha_agent.tui.frame import Block, BlockState
 
-from . import theme_spinner, theme_symbol, theme_value
+from . import theme_spinner, theme_symbol, theme_value, with_leading_spacer
 from .diff import render as render_diff
 
 SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
@@ -468,15 +469,18 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     return _frame(header, rows, width=width, budget_rows=budget_rows, theme=theme, border_token=_border_token(name, state), sections=sections, edit=edit)
 
 
-def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Text | None:
+def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Group | Text | None:
     try:
-        return _render_impl(block, theme, width, budget_rows, expanded)
+        content = _render_impl(block, theme, width, budget_rows, expanded)
     except Exception:
         name = _label(str(block.data.get("name", "tool")))
         args = block.data.get("args", {})
-        path = _path(args) if isinstance(args, Mapping) else ""
+        path = f" {_path(args)}" if isinstance(args, Mapping) and _path(args) else ""
         raw = _result_text(block.data.get("result")) or _text(block.data)
-        return Text(f"✘ {name}{f' {path}' if path else ''}\n{raw}", style=str(theme_value(theme, "error")))
+        content = Text(f"✘ {name}{path}\n{raw}", style=str(theme_value(theme, "error")))
+    if content is None or block.data.get("leading_spacer") is False:
+        return content
+    return with_leading_spacer(content)
 
 
 __all__ = ["EXPAND_HINT", "SPINNER_FRAMES", "render"]

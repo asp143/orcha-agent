@@ -1,1 +1,2 @@
-<ESC>[38;2;137;220;235m❊ Thinking · 144 · 18.0 toks/s<ESC>[0m
+
+<ESC>[38;2;137;220;235m❊ Thinking… · 144 · 18.0 tok/s<ESC>[0m

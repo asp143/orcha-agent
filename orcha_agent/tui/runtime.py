@@ -50,7 +50,13 @@ from orcha_agent.core.models import ModelResolver
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
 
-from .blocks import BlockRendererDispatcher, DEFAULT_RENDERERS, DEFAULT_THEME, theme_spinner
+from .blocks import (
+    BlockRendererDispatcher,
+    DEFAULT_RENDERERS,
+    DEFAULT_THEME,
+    LEADING_SPACER_KINDS,
+    theme_spinner,
+)
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -1218,7 +1224,8 @@ class ApplicationRuntime:
             10_000,
             force_terminal=False,
         )
-        return max(1, len(rendered.splitlines()))
+        lines = rendered.splitlines()
+        return max(1, len(lines))
 
     def _viewport_text(self) -> Any:
         size = self.application.output.get_size()
@@ -1229,31 +1236,63 @@ class ApplicationRuntime:
             status_rows=1,
         )
         rendered: list[str] = []
-        for item in self.frame.viewport_plan(
+        plan = self.frame.viewport_plan(
             budget,
             width=width,
             measure=self._measure_block,
-        ):
+            minimum=lambda block: (
+                2 if block.kind in LEADING_SPACER_KINDS else 1
+            ),
+        )
+        for index, item in enumerate(plan):
+            render_rows = item.rows
+            if (
+                item.block.kind in LEADING_SPACER_KINDS
+                and render_rows > 1
+            ):
+                render_rows -= 1
             value = self._capture_block(
                 item.block,
                 width,
-                item.rows,
+                render_rows,
                 force_terminal=True,
             )
             lines = value.splitlines(keepends=True)
-            if len(lines) > item.rows:
+            leading: list[str] = []
+            content_rows = item.rows
+            if (
+                item.block.kind in LEADING_SPACER_KINDS
+                and lines
+                and not lines[0].strip()
+            ):
+                if content_rows > 1:
+                    leading, lines = lines[:1], lines[1:]
+                    content_rows -= 1
+                else:
+                    lines = lines[1:]
+            if content_rows <= 0:
+                lines = []
+            elif len(lines) > content_rows:
                 lines = (
-                    lines[-item.rows :]
+                    lines[-content_rows:]
                     if item.block.kind in {"assistant", "thinking"}
-                    else lines[: item.rows]
+                    else lines[:content_rows]
                 )
-            rendered.append("".join(lines))
-        return ANSI("\n".join(rendered))
+            rendered.append("".join([*leading, *lines]))
+            if (
+                index + 1 < len(plan)
+                and plan[index + 1].block.kind not in LEADING_SPACER_KINDS
+            ):
+                rendered.append("\n")
+        output_lines = "".join(rendered).splitlines(keepends=True)
+        if len(output_lines) > budget:
+            output_lines = output_lines[-budget:] if budget else []
+        return ANSI("".join(output_lines))
 
     def _write_blocks(self, blocks: list[Block]) -> None:
         width = max(1, self.application.output.get_size().columns)
         for index, block in enumerate(blocks):
-            if index:
+            if index and block.kind not in LEADING_SPACER_KINDS:
                 self._scrollback.print()
             self._print_block(
                 self._scrollback,

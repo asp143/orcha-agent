@@ -245,6 +245,74 @@ async def test_release_committed_drops_tool_and_source_accumulator_references() 
 
 
 @pytest.mark.asyncio
+async def test_reasoning_summary_stream_preserves_parts_runs_and_event_order() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    async def reasoning(run: int, part: int, text: str) -> None:
+        await transcript.handle(
+            ModelChunk(
+                chunk=AIMessageChunk(
+                    content=[
+                        {
+                            "type": "reasoning",
+                            "index": run,
+                            "summary": [
+                                {
+                                    "type": "summary_text",
+                                    "index": part,
+                                    "text": text,
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                role="main",
+                source_id="main",
+            )
+        )
+
+    await reasoning(0, 0, "directory")
+    await reasoning(0, 1, "Explor")
+    await reasoning(0, 1, "ing…")
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content=[{"type": "text", "text": "Found it.", "index": 1}]),
+            role="main",
+            source_id="main",
+        )
+    )
+    await transcript.handle(
+        ToolCallStart(name="read_file", args={"path": "a.py"}, id="read-a", source_id="main")
+    )
+    await transcript.handle(ToolCallEnd(name="read_file", id="read-a", result="ok"))
+    await reasoning(2, 0, "Reading…")
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content=[{"type": "text", "text": "Done.", "index": 3}]),
+            role="main",
+            source_id="main",
+        )
+    )
+
+    assert [block.kind for block in frame.blocks] == [
+        "thinking",
+        "assistant",
+        "tool",
+        "thinking",
+        "assistant",
+    ]
+    assert [block.data["text"] for block in frame.blocks if block.kind == "thinking"] == [
+        "directory\nExploring…",
+        "Reading…",
+    ]
+    assert [block.data["text"] for block in frame.blocks if block.kind == "assistant"] == [
+        "Found it.",
+        "Done.",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_thinking_usage_and_ticker_metrics_flow_through_transcript() -> None:
     frame = Frame()
     scheduler = FrameScheduler(

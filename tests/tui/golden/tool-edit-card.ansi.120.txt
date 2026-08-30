@@ -1,3 +1,4 @@
+
 <ESC>[90m+--- ✔ Edit: src/demo.py:9 ⟦+1/-1⟧ ------------------------------------------------------------------------------------+<ESC>[0m
 <ESC>[90m|<ESC>[0m<ESC>[2;90m…<ESC>[0m<ESC>[90m                                                                                                                     <ESC>[0m<ESC>[90m|<ESC>[0m
 <ESC>[90m|<ESC>[0m<ESC>[90m   9│<ESC>[0m<ESC>[2;90mcontext<ESC>[0m<ESC>[90m                                                                                                          <ESC>[0m<ESC>[90m|<ESC>[0m

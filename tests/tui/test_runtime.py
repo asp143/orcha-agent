@@ -25,7 +25,7 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.registry import Registry
-from orcha_agent.tui.frame import Block
+from orcha_agent.tui.frame import Block, Frame
 from orcha_agent.tui.runtime import (
     ApplicationRuntime,
     UIFacade,
@@ -259,7 +259,7 @@ async def test_scrollback_places_exactly_one_blank_row_between_blocks() -> None:
         await runtime.scheduler.aclose()
 
     lines = [line.rstrip() for line in stream.getvalue().splitlines()]
-    assert lines == ["first", "", "second"]
+    assert lines == ["", "first", "", "second"]
 
 
 @pytest.mark.asyncio
@@ -277,7 +277,66 @@ async def test_viewport_places_exactly_one_blank_row_between_blocks() -> None:
 
     plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered.value)
     lines = [line.rstrip() for line in plain.splitlines()]
-    assert lines == ["first", "", "second"]
+    assert lines == ["", "first", "", "second"]
+
+
+@pytest.mark.asyncio
+async def test_viewport_reserves_leading_spacer_rows_and_keeps_newest_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        Frame,
+        "row_budget",
+        staticmethod(lambda **_kwargs: 2),
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        runtime.frame.add("assistant", {"text": "first"})
+        runtime.frame.add("assistant", {"text": "second"})
+        rendered = runtime._viewport_text()
+        await runtime.scheduler.aclose()
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered.value)
+    lines = [line.rstrip() for line in plain.splitlines()]
+    assert lines == ["", "second"]
+
+
+@pytest.mark.asyncio
+async def test_tool_viewport_reserves_spacer_before_selecting_card_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        Frame,
+        "row_budget",
+        staticmethod(lambda **_kwargs: 3),
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        runtime.frame.add(
+            "tool",
+            {
+                "name": "read_file",
+                "args": {"path": "a.py"},
+                "result": "one line",
+            },
+        )
+        rendered = runtime._viewport_text()
+        await runtime.scheduler.aclose()
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered.value)
+    lines = [line.rstrip() for line in plain.splitlines()]
+    assert len(lines) == 3
+    assert lines[0] == ""
+    assert lines[1].startswith("╭")
+    assert lines[2].startswith("╰")
 
 
 

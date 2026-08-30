@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+from io import StringIO
+
 import pytest
 from rich import box
+from rich.console import Console
 
 from orcha_agent.tui.blocks.hud import render_subagents, render_todo
 from orcha_agent.tui.blocks.thinking import render as render_thinking
 from orcha_agent.tui.blocks.tool import render as render_tool
 from orcha_agent.tui.frame import Block, BlockState
 from orcha_agent.tui.symbols import SYMBOL_KEYS, SYMBOL_PRESETS, resolve_symbols
+
+
+def _plain(renderable: object | None) -> str:
+    if renderable is None:
+        return ""
+    output = StringIO()
+    Console(
+        file=output,
+        width=80,
+        force_terminal=False,
+        color_system=None,
+    ).print(renderable)
+    return output.getvalue().strip()
 
 
 def test_all_symbol_presets_cover_the_complete_surface() -> None:
@@ -190,17 +206,9 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
         False,
     )
 
-    assert pending is not None and pending.plain.startswith("B ")
-    assert success is not None and success.plain.startswith("S ")
-    assert error is not None and error.plain.startswith("E ")
-    assert folded is not None and folded.plain.startswith("@= ")
-    assert grouped is not None and "S Bash (2)" in grouped.plain
-    assert thinking.plain.startswith("B ")
-    assert todo is not None and "S done" in todo.plain
-    assert subagents is not None and "Task | 1 agents" in subagents.plain
-    assert all(
-        rendered.plain.isascii()
-        for rendered in (
+    rendered = tuple(
+        _plain(value)
+        for value in (
             pending,
             success,
             error,
@@ -210,5 +218,36 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
             todo,
             subagents,
         )
-        if rendered is not None
     )
+    (
+        pending_text,
+        success_text,
+        error_text,
+        folded_text,
+        grouped_text,
+        thinking_text,
+        todo_text,
+        subagents_text,
+    ) = rendered
+
+    assert pending_text.startswith("B ")
+    assert success_text.startswith("S ")
+    assert error_text.startswith("E ")
+    assert folded_text.startswith("@= ")
+    assert "S Bash (2)" in grouped_text
+    assert thinking_text.startswith("B ")
+    assert "S done" in todo_text
+    assert "Task | 1 agents" in subagents_text
+    assert all(
+        value.isascii()
+        for value in (
+            pending_text,
+            success_text,
+            error_text,
+            folded_text,
+            grouped_text,
+            todo_text,
+            subagents_text,
+        )
+    )
+    assert thinking_text.replace("…", "...").isascii()
