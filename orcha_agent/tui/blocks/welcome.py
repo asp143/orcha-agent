@@ -15,11 +15,12 @@ from orcha_agent.tui.frame import Block
 from . import theme_value
 
 _MAX_WIDTH = 100
-_PREFERRED_LEFT = 26
 _MIN_LEFT = 13
 _MIN_RIGHT = 20
+_LEFT_PADDING = 1
 _SESSION_SLOTS = 4
 _HINT_SLOTS = 4
+_TIP_ROWS = 2
 
 
 def _slots(value: Any, count: int) -> list[str]:
@@ -28,6 +29,13 @@ def _slots(value: Any, count: int) -> list[str]:
     else:
         found = []
     return [*found, *([""] * (count - len(found)))]
+
+
+def _logo_width(block: Block) -> int:
+    return max(
+        (Text(line).cell_len for line in _slots(block.data.get("logo"), 5)),
+        default=0,
+    )
 
 
 def _logo(block: Block, *, compact: bool) -> Text:
@@ -64,6 +72,31 @@ def _fit(value: Text | str, width: int, *, center: bool = False) -> Text:
     return rendered
 
 
+def _tip_lines(value: Any, width: int) -> list[str]:
+    """Wrap the tip like omp: label on the first row, indented continuation."""
+
+    label = "Tip: "
+    words = str(value).split()
+    body_width = max(1, width - 1 - len(label))
+    rows: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > body_width:
+            rows.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        rows.append(current)
+    rows = rows[:_TIP_ROWS]
+    if len(rows) == _TIP_ROWS and len(words) > sum(len(r.split()) for r in rows):
+        rows[-1] = rows[-1][: max(0, body_width - 1)] + "…"
+    rendered = [f"{label}{rows[0]}" if rows else ""]
+    rendered.extend(" " * len(label) + row for row in rows[1:])
+    return [*rendered, *([""] * (_TIP_ROWS - len(rendered)))]
+
+
 def _right(block: Block, width: int, *, ascii_only: bool) -> Text:
     rule = "----" if ascii_only else "────"
     lines = [
@@ -71,8 +104,7 @@ def _right(block: Block, width: int, *, ascii_only: bool) -> Text:
         *_slots(block.data.get("sessions"), _SESSION_SLOTS),
         f"{rule} Hints",
         *_slots(block.data.get("hints"), _HINT_SLOTS),
-        _line("Tip", block.data.get("tip", ""), width),
-        "",
+        *_tip_lines(block.data.get("tip", ""), width),
     ]
     rendered = Text()
     for index, line in enumerate(lines):
@@ -118,13 +150,11 @@ def render(
     border = str(theme_value(theme, "border", "cyan"))
     inner = max(1, target - 2)
     dual_content = max(1, target - 3)
-    desired_left = max(
-        _MIN_LEFT,
-        min(_PREFERRED_LEFT, max(_MIN_LEFT, int(dual_content * 0.35))),
-    )
-    left_width = min(desired_left, max(1, dual_content - _MIN_RIGHT))
+    # The left column is sized by the logo itself, not a fixed ratio: omp's
+    # constants assume a 12-column logo and would ellipsize wider ones.
+    left_width = max(_MIN_LEFT, _logo_width(block) + 2 * _LEFT_PADDING)
     right_width = max(1, dual_content - left_width)
-    show_right = left_width >= _MIN_LEFT and right_width >= _MIN_RIGHT
+    show_right = right_width >= _MIN_RIGHT
     if show_right:
         separator = "|" if ascii_only else "│"
         table = Table.grid(expand=False, padding=0)
@@ -139,7 +169,9 @@ def render(
         content: Any = table
     else:
         content = Text()
-        content.append(_logo(block, compact=True))
+        content.append(
+            _logo(block, compact=_logo_width(block) > inner)
+        )
         content.append("\n" + _line("Model", block.data.get("model", ""), inner))
         content.append("\n" + _line("Mode", block.data.get("mode", ""), inner))
         content.append("\n" + _line("Cwd", block.data.get("cwd", ""), inner))

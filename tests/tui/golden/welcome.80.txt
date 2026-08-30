@@ -1,14 +1,14 @@
 ╭────────────────────────────────────────────────────────────────────────────╮
-│                          │ ──── Recent sessions                            │
-│      Welcome back!       │ • first (2h ago)                                │
-│                          │ • second (1d ago)                               │
-│       ████████████       │                                                 │
-│          ██  ██          │                                                 │
-│          ██  ██          │ ──── Hints                                      │
-│          ▒▒  ██          │ ✓ Trusted folder                                │
-│              ██          │ 3 plugins loaded                                │
-│                          │ provider ready                                  │
-│     claude-sonnet-4      │                                                 │
-│          normal          │ Tip: Use Ctrl+O to expand tool output.          │
-│        ~/project         │                                                 │
+│              │ ──── Recent sessions                                        │
+│Welcome back! │ • first (2h ago)                                            │
+│              │ • second (1d ago)                                           │
+│ ████████████ │                                                             │
+│    ██  ██    │                                                             │
+│    ██  ██    │ ──── Hints                                                  │
+│    ▒▒  ██    │ ✓ Trusted folder                                            │
+│        ██    │ 3 plugins loaded                                            │
+│              │ provider ready                                              │
+│claude-sonnet…│                                                             │
+│    normal    │ Tip: Use Ctrl+O to expand tool output.                      │
+│  ~/project   │                                                             │
 ╰────────────────────────────────────────────────────────────────────────────╯
