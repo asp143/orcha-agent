@@ -66,6 +66,25 @@ async def test_transcript_maps_turn_stream_tool_and_thread_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_blocks_expose_live_elapsed_then_settled_duration() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(
+        ToolCallStart(name="execute", args={"command": "sleep"}, id="timed")
+    )
+    block = frame.blocks[-1]
+    assert block.data["elapsed"] == 0.0
+
+    block.created -= 2.0
+    await transcript.handle(ToolCallEnd(name="execute", id="timed", result="ok"))
+
+    assert "elapsed" not in block.data
+    assert isinstance(block.data["duration"], float)
+    assert block.data["duration"] >= 2.0
+
+
+@pytest.mark.asyncio
 async def test_turn_start_resets_source_and_tool_accumulators() -> None:
     frame = Frame()
     transcript = Transcript(frame)

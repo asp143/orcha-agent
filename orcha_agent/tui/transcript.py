@@ -1,6 +1,7 @@
 """Translate kernel events and console output into transcript blocks."""
 
 from __future__ import annotations
+import time
 
 from collections.abc import Mapping
 from typing import Any
@@ -102,8 +103,15 @@ class Transcript:
         self._tools: dict[str, Block] = {}
         self._read_groups: dict[str, Block] = {}
 
-    def _commit(self, block: Block, *, immediate: bool = False) -> None:
+    @staticmethod
+    def _settle(block: Block) -> None:
+        if block.kind == "tool" and block.state is BlockState.ACTIVE:
+            block.data.pop("elapsed", None)
+            block.update(duration=max(0.0, time.monotonic() - block.created))
         block.settle()
+
+    def _commit(self, block: Block, *, immediate: bool = False) -> None:
+        self._settle(block)
         if self.scheduler is None:
             self.frame.commit_ready()
         elif immediate:
@@ -170,7 +178,7 @@ class Transcript:
         if isinstance(event, TurnStart):
             for prior in self.frame.blocks:
                 if prior.state is BlockState.ACTIVE:
-                    prior.settle()
+                    self._settle(prior)
             self._source_blocks.clear()
             self._source_tails.clear()
             self._tools.clear()
@@ -217,7 +225,7 @@ class Transcript:
         if isinstance(event, TurnEnd):
             for block in self.frame.blocks:
                 if block.state is BlockState.ACTIVE:
-                    block.settle()
+                    self._settle(block)
             if self.scheduler is not None:
                 self.scheduler.request_commit()
                 self.scheduler.request_invalidate()
@@ -253,7 +261,12 @@ class Transcript:
         else:
             block = self.frame.add(
                 "tool",
-                {"name": event.name, "args": event.args, "id": event.id},
+                {
+                    "name": event.name,
+                    "args": event.args,
+                    "id": event.id,
+                    "elapsed": 0.0,
+                },
                 source_id=event.source_id,
             )
             if event.name == "read_file":
@@ -268,7 +281,7 @@ class Transcript:
         if block is None:
             block = self.frame.add(
                 "tool",
-                {"name": event.name, "args": {}, "id": event.id},
+                {"name": event.name, "args": {}, "id": event.id, "elapsed": 0.0},
             )
             self._tools[event.id] = block
         calls = block.data.get("calls")
@@ -285,7 +298,7 @@ class Transcript:
             block.update(result=event.result)
             complete = True
         if complete:
-            block.settle()
+            self._settle(block)
             if self.scheduler is not None:
                 self.scheduler.request_commit()
         if self.scheduler is not None:
