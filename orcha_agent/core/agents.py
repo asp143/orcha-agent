@@ -40,7 +40,7 @@ from .session import SessionStore
 from .usage import usage_cost
 
 AgentStatusName = Literal[
-    "running", "idle", "parked", "done", "failed", "aborted"
+    "queued", "running", "idle", "parked", "done", "failed", "aborted"
 ]
 AbortReason = Literal["cancel", "timeout", "budget", "shutdown"]
 _TERMINAL = frozenset({"done", "failed", "aborted"})
@@ -290,7 +290,7 @@ class AgentRun:
         self.advice_outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
             maxsize=_MESSAGE_QUEUE_LIMIT
         )
-        self.status: AgentStatusName = "running"
+        self.status: AgentStatusName = "queued"
         self.abort_reason: AbortReason | None = None
         self.requests = 0
         self.tool_calls = 0
@@ -547,8 +547,8 @@ class AgentRun:
                 await self._settle(status, result)
                 return
             if message is not None:
-                await self._set_status("running")
                 async with self.owner.semaphore:
+                    await self._set_status("running")
                     if self._abort_requested is not None:
                         await self._settle_abort(self._abort_requested)
                         return

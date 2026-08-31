@@ -281,6 +281,7 @@ def test_registry_drives_hud_status_and_title_counts() -> None:
     registry = FakeRegistry(
         [
             FakeRun("running", "Runner", "running", current_tool="read", current_tool_args="{'path': 'a.py'}"),
+            FakeRun("queued", "Queued", "queued"),
             FakeRun("idle", "Idle", "idle"),
             FakeRun("parked", "Parked", "parked"),
             FakeRun("done", "Done", "done"),
@@ -294,9 +295,11 @@ def test_registry_drives_hud_status_and_title_counts() -> None:
     assert data is not None
     assert data["running"] == 1
     assert data["idle"] == 1
+    assert data["queued"] == 1
     assert data["spinner_frame"] == 3
     assert [row["name"] for row in data["agents"]] == [
         "Runner",
+        "Queued",
         "Idle",
         "Parked",
         "Done",
@@ -306,8 +309,8 @@ def test_registry_drives_hud_status_and_title_counts() -> None:
     assert data["agents"][0]["last_tool"] == "read"
     assert "result" not in data["agents"][0]
     assert "partial_findings" not in data["agents"][0]
-    assert agent_counts(ctx) == (1, 1, 3)
-    assert subagents_segment(ctx).text == "1 running · 1 idle"
+    assert agent_counts(ctx) == (1, 1, 4)
+    assert subagents_segment(ctx).text == "1 running · 1 idle · 1 queued"
 
     output = TitleOutput()
     title = TerminalTitle(output, unicode=False)
@@ -317,6 +320,7 @@ def test_registry_drives_hud_status_and_title_counts() -> None:
     title.set_agents(0)
     assert output.titles == [
         "orcha - orchestration",
+        "orcha - orchestration - 4 agents",
         "orcha - orchestration - 3 agents",
         "orcha - orchestration",
     ]

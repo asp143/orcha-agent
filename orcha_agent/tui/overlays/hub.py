@@ -26,6 +26,7 @@ from orcha_agent.tui.frame import Block, Frame
 from .base import Overlay
 
 _STATUS_GLYPHS = {
+    "queued": "○",
     "running": "⟳",
     "idle": "•",
     "parked": "⏸",
@@ -34,6 +35,7 @@ _STATUS_GLYPHS = {
     "aborted": "⏹",
 }
 _STATUS_STYLES = {
+    "queued": "class:warning",
     "running": "class:accent",
     "idle": "class:warning",
     "parked": "class:muted",

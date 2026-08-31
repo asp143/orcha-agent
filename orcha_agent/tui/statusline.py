@@ -343,15 +343,42 @@ def agent_counts(ctx: Any) -> tuple[int, int, int]:
 
 def subagents_segment(ctx: Any) -> Segment | None:
     agents = getattr(ctx, "agents", None)
-    if not callable(getattr(agents, "list", None)):
+    list_runs = getattr(agents, "list", None)
+    if callable(list_runs):
+        rows = list_runs()
+    else:
         legacy = getattr(getattr(ctx, "ui", None), "subagents", ())
-        if isinstance(legacy, list) and legacy:
-            return Segment(str(len(legacy)), "statusLineSubagents", "icon.subagents")
+        rows = legacy if isinstance(legacy, list) else []
+        if rows:
+            queued = sum(
+                isinstance(run, Mapping)
+                and str(run.get("status", "")).casefold() == "queued"
+                for run in rows
+            )
+            if not queued:
+                return Segment(
+                    str(len(rows)), "statusLineSubagents", "icon.subagents"
+                )
+            running, idle, _outstanding = agent_counts(ctx)
+            text = f"{running} running · {idle} idle · {queued} queued"
+            return Segment(text, "statusLineSubagents", "icon.subagents")
+    queued = sum(
+        str(
+            run.get("status", "")
+            if isinstance(run, Mapping)
+            else getattr(run, "status", "")
+        ).casefold()
+        == "queued"
+        for run in rows
+    )
     running, idle, _outstanding = agent_counts(ctx)
-    if not running and not idle:
+    if not running and not idle and not queued:
         return None
+    text = f"{running} running · {idle} idle"
+    if queued:
+        text += f" · {queued} queued"
     return Segment(
-        f"{running} running · {idle} idle",
+        text,
         "statusLineSubagents",
         "icon.subagents",
     )

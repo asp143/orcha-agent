@@ -67,11 +67,12 @@ def subagent_hud_data(ctx: Any, *, spinner_frame: int = 0) -> dict[str, Any] | N
         return None
 
     rows: list[dict[str, Any]] = []
-    running = idle = 0
+    queued = running = idle = 0
     for run in list_runs():
         row = _run_snapshot(run)
         status = str(row.get("status") or "parked").casefold()
         row["status"] = status
+        queued += status == "queued"
         running += status == "running"
         idle += status == "idle"
         rows.append(row)
@@ -79,6 +80,7 @@ def subagent_hud_data(ctx: Any, *, spinner_frame: int = 0) -> dict[str, Any] | N
         return None
     return {
         "agents": rows,
+        "queued": queued,
         "running": running,
         "idle": idle,
         "compact": True,

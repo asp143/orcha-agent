@@ -295,7 +295,14 @@ def render(
     if compact:
         running = int(block.data.get("running", sum(_status(item) == "running" for item in agents)))
         idle = int(block.data.get("idle", sum(_status(item) == "idle" for item in agents)))
+        queued = int(
+            block.data.get(
+                "queued", sum(_status(item) == "queued" for item in agents)
+            )
+        )
         header = f"Subagents {separator} {running} running {separator} {idle} idle"
+        if queued:
+            header += f" {separator} {queued} queued"
     else:
         task_glyph = "Task" if separator.isascii() else "⇶ Task"
         header = f"{task_glyph} {separator} {len(agents)} agents"

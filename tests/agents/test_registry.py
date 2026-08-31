@@ -336,6 +336,7 @@ async def test_cancelled_run_never_starts_after_waiting_for_the_semaphore(
         queued = await agents.spawn("task", "queued", parent="main")
         await first_graph.started.wait()
         await queued.agent_ready.wait()
+        assert queued.status == "queued"
 
         await agents.cancel(queued.id, "cancel")
         await queued.wait_status("aborted")
