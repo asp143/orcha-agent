@@ -47,6 +47,9 @@ jobs:
       - name: Typecheck
         run: uv run pyright
 
+      - name: Install optional Turso adapter
+        run: uv sync --frozen --extra turso
+
       - name: Test with coverage
         run: uv run pytest --cov=orcha_agent --cov-report=term-missing --cov-report=xml:coverage.xml
 

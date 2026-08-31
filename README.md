@@ -141,6 +141,67 @@ Optional watchdog instructions are loaded from the nearest `WATCHDOG.md` or
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
 
+## Optional Turso persistence and structured memory
+
+SQLite remains the default and requires no additional dependency. Turso support is
+opt in and uses a local libSQL embedded replica synchronized with a user-provided
+Turso database:
+
+```bash
+uv sync --extra turso
+export TURSO_DATABASE_URL="libsql://database-name-organization.turso.io"
+export TURSO_AUTH_TOKEN="..."
+```
+
+Configure the replica and a stable logical workspace name in the user config:
+
+```toml
+[persistence]
+backend = "turso"
+replica_path = "~/.local/share/orcha-agent/turso-replica.db"
+sync_on_start = true
+sync_on_exit = true
+# url may be set here when TURSO_DATABASE_URL is not used; it is not a secret.
+# url = "libsql://database-name-organization.turso.io"
+
+[memory_store]
+backend = "hybrid"
+workspace = "orcha-agent"
+```
+
+`hybrid` loads synchronized structured memories alongside configured local memory
+files such as `AGENTS.md` and `CLAUDE.md`. Use `backend = "turso"` to load only
+structured memory. Local repository memory files are never uploaded automatically.
+The workspace is a logical cross-device identifier, not a local filesystem path.
+
+Run `orcha sync` without starting a model or use `/sync` in the TUI. Structured
+memories can be inspected and changed explicitly:
+
+```text
+/memory list
+/memory show test-command
+/memory set global language-preference Prefer Python examples
+/memory set workspace test-command Run uv run pytest
+/memory set-path orcha_agent/core persistence Preserve atomic ledger updates
+/memory delete test-command
+```
+
+When structured memory is enabled, the main agent also receives `list_memories`,
+`read_memory`, and `save_memory` tools. The system prompt permits writes only after
+an explicit user request and rejects content that appears to contain credentials.
+
+The Turso database contains complete session metadata, ledger entries, graph
+checkpoints and pending writes, internal agent sessions, plugin state, and structured
+memories. Composer prompt history in `~/.local/share/orcha-agent/history.db` remains
+local. Treat the remote database as sensitive. Tokens are environment-only and are
+never stored by orcha. Turso roaming currently assumes one active writer per session;
+it is not a collaborative multi-writer protocol, and offline-write behavior is that
+of the installed libSQL SDK rather than a guarantee made by orcha.
+
+Selecting Turso does not upload an existing SQLite `sessions.db`; use a distinct
+replica path. The adapter synchronizes before initializing a new local replica so an
+existing remote schema is hydrated first. SDK, authentication, and synchronization
+errors fail explicitly rather than silently falling back to SQLite.
 
 ## Trust model
 
@@ -433,9 +494,9 @@ Interactive pickers are used by `/help`, `/theme`, `/model`, `/sessions`,
 `/resume`, and `/tree` when no explicit argument is supplied. Direct forms
 remain available:
 
-- session: `/clear`, `/new`, `/sessions`, `/resume [session-id]`,
-  `/tree [--all]`, `/branch [--exact] <id-prefix>`, `/fork`, `/compact`, and
-  `/export [--force] [path]`
+- session and persistence: `/clear`, `/new`, `/sessions`, `/resume [session-id]`,
+  `/tree [--all]`, `/branch [--exact] <id-prefix>`, `/fork`, `/compact`,
+  `/export [--force] [path]`, `/sync`, and `/memory ...`
 - model and UI: `/model [provider:model[,provider:model...]]`, `/mode <name>`,
   `/thinking on|off`, `/theme [name]`, `/keys`, and `/status`
 - providers and runtime: `/providers [prefix]`, `/plugins`,

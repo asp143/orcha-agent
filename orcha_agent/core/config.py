@@ -181,6 +181,31 @@ def _advisor_config(value: Any, parser: argparse.ArgumentParser) -> AdvisorConfi
 
 
 @dataclass(frozen=True, slots=True)
+class PersistenceConfig:
+    """Session persistence settings.
+
+    Authentication is intentionally not represented here. Turso credentials remain
+    in the process environment and are read only by the connection layer.
+    """
+
+    backend: str = "sqlite"
+    replica_path: Path = field(
+        default_factory=lambda: Path.home() / ".local/share/orcha-agent/sessions.db"
+    )
+    url: str | None = None
+    sync_on_start: bool = True
+    sync_on_exit: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryStoreConfig:
+    """Structured memory storage settings, separate from prompt memory files."""
+
+    backend: str = "files"
+    workspace: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
 
@@ -226,6 +251,8 @@ class Config:
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
     advisor: AdvisorConfig = field(default_factory=AdvisorConfig)
+    persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
+    memory_store: MemoryStoreConfig = field(default_factory=MemoryStoreConfig)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -253,6 +280,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("repl", help="start the interactive terminal agent")
+    subcommands.add_parser("sync", help="synchronize configured Turso stores")
     login = subcommands.add_parser("login", help="log in to a provider")
     login.add_argument("prefix")
     modes = login.add_mutually_exclusive_group()
@@ -334,6 +362,100 @@ def _home_path(value: str | Path, home: Path) -> Path:
     if text.startswith("~/"):
         return home / text[2:]
     return Path(text)
+
+
+def _environment_bool(
+    value: str,
+    name: str,
+    parser: argparse.ArgumentParser,
+) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    parser.error(f"{name} must be true or false")
+
+
+def _configured_path(
+    value: object,
+    name: str,
+    home: Path,
+    parser: argparse.ArgumentParser,
+) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        parser.error(f"{name} must be a non-empty path")
+    return _home_path(value, home)
+
+
+def _persistence_config(
+    value: object,
+    parser: argparse.ArgumentParser,
+    *,
+    home: Path,
+    db_path: Path,
+) -> PersistenceConfig:
+    if not isinstance(value, Mapping):
+        parser.error("persistence must be a TOML table")
+
+    backend = value.get("backend", "sqlite")
+    if not isinstance(backend, str) or backend not in {"sqlite", "turso"}:
+        parser.error("[persistence] backend must be sqlite or turso")
+
+    default_replica_path = (
+        db_path
+        if backend == "sqlite"
+        else home / ".local/share/orcha-agent/turso-replica.db"
+    )
+    replica_path = _configured_path(
+        value.get("replica_path", default_replica_path),
+        "[persistence] replica_path",
+        home,
+        parser,
+    )
+    url = value.get("url")
+    if url is not None and (not isinstance(url, str) or not url.strip()):
+        parser.error("[persistence] url must be a non-empty string")
+    sync_on_start = value.get("sync_on_start", True)
+    sync_on_exit = value.get("sync_on_exit", True)
+    if not isinstance(sync_on_start, bool):
+        parser.error("[persistence] sync_on_start must be true or false")
+    if not isinstance(sync_on_exit, bool):
+        parser.error("[persistence] sync_on_exit must be true or false")
+
+    return PersistenceConfig(
+        backend=backend,
+        replica_path=replica_path,
+        url=url.strip() if isinstance(url, str) else None,
+        sync_on_start=sync_on_start,
+        sync_on_exit=sync_on_exit,
+    )
+
+
+def _memory_store_config(
+    value: object,
+    parser: argparse.ArgumentParser,
+) -> MemoryStoreConfig:
+    if not isinstance(value, Mapping):
+        parser.error("memory_store must be a TOML table")
+
+    backend = value.get("backend", "files")
+    if not isinstance(backend, str) or backend not in {"files", "hybrid", "turso"}:
+        parser.error("[memory_store] backend must be files, hybrid, or turso")
+    workspace = value.get("workspace")
+    if workspace is not None and (
+        not isinstance(workspace, str) or not workspace.strip()
+    ):
+        parser.error("[memory_store] workspace must be a non-empty string")
+    if backend in {"hybrid", "turso"} and workspace is None:
+        parser.error(
+            "[memory_store] workspace is required when backend is hybrid or turso"
+        )
+
+    return MemoryStoreConfig(
+        backend=backend,
+        workspace=workspace.strip() if isinstance(workspace, str) else None,
+    )
 
 
 def _memory(value: Any) -> tuple[str, ...]:
@@ -434,6 +556,14 @@ def load_config(
         )
     values = _merge(user_values, project_values)
     core = dict(values.get("core", {}))
+    raw_persistence = values.get("persistence", {})
+    raw_memory_store = values.get("memory_store", {})
+    if not isinstance(raw_persistence, Mapping):
+        parser.error("persistence must be a TOML table")
+    if not isinstance(raw_memory_store, Mapping):
+        parser.error("memory_store must be a TOML table")
+    persistence_values = dict(raw_persistence)
+    memory_store_values = dict(raw_memory_store)
     env_to_core = {
         "ORCHA_MODEL": "model",
         "ORCHA_SUBAGENT_MODEL": "subagent_model",
@@ -447,6 +577,30 @@ def load_config(
     for env_name, key in env_to_core.items():
         if env_name in environ:
             core[key] = environ[env_name]
+
+    env_to_persistence = {
+        "ORCHA_PERSISTENCE_BACKEND": "backend",
+        "ORCHA_PERSISTENCE_REPLICA_PATH": "replica_path",
+        "ORCHA_PERSISTENCE_URL": "url",
+    }
+    for env_name, key in env_to_persistence.items():
+        if env_name in environ:
+            persistence_values[key] = environ[env_name]
+    for env_name, key in {
+        "ORCHA_PERSISTENCE_SYNC_ON_START": "sync_on_start",
+        "ORCHA_PERSISTENCE_SYNC_ON_EXIT": "sync_on_exit",
+    }.items():
+        if env_name in environ:
+            persistence_values[key] = _environment_bool(
+                environ[env_name], env_name, parser
+            )
+
+    for env_name, key in {
+        "ORCHA_MEMORY_STORE_BACKEND": "backend",
+        "ORCHA_MEMORY_STORE_WORKSPACE": "workspace",
+    }.items():
+        if env_name in environ:
+            memory_store_values[key] = environ[env_name]
 
     if args.model is not None:
         core["model"] = args.model
@@ -477,6 +631,23 @@ def load_config(
         trust_all=args.trust_cwd,
     )
     db_path = _home_path(core.get("db_path", "~/.local/share/orcha-agent/sessions.db"), home)
+    persistence_config = _persistence_config(
+        persistence_values,
+        parser,
+        home=home,
+        db_path=db_path,
+    )
+    memory_store_config = _memory_store_config(
+        memory_store_values,
+        parser,
+    )
+    if (
+        memory_store_config.backend in {"hybrid", "turso"}
+        and persistence_config.backend != "turso"
+    ):
+        parser.error(
+            "[memory_store] hybrid and turso backends require [persistence] backend = 'turso'"
+        )
 
     models = values.get("models", {})
     providers = values.get("providers", {})
@@ -567,6 +738,8 @@ def load_config(
         model_roles=model_roles,
         agents=agent_config,
         advisor=advisor_config,
+        persistence=persistence_config,
+        memory_store=memory_store_config,
         pricing={
             str(model_name): {
                 str(key): float(value)

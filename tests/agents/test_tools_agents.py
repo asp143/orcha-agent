@@ -15,8 +15,9 @@ from langchain_core.messages import HumanMessage
 
 from orcha_agent.builtin.tools_agents import _timeout, agent_tools
 from orcha_agent.core.agents import AgentRegistry
-from orcha_agent.core.config import AgentsConfig, Config
+from orcha_agent.core.config import AgentsConfig, Config, MemoryStoreConfig
 from orcha_agent.core.events import EventBus
+from orcha_agent.core.memory_store import MemoryStore
 from orcha_agent.core.plugin import ModeSpec
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
@@ -579,6 +580,57 @@ async def test_hub_jobs_wait_and_cancel_report_observable_statuses(
         assert cancelled["errors"] == []
         assert [item["id"] for item in cancelled["cancelled"]] == [cancel_run.id]
         assert cancel_run.abort_reason == "cancel"
+        await agents.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_gets_structured_memory_tools_when_turso_memory_is_enabled(
+    tmp_path: Path,
+) -> None:
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main-session")
+        cfg = replace(
+            _config(tmp_path),
+            memory_store=MemoryStoreConfig(
+                backend="hybrid",
+                workspace="orcha-agent",
+            ),
+        )
+        agents = AgentRegistry(_plugin_registry(), cfg, store, EventBus(), parent.thread_id)
+        store.structured_memory = MemoryStore(store._connection, store.saver.lock)
+        rebuilds: list[str] = []
+        host = SimpleNamespace(
+            source_id="main",
+            agents=agents,
+            session=store,
+            cfg=cfg,
+            request_rebuild=lambda: rebuilds.append("rebuild"),
+        )
+        tools = _tool_map(host)
+
+        assert {"list_memories", "read_memory", "save_memory"} <= set(tools)
+        saved = await tools["save_memory"].ainvoke(
+            {
+                "name": "test-command",
+                "content": "Run uv run pytest.",
+                "scope": "workspace",
+            }
+        )
+        assert saved == {
+            "id": "test-command",
+            "scope": "workspace",
+            "revision": 1,
+        }
+        assert rebuilds == ["rebuild"]
+        assert await tools["read_memory"].ainvoke({"name": "test-command"}) == [
+            {
+                "id": "test-command",
+                "scope": "workspace",
+                "path": None,
+                "revision": 1,
+                "content": "Run uv run pytest.",
+            }
+        ]
         await agents.shutdown()
 
 

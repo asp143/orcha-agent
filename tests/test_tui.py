@@ -26,6 +26,7 @@ from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.keys import Keys
 
 import orcha_agent.tui.app as app_module
+import orcha_agent.tui.runtime as runtime_module
 from orcha_agent.builtin import commands_core, commands_model
 from orcha_agent.core.config import Config
 from orcha_agent.core.events import (
@@ -52,6 +53,7 @@ from orcha_agent.core.ledger import (
     ResetBoundaryEntry,
     build_context,
 )
+from orcha_agent.core.persistence import TursoPersistenceError
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps, Resolved
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionInfo, SessionStore
@@ -2343,6 +2345,25 @@ async def test_app_context_exposes_live_read_only_registry_and_bus_views(
 
 def _fail_if_prompt_is_constructed(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("non-interactive startup paths must not construct a prompt")
+
+
+@pytest.mark.asyncio
+async def test_run_app_reports_turso_shutdown_failure_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    console = _RecordingConsole()
+
+    async def failed_shutdown(_cfg: Config) -> int:
+        raise TursoPersistenceError("Could not synchronize the Turso replica on exit")
+
+    monkeypatch.setattr(runtime_module, "_run_app", failed_shutdown)
+    monkeypatch.setattr(app_module, "ConsoleOutput", lambda: console)
+
+    status = await run_app(_config(tmp_path))
+
+    assert status == 1
+    assert console.errors == ["Could not synchronize the Turso replica on exit"]
 
 
 @pytest.mark.asyncio

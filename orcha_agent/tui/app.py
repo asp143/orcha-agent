@@ -3,6 +3,7 @@
 from orcha_agent.core.agent import build_agent
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.models import strip_foreign_blocks
+from orcha_agent.core.persistence import open_session_store
 from orcha_agent.core.session import SessionStore
 
 from .console import ConsoleOutput

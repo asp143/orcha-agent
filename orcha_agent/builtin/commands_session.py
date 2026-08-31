@@ -13,6 +13,12 @@ from rich.text import Text
 from rich.tree import Tree
 
 from orcha_agent.core.export import export_session
+from orcha_agent.core.memory_store import (
+    CredentialContentError,
+    MemoryConflictError,
+    MemoryDocument,
+    MemoryScope,
+)
 from orcha_agent.core.ledger import (
     AmbiguousEntry,
     CompactionEntry,
@@ -346,6 +352,195 @@ async def _export(ctx: Any, args: str) -> None:
     ctx.console.print(f"Exported session to {output}")
 
 
+def _structured_memory(ctx: Any) -> Any | None:
+    store = getattr(getattr(ctx, "session", None), "structured_memory", None)
+    if store is None:
+        ctx.console.error(
+            "Structured memory is unavailable. Enable the opt-in Turso memory store."
+        )
+    return store
+
+
+def _memory_workspace(ctx: Any) -> str | None:
+    settings = getattr(getattr(ctx, "cfg", None), "memory_store", None)
+    value = getattr(settings, "workspace", None)
+    return value if isinstance(value, str) and value else None
+
+
+async def _sync(ctx: Any, args: str) -> None:
+    if not _require_no_args(ctx, args, "/sync"):
+        return
+    store = getattr(ctx, "session", None)
+    if store is None or not bool(getattr(store, "supports_sync", False)):
+        ctx.console.error("Sync is only available with the Turso persistence backend.")
+        return
+    try:
+        store.sync()
+    except Exception as exc:
+        ctx.console.error(str(exc))
+        return
+    ctx.console.print("Turso sync complete (sessions and structured memories).")
+
+
+async def _memory(ctx: Any, args: str) -> None:
+    store = _structured_memory(ctx)
+    if store is None:
+        return
+    parts = args.strip().split(maxsplit=1)
+    action = parts[0] if parts else "list"
+    remainder = parts[1] if len(parts) == 2 else ""
+    workspace = _memory_workspace(ctx)
+
+    if action == "list":
+        if remainder:
+            ctx.console.error("Usage: /memory list")
+            return
+        table = Table(title="Structured memories")
+        table.add_column("ID", style="cyan")
+        table.add_column("Scope")
+        table.add_column("Path")
+        table.add_column("Revision", justify="right")
+        for document in store.all():
+            if document.scope is not MemoryScope.GLOBAL and document.workspace != workspace:
+                continue
+            table.add_row(
+                document.id,
+                str(document.scope),
+                str(document.path or ""),
+                str(document.revision),
+            )
+        ctx.console.print(table)
+        return
+
+    if action == "show":
+        name = remainder.strip()
+        if not name:
+            ctx.console.error("Usage: /memory show <id>")
+            return
+        matches = [
+            document
+            for document in store.all()
+            if document.id == name
+            and (
+                document.scope is MemoryScope.GLOBAL
+                or document.workspace == workspace
+            )
+        ]
+        if not matches:
+            ctx.console.error(f"Unknown memory: {name}")
+            return
+        for document in matches:
+            location = str(document.scope)
+            if document.path is not None:
+                location += f":{document.path}"
+            ctx.console.print(
+                f"[{location} revision {document.revision}] {document.id}\n"
+                f"{document.content}"
+            )
+        return
+
+    if action == "set":
+        fields = remainder.split(maxsplit=2)
+        if len(fields) != 3 or fields[0] not in {"global", "workspace"}:
+            ctx.console.error(
+                "Usage: /memory set global|workspace <id> <content>"
+            )
+            return
+        scope_name, name, content = fields
+        if scope_name == "global":
+            document = MemoryDocument.global_document(name, content)
+        else:
+            if workspace is None:
+                ctx.console.error("A [memory_store] workspace is required.")
+                return
+            document = MemoryDocument.workspace_document(name, content, workspace)
+        current = store.get(
+            name,
+            scope=document.scope,
+            workspace=document.workspace,
+            path=document.path,
+            include_deleted=True,
+        )
+        expected = 0 if current is None else current.revision
+        try:
+            saved = store.save(document, expected_revision=expected)
+        except (CredentialContentError, MemoryConflictError, ValueError) as exc:
+            ctx.console.error(str(exc))
+            return
+        rebuild = getattr(ctx, "request_rebuild", None)
+        if callable(rebuild):
+            rebuild()
+        ctx.console.print(f"Saved memory {saved.id} at revision {saved.revision}.")
+        return
+
+    if action == "set-path":
+        fields = remainder.split(maxsplit=2)
+        if len(fields) != 3:
+            ctx.console.error("Usage: /memory set-path <path> <id> <content>")
+            return
+        scope_path, name, content = fields
+        if workspace is None:
+            ctx.console.error("A [memory_store] workspace is required.")
+            return
+        document = MemoryDocument.path_document(name, content, workspace, scope_path)
+        current = store.get(
+            name,
+            scope=document.scope,
+            workspace=workspace,
+            path=scope_path,
+            include_deleted=True,
+        )
+        expected = 0 if current is None else current.revision
+        try:
+            saved = store.save(document, expected_revision=expected)
+        except (CredentialContentError, MemoryConflictError, ValueError) as exc:
+            ctx.console.error(str(exc))
+            return
+        rebuild = getattr(ctx, "request_rebuild", None)
+        if callable(rebuild):
+            rebuild()
+        ctx.console.print(f"Saved memory {saved.id} at revision {saved.revision}.")
+        return
+
+    if action == "delete":
+        name = remainder.strip()
+        if not name:
+            ctx.console.error("Usage: /memory delete <id>")
+            return
+        matches = [
+            document
+            for document in store.all()
+            if document.id == name
+            and (
+                document.scope is MemoryScope.GLOBAL
+                or document.workspace == workspace
+            )
+        ]
+        if not matches:
+            ctx.console.error(f"Unknown memory: {name}")
+            return
+        if len(matches) != 1:
+            ctx.console.error(
+                f"Memory {name!r} exists at multiple scopes; delete is ambiguous."
+            )
+            return
+        try:
+            deleted = store.delete(matches[0])
+        except MemoryConflictError as exc:
+            ctx.console.error(str(exc))
+            return
+        rebuild = getattr(ctx, "request_rebuild", None)
+        if callable(rebuild):
+            rebuild()
+        ctx.console.print(f"Deleted memory {deleted.id} at revision {deleted.revision}.")
+        return
+
+    ctx.console.error(
+        "Usage: /memory [list|show <id>|set global|workspace <id> <content>|"
+        "set-path <path> <id> <content>|delete <id>]"
+    )
+
+
 def register(api: PluginAPI) -> None:
     api.add_command(
         "tree", _tree, help="Show the current session tree: /tree [--all]"
@@ -366,3 +561,9 @@ def register(api: PluginAPI) -> None:
     )
     api.add_command("sessions", _sessions, help="List saved sessions")
     api.add_command("resume", _resume, help="Resume a saved session: /resume <session-id>")
+    api.add_command("sync", _sync, help="Synchronize the configured Turso replica")
+    api.add_command(
+        "memory",
+        _memory,
+        help="Manage structured memories: /memory [list|show|set|set-path|delete]",
+    )

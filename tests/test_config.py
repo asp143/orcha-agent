@@ -1,3 +1,4 @@
+from dataclasses import fields
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -539,3 +540,267 @@ def test_ui_statusline_rejects_invalid_values(
     with pytest.raises(SystemExit):
         _load(tmp_path, user_config_path=config)
     assert message in capsys.readouterr().err
+
+
+def test_persistence_and_memory_store_defaults_preserve_sqlite_behavior(
+    tmp_path: Path,
+) -> None:
+    cfg = _load(tmp_path, env={"HOME": str(tmp_path)})
+
+    expected_db_path = tmp_path / ".local/share/orcha-agent/sessions.db"
+    assert cfg.db_path == expected_db_path
+    assert cfg.memory == ("AGENTS.md", "CLAUDE.md")
+    assert cfg.persistence.backend == "sqlite"
+    assert cfg.persistence.replica_path == expected_db_path
+    assert cfg.persistence.url is None
+    assert cfg.persistence.sync_on_start is True
+    assert cfg.persistence.sync_on_exit is True
+    assert cfg.memory_store.backend == "files"
+    assert cfg.memory_store.workspace is None
+
+
+def test_turso_uses_a_distinct_replica_path_without_uploading_legacy_sqlite(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[core]\ndb_path = "~/sessions.db"\n\n'
+        '[persistence]\nbackend = "turso"\n',
+        encoding="utf-8",
+    )
+
+    cfg = _load(
+        tmp_path,
+        env={"HOME": str(tmp_path)},
+        user_config_path=config,
+    )
+
+    assert cfg.db_path == tmp_path / "sessions.db"
+    assert cfg.persistence.replica_path == (
+        tmp_path / ".local/share/orcha-agent/turso-replica.db"
+    )
+    assert cfg.persistence.replica_path != cfg.db_path
+
+
+
+def test_turso_persistence_and_structured_memory_parse_from_toml(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+[core]
+memory = ["PROJECT.md"]
+db_path = "~/legacy-sessions.db"
+
+[persistence]
+backend = "turso"
+replica_path = "~/.cache/orcha/replica.db"
+url = "libsql://example.turso.io"
+sync_on_start = false
+sync_on_exit = true
+
+[memory_store]
+backend = "hybrid"
+workspace = "orcha-agent"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = _load(
+        tmp_path,
+        env={"HOME": str(tmp_path)},
+        user_config_path=config,
+    )
+
+    assert cfg.memory == ("PROJECT.md",)
+    assert cfg.db_path == tmp_path / "legacy-sessions.db"
+    assert cfg.persistence.backend == "turso"
+    assert cfg.persistence.replica_path == tmp_path / ".cache/orcha/replica.db"
+    assert cfg.persistence.url == "libsql://example.turso.io"
+    assert cfg.persistence.sync_on_start is False
+    assert cfg.persistence.sync_on_exit is True
+    assert cfg.memory_store.backend == "hybrid"
+    assert cfg.memory_store.workspace == "orcha-agent"
+
+
+def test_persistence_and_memory_store_environment_overrides_toml(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """
+[persistence]
+backend = "sqlite"
+replica_path = "from-toml.db"
+sync_on_start = true
+sync_on_exit = false
+
+[memory_store]
+backend = "files"
+workspace = "from-toml"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = _load(
+        tmp_path,
+        env={
+            "HOME": str(tmp_path),
+            "ORCHA_PERSISTENCE_BACKEND": "turso",
+            "ORCHA_PERSISTENCE_REPLICA_PATH": "~/env-replica.db",
+            "ORCHA_PERSISTENCE_URL": "libsql://env.turso.io",
+            "ORCHA_PERSISTENCE_SYNC_ON_START": "off",
+            "ORCHA_PERSISTENCE_SYNC_ON_EXIT": "yes",
+            "ORCHA_MEMORY_STORE_BACKEND": "turso",
+            "ORCHA_MEMORY_STORE_WORKSPACE": "env-memory",
+        },
+        user_config_path=config,
+    )
+
+    assert cfg.persistence.backend == "turso"
+    assert cfg.persistence.replica_path == tmp_path / "env-replica.db"
+    assert cfg.persistence.url == "libsql://env.turso.io"
+    assert cfg.persistence.sync_on_start is False
+    assert cfg.persistence.sync_on_exit is True
+    assert cfg.memory_store.backend == "turso"
+    assert cfg.memory_store.workspace == "env-memory"
+
+
+def test_legacy_environment_keys_remain_distinct_from_new_store_settings(
+    tmp_path: Path,
+) -> None:
+    cfg = _load(
+        tmp_path,
+        env={
+            "HOME": str(tmp_path),
+            "ORCHA_BACKEND": "remote_shell",
+            "ORCHA_MEMORY": "ONE.md,TWO.md",
+            "ORCHA_DB_PATH": "~/custom-sessions.db",
+        },
+    )
+
+    assert cfg.backend == "remote_shell"
+    assert cfg.memory == ("ONE.md", "TWO.md")
+    assert cfg.db_path == tmp_path / "custom-sessions.db"
+    assert cfg.persistence.backend == "sqlite"
+    assert cfg.persistence.replica_path == cfg.db_path
+    assert cfg.memory_store.backend == "files"
+
+
+def test_trusted_project_store_tables_deep_merge_over_user_config(
+    tmp_path: Path,
+) -> None:
+    user_config = tmp_path / "user.toml"
+    project_config = tmp_path / "project.toml"
+    user_config.write_text(
+        """
+[persistence]
+backend = "turso"
+url = "libsql://user.turso.io"
+sync_on_start = false
+
+[memory_store]
+backend = "files"
+workspace = "user-memory"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    project_config.write_text(
+        """
+[persistence]
+url = "libsql://project.turso.io"
+sync_on_exit = false
+
+[memory_store]
+backend = "hybrid"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = _load(
+        tmp_path,
+        argv=("--trust-cwd",),
+        user_config_path=user_config,
+        project_config_path=project_config,
+    )
+
+    assert cfg.persistence.backend == "turso"
+    assert cfg.persistence.url == "libsql://project.turso.io"
+    assert cfg.persistence.sync_on_start is False
+    assert cfg.persistence.sync_on_exit is False
+    assert cfg.memory_store.backend == "hybrid"
+    assert cfg.memory_store.workspace == "user-memory"
+
+
+def test_sync_is_a_top_level_command(tmp_path: Path) -> None:
+    cfg = _load(tmp_path, argv=("sync",))
+
+    assert cfg.command == "sync"
+    assert cfg.login_prefix is None
+    assert cfg.login_mode == "auto"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('persistence = "turso"', "persistence must be a TOML table"),
+        ('memory_store = "files"', "memory_store must be a TOML table"),
+        ('[persistence]\nbackend = "postgres"', "backend"),
+        ('[persistence]\nreplica_path = ""', "replica_path"),
+        ('[persistence]\nurl = ""', "url"),
+        ('[persistence]\nsync_on_start = "false"', "sync_on_start"),
+        ('[persistence]\nsync_on_exit = 1', "sync_on_exit"),
+        ('[memory_store]\nbackend = "sqlite"', "backend"),
+        ('[memory_store]\nworkspace = ""', "workspace"),
+        ('[memory_store]\nworkspace = 3', "workspace"),
+    ],
+)
+def test_persistence_and_memory_store_reject_invalid_toml(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    body: str,
+    message: str,
+) -> None:
+    config = tmp_path / "invalid.toml"
+    config.write_text(body + "\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        _load(tmp_path, user_config_path=config)
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ORCHA_PERSISTENCE_SYNC_ON_START",
+        "ORCHA_PERSISTENCE_SYNC_ON_EXIT",
+    ],
+)
+def test_persistence_rejects_invalid_environment_booleans(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    with pytest.raises(SystemExit):
+        _load(tmp_path, env={name: "sometimes"})
+    assert name in capsys.readouterr().err
+
+
+def test_turso_auth_tokens_are_never_copied_into_config(tmp_path: Path) -> None:
+    secret = "secret-that-must-not-be-stored"
+    cfg = _load(
+        tmp_path,
+        env={
+            "TURSO_AUTH_TOKEN": secret,
+            "ORCHA_TURSO_AUTH_TOKEN": secret,
+        },
+    )
+
+    assert "auth_token" not in {item.name for item in fields(cfg)}
+    assert "auth_token" not in {item.name for item in fields(cfg.persistence)}
+    assert secret not in repr(cfg)

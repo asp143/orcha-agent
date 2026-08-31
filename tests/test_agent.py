@@ -22,8 +22,9 @@ from langchain_core.language_models.fake_chat_models import (
 from langchain_core.messages import AIMessage
 
 from orcha_agent.core.agent import build_agent
-from orcha_agent.core.config import Config
+from orcha_agent.core.config import Config, MemoryStoreConfig
 from orcha_agent.core.events import AgentBuildBefore, EventBus
+from orcha_agent.core.memory_store import MemoryDocument, MemoryStore
 from orcha_agent.core.models import ModelResolver
 from orcha_agent.core.plugin import ModeSpec, PluginAPI, ProviderCaps
 from orcha_agent.core.registry import Registry
@@ -623,6 +624,88 @@ async def test_build_agent_sanitizes_absolute_memory_sources_for_backend_root(
 
     assert captured["memory"] == ["/docs/AGENTS.md"]
     assert str(outside_memory) in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_build_agent_injects_structured_turso_memories_with_scope_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = replace(
+        _config(tmp_path, "yolo"),
+        memory_store=MemoryStoreConfig(backend="hybrid", workspace="orcha-agent"),
+    )
+    registry, bus, _ = _kernel()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        "orcha_agent.core.agent.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    with SessionStore(cfg.db_path) as session:
+        session.structured_memory = MemoryStore(session._connection, session.saver.lock)
+        session.structured_memory.save(
+            MemoryDocument.global_document("language", "Prefer Python examples.")
+        )
+        session.structured_memory.save(
+            MemoryDocument.global_document("tests", "Run the wrong test command.")
+        )
+        session.structured_memory.save(
+            MemoryDocument.workspace_document(
+                "tests",
+                "Run uv run pytest.",
+                "orcha-agent",
+            )
+        )
+        session.structured_memory.save(
+            MemoryDocument.global_document("suppressed", "Do not inject me.")
+        )
+        session.structured_memory.delete(
+            "suppressed",
+            scope="workspace",
+            workspace="orcha-agent",
+            expected_revision=0,
+        )
+        session.structured_memory.save(
+            MemoryDocument.path_document(
+                "frontend-style",
+                "Use frontend conventions.",
+                "orcha-agent",
+                "web/frontend",
+            )
+        )
+        session.structured_memory.save(
+            MemoryDocument.global_document(
+                "generated-files",
+                "Generated files may be edited.",
+            )
+        )
+        session.structured_memory.delete(
+            "generated-files",
+            scope="path",
+            workspace="orcha-agent",
+            path="generated",
+            expected_revision=0,
+        )
+        await build_agent(registry, cfg, session, bus)
+
+    prompt = captured["system_prompt"]
+    assert '<memory scope="global" name="language">' in prompt
+    assert "Prefer Python examples." in prompt
+    assert '<memory scope="workspace" name="tests">' in prompt
+    assert "Run uv run pytest." in prompt
+    assert "Run the wrong test command." not in prompt
+    assert "Do not inject me." not in prompt
+    assert (
+        '<memory scope="path" name="frontend-style" path="web/frontend">'
+        in prompt
+    )
+    assert "Use frontend conventions." in prompt
+    assert "sibling paths do not inherit it" in prompt
+    assert (
+        '<memory-suppression name="generated-files" path="generated" />'
+        in prompt
+    )
 
 
 @pytest.mark.asyncio

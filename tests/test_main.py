@@ -117,6 +117,83 @@ def test_main_login_passes_mode_to_auth_plugin_without_starting_repl(
     assert login_calls[0][1] == login_mode
 
 
+def test_sync_command_opens_store_without_starting_repl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Store:
+        supports_sync = True
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            calls.append("close")
+
+        def sync(self) -> None:
+            calls.append("sync")
+
+    cfg = SimpleNamespace(command="sync", cwd=tmp_path, trust_cwd=False)
+    monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
+
+    def open_store(*_args: object, **kwargs: object) -> Store:
+        assert kwargs["initial_sync"] is True
+        store = Store()
+        store.sync()
+        return store
+
+    monkeypatch.setattr(entrypoint, "open_session_store", open_store)
+
+    async def unexpected_run_app(_cfg: object) -> int:
+        raise AssertionError("sync must not start the TUI")
+
+    monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
+    monkeypatch.setattr(sys, "argv", ["orcha", "sync"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        entrypoint.main()
+
+    assert exc_info.value.code == 0
+    assert calls == ["sync", "close"]
+
+
+def test_sync_command_reports_close_failure_without_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    errors: list[str] = []
+
+    class Store:
+        supports_sync = True
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            raise RuntimeError("sanitized close failure")
+
+    monkeypatch.setattr(
+        entrypoint,
+        "open_session_store",
+        lambda *_args, **_kwargs: Store(),
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "ConsoleOutput",
+        lambda: SimpleNamespace(error=errors.append, print=lambda *_args: None),
+    )
+
+    status = entrypoint._run_sync(
+        SimpleNamespace(command="sync", cwd=tmp_path, trust_cwd=False)
+    )
+
+    assert status == 1
+    assert errors == ["sanitized close failure"]
+
+
+
 def test_main_login_reports_auth_failure_without_starting_repl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

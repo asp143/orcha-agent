@@ -54,6 +54,7 @@ from orcha_agent.core.events import (
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.models import ModelResolver
+from orcha_agent.core.persistence import TursoPersistenceError, open_session_store
 from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
@@ -1679,11 +1680,18 @@ class ApplicationRuntime:
             )
 
     def _commit_blocks(self, blocks: list[Block]) -> None:
-        async def write_and_release() -> None:
-            await run_in_terminal(lambda: self._write_blocks(blocks))
+        def write_and_prune() -> None:
+            self._write_blocks(blocks)
+            # Prune inside the suspended-app window: the redraw that follows
+            # run_in_terminal must paint the frame WITHOUT the just-printed
+            # blocks, or it re-renders them at full height and scrolls a
+            # duplicate (plus composer/status rows) into scrollback.
             self.transcript.release_committed(blocks)
             self.frame.prune_committed(blocks)
             self._block_dispatcher.evict(blocks)
+
+        async def write_and_release() -> None:
+            await run_in_terminal(write_and_prune)
             self.application.invalidate()
 
         self._track(write_and_release(), terminal=True)
@@ -1769,15 +1777,22 @@ async def _run_runtime(ctx: AppContext, runtime: Any, bus: EventBus) -> int:
             await ctx.agents.shutdown()
 
 
-async def run_app(cfg: Config) -> int:
+async def _run_app(cfg: Config) -> int:
     """Compose plugins and run the interactive terminal application."""
 
     store_type = _compat("SessionStore", SessionStore)
+    store_factory = _compat("open_session_store", open_session_store)
     console_type = _compat("ConsoleOutput", ConsoleOutput)
     try:
-        store = store_type(cfg.db_path)
+        store = store_factory(cfg, sqlite_store_factory=store_type)
     except Exception as exc:
-        console_type().error(f"Cannot open session database {cfg.db_path}: {exc}")
+        persistence = getattr(cfg, "persistence", None)
+        path = (
+            getattr(persistence, "replica_path", cfg.db_path)
+            if getattr(persistence, "backend", "sqlite") == "turso"
+            else cfg.db_path
+        )
+        console_type().error(f"Cannot open session database {path}: {exc}")
         return 1
     with store:
         history_model: str | list[str] | None = None
@@ -1973,6 +1988,17 @@ async def run_app(cfg: Config) -> int:
                     transcript=runtime.transcript,
                 )
         return await _run_runtime(ctx, runtime, bus)
+
+
+async def run_app(cfg: Config) -> int:
+    """Run the application and turn Turso shutdown failures into clean errors."""
+
+    try:
+        return await _run_app(cfg)
+    except TursoPersistenceError as exc:
+        console_type = _compat("ConsoleOutput", ConsoleOutput)
+        console_type().error(str(exc))
+        return 1
 
 
 async def _show_agents(ctx: Any, _args: str) -> None:

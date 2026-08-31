@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 from collections.abc import Iterable, Mapping
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
@@ -54,6 +55,61 @@ def _memory_sources(cfg: Config) -> list[str]:
             continue
         sources.append(f"/{relative.as_posix()}")
     return sources
+
+
+def _structured_memory_prompt(cfg: Config, session: SessionStore) -> str:
+    store = getattr(session, "structured_memory", None)
+    settings = getattr(cfg, "memory_store", None)
+    workspace = getattr(settings, "workspace", None)
+    if store is None or not isinstance(workspace, str) or not workspace:
+        return ""
+
+    documents = list(store.resolve(workspace=workspace))
+    path_documents = [
+        document
+        for document in store.all(include_deleted=True)
+        if str(document.scope) == "path" and document.workspace == workspace
+    ]
+    documents.extend(document for document in path_documents if not document.deleted)
+    suppressions = [document for document in path_documents if document.deleted]
+    if not documents and not suppressions:
+        return ""
+
+    def precedence(document: Any) -> tuple[int, int, str, str]:
+        scope = str(document.scope)
+        path = str(document.path or "")
+        rank = {"global": 0, "workspace": 1, "path": 2}.get(scope, 3)
+        depth = len([part for part in path.split("/") if part])
+        return rank, depth, path, document.id
+
+    lines = [
+        "<stored_memories>",
+        "These are user-approved durable memories. Apply a path memory only when "
+        "working in that path or its descendants; sibling paths do not inherit it. A "
+        "memory-suppression disables the named less-specific memory in that path and "
+        "its descendants. More specific path memories override workspace memories, "
+        "which override global memories. Current user instructions and closer "
+        "repository memory files take precedence.",
+    ]
+    for document in sorted(documents, key=precedence):
+        attributes = [
+            f'scope="{escape(str(document.scope), quote=True)}"',
+            f'name="{escape(document.id, quote=True)}"',
+        ]
+        if document.path is not None:
+            attributes.append(f'path="{escape(str(document.path), quote=True)}"')
+        lines.append(f"<memory {' '.join(attributes)}>")
+        lines.append(document.content)
+        lines.append("</memory>")
+    for document in sorted(suppressions, key=precedence):
+        lines.append(
+            "<memory-suppression "
+            f'name="{escape(document.id, quote=True)}" '
+            f'path="{escape(str(document.path), quote=True)}" />'
+        )
+    lines.append("</stored_memories>")
+    return "\n".join(lines)
+
 
 
 def _configured_model_specs(
@@ -238,6 +294,7 @@ async def build_agent(
         for value in (
             system_prompt,
             *(fragment.text for fragment in registry.prompt_fragments),
+            _structured_memory_prompt(cfg, session),
         )
         if value
     )
@@ -257,7 +314,11 @@ async def build_agent(
             )
         ),
         "backend": backend,
-        "memory": _memory_sources(cfg),
+        "memory": (
+            []
+            if getattr(getattr(cfg, "memory_store", None), "backend", "files") == "turso"
+            else _memory_sources(cfg)
+        ),
         "interrupt_on": interrupts,
         "system_prompt": prompt or DEFAULT_SYSTEM_PROMPT,
         "checkpointer": session.saver,

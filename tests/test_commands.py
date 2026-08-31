@@ -18,6 +18,7 @@ from rich.console import Console
 from orcha_agent.builtin import commands_core, commands_model, commands_session
 from orcha_agent.core.auth import AuthFlow
 from orcha_agent.core.events import EventBus
+from orcha_agent.core.memory_store import MemoryStore
 from orcha_agent.core.ledger import (
     CompactionEntry,
     Ledger,
@@ -707,6 +708,8 @@ SESSION_COMMANDS = {
     "export",
     "sessions",
     "resume",
+    "sync",
+    "memory",
 }
 
 
@@ -718,6 +721,81 @@ def test_session_commands_own_the_complete_session_surface() -> None:
     core_registry = Registry()
     commands_core.register(_api(core_registry, EventBus()))
     assert "clear" not in core_registry.commands
+
+
+@pytest.mark.asyncio
+async def test_sync_command_uses_turso_session_store_and_rejects_arguments(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, output, _session, _ledger = session_command_context
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    calls: list[str] = []
+    ctx.session.supports_sync = True
+    ctx.session.sync = lambda: calls.append("sync")
+
+    assert await dispatch_command(registry, ctx, "/sync") is True
+    assert calls == ["sync"]
+    assert "sessions and structured memories" in output.getvalue()
+
+    _clear_output(output)
+    assert await dispatch_command(registry, ctx, "/sync now") is True
+    assert calls == ["sync"]
+    assert "Usage: /sync" in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_memory_command_saves_lists_reads_and_tombstones_structured_memory(
+    session_command_context: tuple[SimpleNamespace, StringIO, SessionInfo, Ledger],
+) -> None:
+    ctx, output, _session, _ledger = session_command_context
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    ctx.session.structured_memory = MemoryStore(
+        ctx.session._connection,
+        ctx.session.saver.lock,
+    )
+    ctx.cfg = SimpleNamespace(
+        memory_store=SimpleNamespace(workspace="orcha-agent")
+    )
+    rebuilds: list[str] = []
+    ctx.request_rebuild = lambda: rebuilds.append("rebuild")
+
+    assert await dispatch_command(
+        registry,
+        ctx,
+        "/memory set workspace test-command Run uv run pytest",
+    ) is True
+    assert rebuilds == ["rebuild"]
+    saved = ctx.session.structured_memory.get(
+        "test-command",
+        scope="workspace",
+        workspace="orcha-agent",
+    )
+    assert saved is not None
+    assert saved.content == "Run uv run pytest"
+
+    _clear_output(output)
+    assert await dispatch_command(registry, ctx, "/memory list") is True
+    listed = output.getvalue()
+    assert "test-command" in listed
+    assert "Run uv run pytest" not in listed
+
+    _clear_output(output)
+    assert await dispatch_command(registry, ctx, "/memory show test-command") is True
+    assert "Run uv run pytest" in output.getvalue()
+
+    _clear_output(output)
+    assert await dispatch_command(registry, ctx, "/memory delete test-command") is True
+    assert rebuilds == ["rebuild", "rebuild"]
+    assert (
+        ctx.session.structured_memory.get(
+            "test-command",
+            scope="workspace",
+            workspace="orcha-agent",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

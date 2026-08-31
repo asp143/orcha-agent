@@ -117,6 +117,9 @@ class _AsyncSqliteSaver(SqliteSaver):
 class SessionStore:
     """Own one SQLite connection shared by checkpoints and session metadata."""
 
+    supports_sync = False
+    structured_memory: Any | None = None
+
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -463,6 +466,11 @@ class SessionStore:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def sync(self) -> None:
+        """Report that the local SQLite backend has no remote synchronization."""
+
+        raise RuntimeError("Sync is only available with the Turso persistence backend")
 
     def close(self) -> None:
         self._connection.close()

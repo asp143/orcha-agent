@@ -30,6 +30,9 @@ google = [
 codex = [
     "langchain-openai>=1.6.0",
 ]
+turso = [
+    "libsql>=0.1.11,<0.2",
+]
 
 [build-system]
 requires = ["hatchling"]

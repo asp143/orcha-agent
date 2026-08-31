@@ -11,6 +11,7 @@ from langchain_core.tools import StructuredTool
 
 from orcha_agent.core.agents import bound_payload, bound_text
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
+from orcha_agent.builtin.memory import memory_tools
 
 PLUGIN = PluginSpec(name="tools-agents", version="1.0.0")
 
@@ -534,6 +535,7 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
             *([yield_tool] if not is_main else []),
             hub_tool,
             *([advise_tool] if is_advisor else []),
+            *(memory_tools(host) if is_main else ()),
         ]
     )
 
