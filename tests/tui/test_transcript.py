@@ -20,6 +20,7 @@ from orcha_agent.tui.console import ConsoleOutput
 from orcha_agent.tui.frame import Block, BlockState, Frame, FrameScheduler
 from orcha_agent.tui.transcript import Transcript
 from orcha_agent.tui.blocks.banner import render as render_banner
+from orcha_agent.tui.blocks.thinking import render as render_thinking
 from orcha_agent.tui.blocks import DEFAULT_THEME
 
 
@@ -459,8 +460,19 @@ async def test_reasoning_summary_stream_preserves_parts_runs_and_event_order() -
         "thinking",
         "assistant",
     ]
-    assert [block.data["text"] for block in frame.blocks if block.kind == "thinking"] == [
-        "directory\nExploring…",
+    thinking = [block for block in frame.blocks if block.kind == "thinking"]
+    output = StringIO()
+    Console(file=output, width=80, color_system=None).print(
+        render_thinking(thinking[0], DEFAULT_THEME, 80, 20, False)
+    )
+    assert [line.rstrip() for line in output.getvalue().splitlines()] == [
+        "",
+        "directory",
+        "",
+        "Exploring…",
+    ]
+    assert [block.data["text"] for block in thinking] == [
+        "directory\n\nExploring…",
         "Reading…",
     ]
     assert [block.data["text"] for block in frame.blocks if block.kind == "assistant"] == [

@@ -481,7 +481,7 @@ class Transcript:
                     prior = str(block.data["text"])
                     previous_part = block.data.get("summary_part")
                     separator = (
-                        "\n"
+                        "\n\n"
                         if prior
                         and summary_part is not None
                         and previous_part is not None
