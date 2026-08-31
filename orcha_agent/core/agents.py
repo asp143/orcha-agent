@@ -1375,19 +1375,25 @@ class AgentRegistry:
         return matches[0]
 
     async def post_message(
-        self, sender: str, recipient: str, message: str
+        self,
+        sender: str,
+        recipient: str,
+        message: str,
+        *,
+        mailbox_only_if_waiting: bool = False,
     ) -> bool:
         """Queue one serializable peer message and report a synchronous waiter."""
         view_id, _runs, _order, mailboxes = self._view_for_caller(sender)
         target = self.resolve(recipient, caller=sender)
-        envelope = {
-            "from": sender,
-            "to": target,
-            "message": bound_text(message),
-            "created_at": datetime.now(UTC).isoformat(),
-        }
-        mailboxes.setdefault(target, deque()).append(envelope)
         waiting = self._activity_waiters.get((view_id, target), 0) > 0
+        if not mailbox_only_if_waiting or waiting:
+            envelope = {
+                "from": sender,
+                "to": target,
+                "message": bound_text(message),
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            mailboxes.setdefault(target, deque()).append(envelope)
         await self._notify()
         return waiting
 

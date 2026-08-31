@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,33 @@ _AGENT_PROMPT = (
     "Change, and Acceptance sections. Task results arrive asynchronously; use hub "
     "wait or jobs instead of polling. Spawned runs must finish with yield."
 )
+
+_AGENT_MESSAGE_MAX_BYTES = 256 * 1024
+_AGENT_MESSAGE_TRUNCATED = "...[truncated at 262144 bytes]"
+
+
+def _agent_message(sender_name: str, role: str, message: str) -> str:
+    sender = html.escape(sender_name, quote=True)
+    header = f'<agent-message from="{sender}" role="{role}">'
+    footer = "</agent-message>"
+
+    def framed(length: int, *, truncated: bool) -> str:
+        content = html.escape(message[:length])
+        if truncated:
+            content += html.escape(f"\n{_AGENT_MESSAGE_TRUNCATED}")
+        return f"{header}{content}{footer}"
+
+    complete = framed(len(message), truncated=False)
+    if len(complete.encode("utf-8")) <= _AGENT_MESSAGE_MAX_BYTES:
+        return complete
+    low, high = 0, len(message)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(framed(middle, truncated=True).encode("utf-8")) <= _AGENT_MESSAGE_MAX_BYTES:
+            low = middle
+        else:
+            high = middle - 1
+    return framed(low, truncated=True)
 
 _TASK_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -323,9 +351,25 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
                     before = 0 if peer is None else peer.yield_count
                     if await_reply:
                         reservation = registry.reserve_activity_waiter(caller)
-                    has_waiter = await registry.post_message(caller, target_id, message)
+                    sender_name = "main" if is_main else str(getattr(host, "name", caller))
+                    role = (
+                        "parent"
+                        if peer is not None and getattr(peer, "parent_id", None) == caller
+                        else "peer"
+                    )
+                    has_waiter = await registry.post_message(
+                        caller,
+                        target_id,
+                        message,
+                        mailbox_only_if_waiting=peer is not None,
+                    )
                     if peer is not None and not has_waiter:
-                        await registry.send(peer.id, message, interrupt=bool(kwargs.get("interrupt", False)), caller=caller)
+                        await registry.send(
+                            peer.id,
+                            _agent_message(sender_name, role, message),
+                            interrupt=bool(kwargs.get("interrupt", False)),
+                            caller=caller,
+                        )
                 except (LookupError, RuntimeError, ValueError) as exc:
                     return {"error": str(exc), "op": op}
                 response: dict[str, Any] = {"sent": {"to": target_id, "name": "main" if peer is None else peer.name, "status": "running" if peer is None else peer.status}}

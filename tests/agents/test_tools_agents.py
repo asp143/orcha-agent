@@ -422,7 +422,13 @@ async def test_hub_lists_sends_and_drains_messages(
             {"op": "send", "to": run.id, "message": "second", "await": False}
         )
         assert sent["sent"]["to"] == run.id
-        await _eventually(lambda: graph.inputs == ["first", "second"])
+        await _eventually(
+            lambda: graph.inputs
+            == [
+                "first",
+                '<agent-message from="main" role="parent">second</agent-message>',
+            ]
+        )
         await run.wait_status("idle")
         await agents.shutdown()
 
@@ -456,7 +462,16 @@ async def test_interrupt_send_steers_running_agent_without_aborting(
                 "interrupt": True,
             }
         )
-        await _eventually(lambda: graph.inputs == ["first", "steer now"])
+        await _eventually(
+            lambda: graph.inputs
+            == [
+                "first",
+                (
+                    '<agent-message from="main" role="parent">'
+                    "steer now</agent-message>"
+                ),
+            ]
+        )
         gate.set()
         await run.wait_status("idle")
 
