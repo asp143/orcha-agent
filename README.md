@@ -46,6 +46,18 @@ The benchmark command runs locally. CI runs lint, format checks, type checks,
 and tests with coverage on Python 3.12 and 3.13, then builds and smoke-tests the
 wheel in a clean virtual environment.
 
+The deterministic tmux responsiveness check needs no model credentials and
+skips cleanly when tmux is unavailable:
+
+```bash
+uv run python tests/tui/tmux/verify.py
+```
+
+It runs an isolated 100x30 tmux server, streams two 30-line turns, renders a
+three-agent fan-out card, resizes the idle TUI wider and narrower, and fails if
+history grows during repaint, markers duplicate, cards stack, or visible frames
+survive a resize.
+
 ## Codex (ChatGPT subscription) login
 
 Codex uses a ChatGPT subscription through OAuth rather than an OpenAI API key.
