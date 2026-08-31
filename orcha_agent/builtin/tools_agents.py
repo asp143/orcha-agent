@@ -9,7 +9,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from orcha_agent.core.agents import bound_payload
+from orcha_agent.core.agents import bound_payload, bound_text
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
 PLUGIN = PluginSpec(name="tools-agents", version="1.0.0")
@@ -20,7 +20,6 @@ _AGENT_PROMPT = (
     "wait or jobs instead of polling. Spawned runs must finish with yield."
 )
 
-_AGENT_MESSAGE_MAX_BYTES = 256 * 1024
 _AGENT_MESSAGE_TRUNCATED = "...[truncated at 262144 bytes]"
 
 
@@ -35,13 +34,16 @@ def _agent_message(sender_name: str, role: str, message: str) -> str:
             content += html.escape(f"\n{_AGENT_MESSAGE_TRUNCATED}")
         return f"{header}{content}{footer}"
 
+    def fits(value: str) -> bool:
+        return bound_text(value) == value
+
     complete = framed(len(message), truncated=False)
-    if len(complete.encode("utf-8")) <= _AGENT_MESSAGE_MAX_BYTES:
+    if fits(complete):
         return complete
     low, high = 0, len(message)
     while low < high:
         middle = (low + high + 1) // 2
-        if len(framed(middle, truncated=True).encode("utf-8")) <= _AGENT_MESSAGE_MAX_BYTES:
+        if fits(framed(middle, truncated=True)):
             low = middle
         else:
             high = middle - 1

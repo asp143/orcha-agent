@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -8,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from orcha_agent.builtin.tools_agents import agent_tools
+from orcha_agent.builtin.tools_agents import _agent_message, agent_tools
+from orcha_agent.core.agents import bound_text
 
 
 class _Run(SimpleNamespace):
@@ -525,6 +527,23 @@ async def test_task_rejects_unsupported_output_schema_keywords_before_spawn(
     assert len(result["errors"]) == 1
     assert keyword in result["errors"][0]["error"]
     assert path in result["errors"][0]["error"]
+
+
+def test_oversized_provenance_frame_survives_registry_text_bound() -> None:
+    framed = _agent_message("Sender", "peer", "<&" * 200_000)
+    delivered = bound_text(framed)
+
+    assert delivered == framed
+    assert delivered.endswith("</agent-message>")
+    assert "...[truncated at 262144 bytes]" in delivered
+    assert (
+        len(
+            json.dumps(
+                delivered, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        )
+        <= 256 * 1024
+    )
 
 
 @pytest.mark.asyncio
