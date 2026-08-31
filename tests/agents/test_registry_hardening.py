@@ -511,6 +511,43 @@ async def test_detach_abort_task_is_retained_and_awaited_by_shutdown(
         assert agents._detach_tasks == set()
 
 
+@pytest.mark.asyncio
+async def test_direct_run_task_cancellation_settles_one_aborted_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = asyncio.Event()
+    graph = _Graph(gate)
+
+    async def build(*_args: Any, **_kwargs: Any) -> _Graph:
+        return graph
+
+    monkeypatch.setattr("orcha_agent.core.agents.build_agent", build)
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        agents = AgentRegistry(
+            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
+        )
+        run = await agents.spawn("task", "work", parent="main")
+        await graph.started.wait()
+        assert run.task is not None
+
+        run.task.cancel()
+        await asyncio.wait_for(run.task, 0.2)
+
+        exits = [
+            entry
+            for entry in Ledger(store).path(run.session_id)
+            if isinstance(entry, CustomEntry)
+            and entry.custom_type == "session_exit"
+        ]
+        assert run.status == "aborted"
+        assert run.abort_reason == "shutdown"
+        assert [entry.data for entry in exits] == [
+            {"kind": "aborted", "reason": "shutdown"}
+        ]
+        await agents.shutdown()
+
+
 def test_hydration_restores_child_mode_cwd_and_recomputes_trust(tmp_path: Path) -> None:
     trusted = tmp_path / "trusted"
     child_cwd = trusted / "project"

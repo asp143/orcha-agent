@@ -281,6 +281,7 @@ class AgentRun:
         self.bus = _RunEventBus(self, owner.bus)
         self.console = None
         self.raise_turn_errors = True
+        self.record_cancelled_turn_exit = False
         self.agent: Any = None
         self.task: asyncio.Task[None] | None = None
         self.inbox: asyncio.Queue[str | object | None] = asyncio.Queue(
@@ -594,6 +595,8 @@ class AgentRun:
                 message = incoming
 
     async def _settle_abort(self, reason: AbortReason) -> None:
+        if self.terminal:
+            return
         self.abort_reason = reason
         Ledger(self.session).append(
             self.session_id,

@@ -524,7 +524,7 @@ async def run_turn(host: TurnHost, text: str) -> None:
     finally:
         try:
             host.capture_turn()
-            if cancelled:
+            if cancelled and getattr(host, "record_cancelled_turn_exit", True):
                 host.record_exit("signal")
         finally:
             _console_call(host, "print")
