@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -140,6 +141,7 @@ class Frame:
         *,
         width: int | None = None,
         measure: Callable[[Block, int], int] | None = None,
+        minimum: Callable[[Block], int] | None = None,
     ) -> list[ViewportItem]:
         """Allocate measured visual rows newest-first in transcript order."""
         if width is not None:
@@ -150,9 +152,27 @@ class Frame:
         candidates = [
             block for block in self.blocks if block.state is not BlockState.COMMITTED
         ]
-        selected = candidates[-budget:]
-        allocations = {block.id: 1 for block in selected}
-        remaining = budget - len(selected)
+
+        def minimum_rows(block: Block) -> int:
+            return max(1, minimum(block)) if minimum is not None else 1
+
+        newest: list[Block] = []
+        remaining = budget
+        for block in reversed(candidates):
+            required = minimum_rows(block)
+            if required <= remaining:
+                newest.append(block)
+                remaining -= required
+                continue
+            if not newest:
+                newest.append(block)
+                remaining = 0
+            break
+        selected = list(reversed(newest))
+        allocations = {
+            block.id: min(minimum_rows(block), budget)
+            for block in selected
+        }
 
         def desired(block: Block) -> int:
             if block.kind == "tool":
@@ -176,7 +196,10 @@ class Frame:
             for block in group:
                 if remaining == 0:
                     break
-                extra = min(remaining, max(0, desired(block) - 1))
+                extra = min(
+                    remaining,
+                    max(0, desired(block) - allocations[block.id]),
+                )
                 allocations[block.id] += extra
                 remaining -= extra
         return [ViewportItem(block, allocations[block.id]) for block in selected]
@@ -257,7 +280,7 @@ class FrameScheduler:
             return True
         return any(
             block.state is BlockState.ACTIVE
-            and block.kind in {"thinking", "tool", "subagents"}
+            and block.kind in {"thinking", "tool", "subagents", "working"}
             for block in self.frame.blocks
         )
 
@@ -266,11 +289,11 @@ class FrameScheduler:
         for block in self.frame.blocks:
             if (
                 block.state is not BlockState.ACTIVE
-                or block.kind not in {"thinking", "tool", "subagents"}
+                or block.kind not in {"thinking", "tool", "subagents", "working"}
             ):
                 continue
             changes: dict[str, Any] = {
-                "spinner_frame": (int(block.data.get("spinner_frame", 0)) + 1) % 8,
+                "spinner_frame": int(block.data.get("spinner_frame", 0)) + 1,
             }
             elapsed = max(0.0, current - block.created)
             if block.kind == "tool":
@@ -278,6 +301,15 @@ class FrameScheduler:
             elif block.kind == "thinking":
                 tokens = int(block.data.get("reasoning_tokens", 0))
                 changes["tokens_per_second"] = tokens / elapsed if elapsed else 0.0
+            elif block.kind == "working" and "retry_deadline" in block.data:
+                remaining = max(
+                    0,
+                    math.ceil(float(block.data["retry_deadline"]) - current),
+                )
+                changes["message"] = (
+                    f"Retrying ({block.data['attempt']}/{block.data['max_attempts']}) "
+                    f"in {remaining}s…"
+                )
             block.update(changes)
 
 
@@ -287,7 +319,7 @@ class FrameScheduler:
             if not self._has_spinners():
                 break
             self.tick_spinners()
-            self._spinner_frame = (self._spinner_frame + 1) % 8
+            self._spinner_frame += 1
             if self._on_spinner_tick is not None:
                 self._on_spinner_tick(self._spinner_frame)
             self.request_invalidate()

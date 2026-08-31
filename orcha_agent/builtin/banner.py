@@ -168,17 +168,28 @@ def _provider_ready(ctx: Any, prefix: str) -> bool:
     return auth is None or auth.flow.status() != "not logged in"
 
 
-def _hints(ctx: Any, model: str, *, ascii_only: bool) -> list[str]:
+def _key_hint(ctx: Any) -> tuple[tuple[str, ...], str] | str:
+    effective = getattr(getattr(ctx, "ui", None), "effective_keys", {})
+    value = effective.get("expand_tools", ()) if isinstance(effective, Mapping) else ()
+    if isinstance(value, str):
+        bindings = (value,)
+    elif isinstance(value, Iterable):
+        bindings = tuple(str(binding) for binding in value)
+    else:
+        bindings = ()
+    return (bindings, "expand tool output") if bindings else ""
+
+
+def _hints(ctx: Any, model: str) -> list[Any]:
     cfg = getattr(ctx, "cfg", None)
     trusted = bool(getattr(cfg, "trust_cwd", False))
-    check = "+" if ascii_only else "✓"
-    trust = f"{check} {'Trusted folder' if trusted else 'Restricted folder'}"
+    trust = "✓ Trusted folder" if trusted else "Untrusted folder · project config skipped"
     plugins = getattr(ctx, "plugins", ()) or ()
     loaded = sum(1 for plugin in plugins if getattr(plugin, "error", None) is None)
     plugin_hint = f"{loaded} plugin{'s' if loaded != 1 else ''} loaded"
     provider = _provider_prefix(ctx, model)
     provider_hint = f"{provider} provider {'ready' if _provider_ready(ctx, provider) else 'unavailable'}"
-    return [trust, plugin_hint, provider_hint, ""]
+    return [trust, plugin_hint, provider_hint, _key_hint(ctx)]
 
 
 def build_welcome(
@@ -202,7 +213,7 @@ def build_welcome(
         "mode": str(getattr(cfg, "mode", "ask")),
         "cwd": _short_cwd(getattr(cfg, "cwd", Path.cwd())),
         "sessions": _recent_sessions(ctx, ascii_only=ascii_only, now=now or datetime.now(timezone.utc)),
-        "hints": _hints(ctx, model, ascii_only=ascii_only),
+        "hints": _hints(ctx, model),
         "tip": choose_tip(tips, rng=rng),
         "ascii": ascii_only,
     }

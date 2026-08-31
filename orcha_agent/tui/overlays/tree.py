@@ -64,7 +64,7 @@ class TreeOverlay(SelectList[Any]):
             "Conversation tree",
             entries,
             label=label,
-            empty_text="No ledger entries",
+            empty_text="No conversation yet",
             on_accept=branch,
         )
 

@@ -23,10 +23,9 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import DynamicKeyBindings, KeyBindings, merge_key_bindings
-from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
@@ -50,7 +49,13 @@ from orcha_agent.core.models import ModelResolver
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
 
-from .blocks import BlockRendererDispatcher, DEFAULT_RENDERERS, DEFAULT_THEME, theme_spinner
+from .blocks import (
+    BlockRendererDispatcher,
+    DEFAULT_RENDERERS,
+    DEFAULT_THEME,
+    LEADING_SPACER_KINDS,
+    theme_spinner,
+)
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -63,7 +68,7 @@ from .context import (
 )
 from .frame import Block, Frame, FrameScheduler
 from .history import SQLiteHistory, history_path
-from .keys import create_key_bindings, load_keybindings
+from .keys import create_key_bindings, format_key_bindings, load_keybindings
 from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
@@ -71,7 +76,7 @@ from .statusline import render_statusline
 from .theme import Theme, load_themes, select_theme
 from .title import TerminalTitle
 from .turn import _run_cancellable_turn
-from .overlays import register_builtin_overlays
+from .overlays import KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
 
 
@@ -87,18 +92,13 @@ def _completion_style(theme: Any) -> Any:
 
     menu = Style.from_dict(
         {
-            "completion-menu.completion": (
-                f"fg:{color('text')} bg:{color('statusLineBg')}"
-            ),
-            "completion-menu.completion.current": (
-                f"fg:{color('text')} bg:{color('selectedBg')}"
-            ),
-            "completion-menu.meta.completion": (
-                f"fg:{color('muted')} bg:{color('statusLineBg')}"
-            ),
-            "completion-menu.meta.completion.current": (
-                f"fg:{color('text')} bg:{color('selectedBg')}"
-            ),
+            "completion": f"fg:{color('text')}",
+            "completion.arrow": f"fg:{color('accent')} bold",
+            "completion.label": f"fg:{color('text')}",
+            "completion.match": f"fg:{color('accent')} bold",
+            "completion.meta": f"fg:{color('muted')}",
+            "completion.counter": f"fg:{color('dim')}",
+            "composer.placeholder": f"fg:{color('dim')}",
         }
     )
     return merge_styles([base, menu])
@@ -147,6 +147,9 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
         return False
     command_text = text[1:]
     name, separator, args = command_text.partition(" ")
+    if name == "keys" and not separator:
+        await ctx.ui.show(KeyBindingsOverlay(ctx))
+        return True
     registration = registry.commands.get(name)
     if registration is None:
         ctx.console.error(f"Unknown command: /{name}")
@@ -348,6 +351,7 @@ class ApplicationRuntime:
             registry=completion_registry,
             warn=self._notify,
         )
+        self._effective_keys = effective
         self.ui.effective_keys = effective
         self.ui.prepare_session_switch = self.prepare_session_switch
         handlers = self._action_handlers()
@@ -396,6 +400,7 @@ class ApplicationRuntime:
                         height=self._hud_height,
                         dont_extend_height=True,
                     ),
+                    self.composer.completion_container,
                     self.composer.container,
                     Window(
                         FormattedTextControl(self._status),
@@ -403,13 +408,7 @@ class ApplicationRuntime:
                     ),
                 ]
             ),
-            floats=[
-                Float(
-                    xcursor=True,
-                    ycursor=True,
-                    content=CompletionsMenu(max_height=8, scroll_offset=1),
-                )
-            ],
+            floats=[],
         )
         self._root = root
         kwargs: dict[str, Any] = {}
@@ -516,7 +515,19 @@ class ApplicationRuntime:
             )
         if self.queue:
             blocks.append(
-                self._hud_block("queue", {"prompts": list(self.queue.items[:7])})
+                self._hud_block(
+                    "queue",
+                    {
+                        "prompts": [
+                            {"text": item.text, "mode": item.mode}
+                            for item in self.queue.entries
+                        ],
+                        "dequeue_hint": format_key_bindings(
+                            effective
+                            for effective in self._effective_keys.get("dequeue", ())
+                        ),
+                    },
+                )
             )
         return blocks
 
@@ -682,19 +693,18 @@ class ApplicationRuntime:
         draft = state.get("draft")
         saved_queue = state.get("queue")
         has_draft = isinstance(draft, str) and bool(draft)
-        has_queue = (
+        restored_queue = (
             isinstance(saved_queue, list)
             and bool(saved_queue)
-            and all(isinstance(prompt, str) for prompt in saved_queue)
+            and self.queue.restore(saved_queue)
         )
-        if not has_draft and not has_queue:
+        if not has_draft and not restored_queue:
             return
         if has_draft:
             self.buffer.text = draft
             self.buffer.cursor_position = len(draft)
             state.pop("draft", None)
-        if has_queue:
-            self.queue.extend(saved_queue)
+        if restored_queue:
             state.pop("queue", None)
         self._persist_state()
 
@@ -708,7 +718,7 @@ class ApplicationRuntime:
         else:
             state.pop("draft", None)
         if self.queue:
-            state["queue"] = list(self.queue.items)
+            state["queue"] = self.queue.dump()
         else:
             state.pop("queue", None)
         state["thinking_level"] = self.thinking_level
@@ -745,25 +755,30 @@ class ApplicationRuntime:
                 buffer.reset(append_to_history=False)
                 self._abort_turn()
             return False
+        self.transcript.dismiss_error()
         buffer.reset(append_to_history=True)
         if text == ".":
             text = "keep going"
+        if self.streaming and text.startswith("/"):
+            self._track(self._dispatch_submission(text))
+            return False
         prompts = split_submission(text)
         is_batch = len(prompts) > 1
         if self.streaming:
-            self.queue.extend(prompts)
+            mode = "steer" if self.queue.steering_open else "follow_up"
+            self.queue.extend(prompts, mode=mode)
             self.application.invalidate()
             return False
         first = prompts.pop(0)
         if is_batch:
-            self.queue.extend(prompts)
+            self.queue.extend(prompts, mode="follow_up")
         self._track(self._submit_serially(first))
         return False
 
     def _action_handlers(self) -> dict[str, Callable[[Any], None]]:
         return {
             "submit": self._submit_action,
-            "newline": lambda event: event.current_buffer.insert_text("\n"),
+            "newline": self._newline_or_followup,
             "queue": self._queue_draft,
             "dequeue": self._dequeue,
             "toggle_thinking": lambda _event: self._toggle_thinking(),
@@ -805,9 +820,15 @@ class ApplicationRuntime:
             return
         text = event.current_buffer.text.strip()
         if text:
-            self.queue.extend(split_submission(text))
+            self.queue.extend(split_submission(text), mode="follow_up")
             event.current_buffer.reset(append_to_history=False)
             event.app.invalidate()
+
+    def _newline_or_followup(self, event: Any) -> None:
+        if self.streaming:
+            self._queue_draft(event)
+            return
+        event.current_buffer.insert_text("\n")
 
     def _dequeue(self, event: Any) -> None:
         text = self.queue.pop_last()
@@ -868,7 +889,7 @@ class ApplicationRuntime:
         if text:
             state["draft"] = text
         if self.queue:
-            state["queue"] = list(self.queue.items)
+            state["queue"] = self.queue.dump()
         if text or self.queue:
             self._persist_state()
         if self.streaming:
@@ -1103,14 +1124,15 @@ class ApplicationRuntime:
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     self.transcript.append_banner("interrupted", level="warning")
                 except Exception as exc:
-                    self.transcript.append_banner(f"{type(exc).__name__}: {exc}")
+                    self.transcript.pin_error(f"{type(exc).__name__}: {exc}")
                 finally:
+                    self.queue.close_steering()
                     self._active_turn = None
                     self.streaming = False
                     self.application.invalidate()
                 if self._shutting_down:
                     break
-                current = self.queue.pop()
+                current = self.queue.pop(mode="follow_up")
                 if current is not None:
                     self.application.invalidate()
 
@@ -1218,7 +1240,8 @@ class ApplicationRuntime:
             10_000,
             force_terminal=False,
         )
-        return max(1, len(rendered.splitlines()))
+        lines = rendered.splitlines()
+        return max(1, len(lines))
 
     def _viewport_text(self) -> Any:
         size = self.application.output.get_size()
@@ -1229,31 +1252,63 @@ class ApplicationRuntime:
             status_rows=1,
         )
         rendered: list[str] = []
-        for item in self.frame.viewport_plan(
+        plan = self.frame.viewport_plan(
             budget,
             width=width,
             measure=self._measure_block,
-        ):
+            minimum=lambda block: (
+                2 if block.kind in LEADING_SPACER_KINDS else 1
+            ),
+        )
+        for index, item in enumerate(plan):
+            render_rows = item.rows
+            if (
+                item.block.kind in LEADING_SPACER_KINDS
+                and render_rows > 1
+            ):
+                render_rows -= 1
             value = self._capture_block(
                 item.block,
                 width,
-                item.rows,
+                render_rows,
                 force_terminal=True,
             )
             lines = value.splitlines(keepends=True)
-            if len(lines) > item.rows:
+            leading: list[str] = []
+            content_rows = item.rows
+            if (
+                item.block.kind in LEADING_SPACER_KINDS
+                and lines
+                and not lines[0].strip()
+            ):
+                if content_rows > 1:
+                    leading, lines = lines[:1], lines[1:]
+                    content_rows -= 1
+                else:
+                    lines = lines[1:]
+            if content_rows <= 0:
+                lines = []
+            elif len(lines) > content_rows:
                 lines = (
-                    lines[-item.rows :]
+                    lines[-content_rows:]
                     if item.block.kind in {"assistant", "thinking"}
-                    else lines[: item.rows]
+                    else lines[:content_rows]
                 )
-            rendered.append("".join(lines))
-        return ANSI("\n".join(rendered))
+            rendered.append("".join([*leading, *lines]))
+            if (
+                index + 1 < len(plan)
+                and plan[index + 1].block.kind not in LEADING_SPACER_KINDS
+            ):
+                rendered.append("\n")
+        output_lines = "".join(rendered).splitlines(keepends=True)
+        if len(output_lines) > budget:
+            output_lines = output_lines[-budget:] if budget else []
+        return ANSI("".join(output_lines))
 
     def _write_blocks(self, blocks: list[Block]) -> None:
         width = max(1, self.application.output.get_size().columns)
         for index, block in enumerate(blocks):
-            if index:
+            if index and block.kind not in LEADING_SPACER_KINDS:
                 self._scrollback.print()
             self._print_block(
                 self._scrollback,

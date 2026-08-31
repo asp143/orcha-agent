@@ -16,10 +16,12 @@ from prompt_toolkit.layout.containers import AnyContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import Margin, ScrollbarMargin
+from prompt_toolkit.layout.processors import BeforeInput, ConditionalProcessor
 from prompt_toolkit.utils import get_cwidth
 
 _SHAPES = frozenset({"box", "claude", "borderless"})
 _PADDING_X = 2
+_PLACEHOLDER = "Ask anything · / commands · @ files · ! shell"
 
 
 def _width(value: str) -> int:
@@ -42,6 +44,60 @@ def _truncate(value: str, width: int) -> str:
         output.append(character)
         used += cells
     return f"{''.join(output)}…"
+
+
+def _clip_fragments(
+    fragments: StyleAndTextTuples,
+    width: int,
+) -> StyleAndTextTuples:
+    if width <= 0:
+        return []
+    output: StyleAndTextTuples = []
+    used = 0
+    clipped = False
+    for style, text, *handler in fragments:
+        kept: list[str] = []
+        for character in text:
+            cells = get_cwidth(character)
+            if used + cells > width:
+                clipped = True
+                break
+            kept.append(character)
+            used += cells
+        if kept:
+            output.append((style, "".join(kept), *handler))
+        if clipped:
+            break
+    if clipped and width > 0:
+        while output and _width("".join(fragment[1] for fragment in output)) >= width:
+            style, text, *handler = output[-1]
+            if text:
+                output[-1] = (style, text[:-1], *handler)
+            if not output[-1][1]:
+                output.pop()
+        output.append(("class:completion.meta", "…"))
+    return output
+
+
+def _matched_label(label: str, query: str) -> StyleAndTextTuples:
+    if not query:
+        return [("class:completion.label", label)]
+    positions: set[int] = set()
+    cursor = 0
+    lower = label.casefold()
+    for character in query.casefold():
+        found = lower.find(character, cursor)
+        if found < 0:
+            return [("class:completion.label", label)]
+        positions.add(found)
+        cursor = found + 1
+    return [
+        (
+            "class:completion.match" if index in positions else "class:completion.label",
+            character,
+        )
+        for index, character in enumerate(label)
+    ]
 
 
 class _BoxMargin(Margin):
@@ -116,7 +172,15 @@ class Composer:
             multiline=True,
             accept_handler=accept_handler,
         )
-        self.control = BufferControl(buffer=self.buffer)
+        self.control = BufferControl(
+            buffer=self.buffer,
+            input_processors=[
+                ConditionalProcessor(
+                    BeforeInput(self.placeholder_fragments),
+                    filter=Condition(lambda: not self.buffer.text),
+                )
+            ],
+        )
         self.input_window = Window(
             self.control,
             height=lambda: Dimension.exact(
@@ -132,6 +196,13 @@ class Composer:
             ),
         )
         self.container = self._build_container()
+        self.completion_container = Window(
+            FormattedTextControl(
+                lambda: self.completion_fragments(self._current_width())
+            ),
+            height=lambda: Dimension.exact(self.completion_row_count()),
+            dont_extend_height=True,
+        )
 
     @property
     def chrome_lines(self) -> int:
@@ -216,6 +287,77 @@ class Composer:
             return 80
         return max(1, app.output.get_size().columns)
 
+
+    def placeholder_fragments(self) -> StyleAndTextTuples:
+        if self.buffer.text:
+            return []
+        return [("class:composer.placeholder", _PLACEHOLDER)]
+
+    def completion_row_count(self) -> int:
+        state = self.buffer.complete_state
+        return min(5, len(state.completions)) if state is not None else 0
+
+    def completion_fragments(self, width: int) -> StyleAndTextTuples:
+        state = self.buffer.complete_state
+        if state is None or not state.completions:
+            return []
+        completions = state.completions
+        selected = state.complete_index if state.complete_index is not None else 0
+        selected = max(0, min(selected, len(completions) - 1))
+        visible = min(5, len(completions))
+        start = max(0, min(selected - visible // 2, len(completions) - visible))
+        before = self.buffer.document.text_before_cursor
+        slash = before.startswith("/")
+        at = before.rfind("@")
+        at_query = before[at + 1 :] if at >= 0 else ""
+        if at_query.startswith('"'):
+            at_query = at_query[1:]
+        at_query = at_query.rstrip('"')
+
+        rendered: StyleAndTextTuples = []
+        for row_index, completion in enumerate(
+            completions[start : start + visible],
+            start=start,
+        ):
+            current = row_index == selected
+            label = completion.display_text
+            prefix = ""
+            query = ""
+            if slash:
+                prefix = "" if label.startswith("/") else "/"
+            elif at >= 0:
+                prefix = "" if label.startswith("@") else "@"
+                query = at_query
+            body: StyleAndTextTuples = [
+                (
+                    "class:completion.arrow" if current else "class:completion",
+                    "→ " if current else "  ",
+                ),
+                ("class:completion.label", prefix),
+                *_matched_label(label, query),
+            ]
+            meta = completion.display_meta_text
+            if width > 40 and meta:
+                body.extend(
+                    [
+                        ("class:completion", "  "),
+                        ("class:completion.meta", meta),
+                    ]
+                )
+            counter = f"({selected + 1}/{len(completions)})" if current else ""
+            reserved = _width(counter) + (1 if counter else 0)
+            line = _clip_fragments(body, max(0, width - reserved))
+            if counter:
+                line.extend(
+                    [
+                        ("class:completion", " "),
+                        ("class:completion.counter", counter),
+                    ]
+                )
+            rendered.extend(line)
+            if row_index < start + visible - 1:
+                rendered.append(("", "\n"))
+        return rendered
     def _content_width(self, width: int) -> int:
         if self.shape == "box":
             return max(1, width - (_PADDING_X + 1) * 2)

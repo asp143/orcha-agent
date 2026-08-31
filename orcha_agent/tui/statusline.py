@@ -77,6 +77,7 @@ DEFAULT_PRICING: dict[str, dict[str, float]] = {
 
 _GIT_REFRESH_SECONDS = 2.0
 _GIT_TIMEOUT_SECONDS = 1.0
+_CONTEXT_BAR_CELLS = 20
 _GIT_LOCK = threading.Lock()
 _USAGE_TRACKERS: deque[tuple[dict[str, Any], deque[Any]]] = deque(maxlen=16)
 _GIT_VOLATILE = (
@@ -708,35 +709,107 @@ def _truncate(fragments: list[tuple[str, str]], width: int) -> list[tuple[str, s
     return result
 
 
+def _context_percent(segment: Segment) -> float:
+    try:
+        return min(100.0, max(0.0, float(segment.text.split("%", 1)[0])))
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _context_label(segment: Segment) -> str:
+    return f"{_context_percent(segment):g}%"
+
+
+def _gauge_width(segment: Segment) -> int:
+    return _CONTEXT_BAR_CELLS + 1 + get_cwidth(_context_label(segment))
+
+
+def _without_provider(text: str) -> str:
+    provider, separator, model = text.partition(":")
+    if separator and provider and model:
+        return model
+    if text.startswith("("):
+        closing = text.find(") ")
+        if closing > 1 and closing + 2 < len(text):
+            return text[closing + 2 :]
+    return text
+
+
+def _truncate_text(text: str, width: int, *, ascii_mode: bool) -> str:
+    if width <= 0:
+        return ""
+    marker = "..." if ascii_mode else "…"
+    marker_width = get_cwidth(marker)
+    if width <= marker_width:
+        return marker[:width]
+    remaining = width - marker_width
+    chars: list[str] = []
+    for char in text:
+        char_width = max(0, get_cwidth(char))
+        if char_width > remaining:
+            break
+        chars.append(char)
+        remaining -= char_width
+    return f"{''.join(chars)}{marker}"
+
+
+def _shrink_model(
+    items: list[tuple[str, Segment]],
+    excess: int,
+    *,
+    ascii_mode: bool,
+) -> bool:
+    for index, (name, segment) in enumerate(items):
+        if name != "model":
+            continue
+        model_only = _without_provider(segment.text)
+        if model_only != segment.text:
+            items[index] = (
+                name,
+                Segment(model_only, segment.token, segment.icon_key),
+            )
+            return True
+        text_width = get_cwidth(_safe_text(segment.text, ascii_mode))
+        target_width = max(0, text_width - max(1, excess))
+        if target_width <= 0:
+            items.pop(index)
+        else:
+            items[index] = (
+                name,
+                Segment(
+                    _truncate_text(segment.text, target_width, ascii_mode=ascii_mode),
+                    segment.token,
+                    segment.icon_key,
+                ),
+            )
+        return True
+    return False
+
+
 def _gauge(
     segment: Segment,
     width: int,
     theme: Any,
-    symbols: Mapping[str, Any],
     *,
     transparent: bool,
     ascii_mode: bool,
 ) -> list[tuple[str, str]]:
-    if width <= 0:
+    if width < _gauge_width(segment):
         return []
-    try:
-        percent = min(100.0, max(0.0, float(segment.text.split("%", 1)[0])))
-    except (ValueError, IndexError):
-        percent = 0.0
-    label = f"{percent:g}%"
-    if width < len(label) + 2:
-        return [(_style(theme, "statusLineBg", transparent=transparent), " " * width)]
-    bar_width = width - len(label) - 2
+    percent = _context_percent(segment)
+    label = _context_label(segment)
+    label_width = get_cwidth(label)
+    bar_width = min(_CONTEXT_BAR_CELLS, max(0, width - label_width - 1))
     filled = round(bar_width * percent / 100)
-    horizontal = _safe_text(symbols.get("boxSharp.horizontal", "-"), ascii_mode)
-    if get_cwidth(horizontal) != 1:
-        horizontal = "-"
-    active_style = _style(theme, segment.token, transparent=transparent)
+    filled_glyph = "#" if ascii_mode else "━"
+    empty_glyph = "-" if ascii_mode else "─"
+    token = "success" if percent < 70 else "warning" if percent < 90 else "error"
+    active_style = _style(theme, token, transparent=transparent)
     rest_style = _style(theme, "statusLineSep", transparent=transparent)
     return [
-        (active_style, horizontal * filled),
-        (active_style, f" {label} "),
-        (rest_style, horizontal * (bar_width - filled)),
+        (active_style, filled_glyph * filled),
+        (rest_style, empty_glyph * (bar_width - filled)),
+        (active_style, f" {label}"),
     ]
 
 
@@ -777,7 +850,9 @@ def render_statusline(
     if not left_items and not right_items and context is None:
         return []
 
-    minimum_gap = 7 if context is not None else 0
+    gauge_width = _gauge_width(context) if context is not None else 0
+    show_gauge = context is not None and target_width >= gauge_width
+    minimum_gap = gauge_width if show_gauge else 0
     while True:
         left = _join(
             left_items,
@@ -795,8 +870,15 @@ def render_statusline(
             transparent=transparent,
             ascii_mode=ascii_mode,
         )
-        if _width(left) + _width(right) + minimum_gap <= target_width:
+        left_width = _width(left)
+        right_width = _width(right)
+        if left_width + right_width + minimum_gap <= target_width:
             break
+        excess = left_width + right_width + minimum_gap - target_width
+        if _shrink_model(left_items, excess, ascii_mode=ascii_mode):
+            continue
+        if _shrink_model(right_items, excess, ascii_mode=ascii_mode):
+            continue
         if right_items:
             right_items.pop(0)
         elif left_items:
@@ -804,12 +886,11 @@ def render_statusline(
         else:
             break
 
-    gap = max(0, target_width - _width(left) - _width(right))
-    if context is not None:
-        gauge_width = min(gap, 17) if transparent else gap
+    gap = max(0, target_width - left_width - right_width)
+    if show_gauge and context is not None:
         leading = (gap - gauge_width) // 2
         trailing = gap - gauge_width - leading
-        gap_style = _style(theme, "statusLineBg", transparent=transparent)
+        gap_style = "" if transparent else _style(theme, "statusLineBg", transparent=False)
         middle = []
         if leading:
             middle.append((gap_style, " " * leading))
@@ -818,7 +899,6 @@ def render_statusline(
                 context,
                 gauge_width,
                 theme,
-                symbols,
                 transparent=transparent,
                 ascii_mode=ascii_mode,
             )
@@ -826,7 +906,8 @@ def render_statusline(
         if trailing:
             middle.append((gap_style, " " * trailing))
     else:
-        middle = [(_style(theme, "statusLineBg", transparent=transparent), " " * gap)]
+        gap_style = "" if transparent else _style(theme, "statusLineBg", transparent=False)
+        middle = [(gap_style, " " * gap)]
     return _truncate([*left, *middle, *right], target_width)
 
 

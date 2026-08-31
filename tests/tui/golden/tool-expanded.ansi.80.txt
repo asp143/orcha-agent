@@ -1,20 +1,21 @@
-<ESC>[90m+------------------------------------------------------------------------------+<ESC>[0m
-<ESC>[90m| $ uv run pytest -q tests/tui                                                 <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m|--- Output -------------------------------------------------------------------|<ESC>[0m
-<ESC>[90m| case 0: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 1: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 2: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 3: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 4: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 5: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 6: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 7: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 8: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 9: passed                                                               <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 10: passed                                                              <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 11: passed                                                              <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 12: passed                                                              <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 13: passed                                                              <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 14: passed                                                              <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| case 15: passed                                                              <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m+------------------------------------------------------------------------------+<ESC>[0m
+
+<ESC>[90;40m+--- ✔ Bash <ESC>[0m<ESC>[90;40m-------------------------------------------------------------------+<ESC>[0m
+<ESC>[90;40m| $ uv run pytest -q tests/tui                                                 <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m|--- Output -------------------------------------------------------------------|<ESC>[0m
+<ESC>[90;40m| case 0: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 1: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 2: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 3: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 4: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 5: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 6: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 7: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 8: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 9: passed                                                               <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 10: passed                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 11: passed                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 12: passed                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 13: passed                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 14: passed                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| case 15: passed                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m+------------------------------------------------------------------------------+<ESC>[0m

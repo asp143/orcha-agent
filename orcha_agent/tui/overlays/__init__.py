@@ -7,7 +7,7 @@ from typing import Any
 from .approval import ApprovalOverlay
 from .ask import AskOverlay
 from .base import Anchor, Overlay
-from .help import HelpOverlay
+from .help import HelpOverlay, KeyBindingsCard, KeyBindingsOverlay
 from .history import HistoryOverlay
 from .model import ModelOverlay
 from .select import SelectList
@@ -38,6 +38,8 @@ __all__ = [
     "ApprovalOverlay",
     "AskOverlay",
     "HelpOverlay",
+    "KeyBindingsCard",
+    "KeyBindingsOverlay",
     "HistoryOverlay",
     "ModelOverlay",
     "Overlay",

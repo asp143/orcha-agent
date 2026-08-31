@@ -4,7 +4,7 @@ from io import StringIO
 
 import pytest
 from langchain_core.messages import ToolMessage
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
@@ -99,8 +99,12 @@ def test_user_bubble_emits_full_width_background_cells_to_a_terminal() -> None:
     terminal_text = Text.from_ansi(raw).plain
 
     assert "48;5;236" in raw
-    assert terminal_text == f" visible terminal bubble{' ' * 16}\n"
-    assert len(terminal_text.rstrip("\n")) == 40
+    assert terminal_text == (
+        f"{' ' * 40}\n"
+        f" visible terminal bubble{' ' * 16}\n"
+        f"{' ' * 40}\n"
+    )
+    assert all(len(line) == 40 for line in terminal_text.splitlines())
 
 
 def test_assistant_returns_rich_markdown_for_accumulated_text() -> None:
@@ -112,7 +116,9 @@ def test_assistant_returns_rich_markdown_for_accumulated_text() -> None:
         False,
     )
 
-    assert isinstance(rendered, Markdown)
+    assert isinstance(rendered, Group)
+    markdown = rendered.renderables[-1]
+    assert isinstance(markdown, Markdown)
     assert "Result" in plain(rendered)
     assert "one" in plain(rendered)
 
@@ -134,7 +140,7 @@ def test_hidden_thinking_has_deterministic_pulse_and_rate() -> None:
     )
     output = plain(rendered)
 
-    assert output == f"{SPINNER_FRAMES[2]} Thinking · 120 · 24.0 toks/s\n"
+    assert output == f"\n{SPINNER_FRAMES[2]} Thinking… · 120 · 24.0 tok/s\n"
     assert "private plan" not in output
 
 
@@ -147,16 +153,56 @@ def test_visible_thinking_renders_italic_markdown() -> None:
         False,
     )
 
-    assert isinstance(rendered, Markdown)
+    assert isinstance(rendered, Group)
+    markdown = rendered.renderables[-1]
+    assert isinstance(markdown, Markdown)
+    assert "italic" in str(markdown.style)
+    assert "bright_black" in str(markdown.style)
     assert "Check constraints" in plain(rendered)
+
+
+def test_transcript_content_blocks_own_only_a_leading_blank_row() -> None:
+    rendered = (
+        render_thinking(
+            block("thinking", text="plan", visible=True),
+            THEME,
+            80,
+            20,
+            False,
+        ),
+        render_assistant(
+            block("assistant", text="answer"),
+            THEME,
+            80,
+            20,
+            False,
+        ),
+        render_tool(
+            block("tool", name="read_file", args={"path": "a.py"}, result="ok"),
+            THEME,
+            80,
+            20,
+            False,
+        ),
+    )
+
+    for value in rendered:
+        output = plain(value)
+        assert output.startswith("\n")
+        assert not output.startswith("\n\n")
+        assert not output.endswith("\n\n")
+
+    combined = "".join(plain(value) for value in rendered)
+    assert combined.count("\n\n") == 2
+    assert "\n\n\n" not in combined
 
 
 @pytest.mark.parametrize(
     ("rows", "expected", "forbidden"),
     [
         (3, "$ pytest -q", "output line"),
-        (2, "╭─ Bash · pytest -q · 1.2s", "output line"),
-        (1, "✔ Bash · pytest -q · 1.2s", "output line"),
+        (2, "╭─ Bash · pytest -q · Took 1.2s", "output line"),
+        (1, "✔ Bash · pytest -q · Took 1.2s", "output line"),
         (0, "", "Bash"),
     ],
 )
@@ -171,7 +217,7 @@ def test_tool_degrades_with_observable_row_budget(
             name="execute",
             args={"command": "pytest -q"},
             result={"stdout": "output line", "exit_code": 0},
-            elapsed=1.25,
+            duration=1.25,
         ),
         THEME,
         80,
@@ -268,9 +314,10 @@ def test_banner_caps_error_at_eight_lines() -> None:
     )
     output = plain(rendered)
 
-    assert "line 6" in output
-    assert "line 7" not in output
+    assert "line 4" in output
+    assert "line 5" not in output
     assert "…" in output
+    assert len(output.splitlines()) <= 8
     assert "Error" in output
 
 
@@ -372,7 +419,7 @@ def test_nonzero_execute_artifact_renders_error_state() -> None:
     )
 
     assert "$ false" in output
-    assert len(output.splitlines()) == 3
+    assert len(output.splitlines()) == 4
 
 
 def test_full_tool_card_fits_allocated_rows() -> None:
@@ -390,7 +437,7 @@ def test_full_tool_card_fits_allocated_rows() -> None:
     )
     output = plain(rendered)
 
-    assert len(output.splitlines()) == 3
+    assert len(output.splitlines()) == 4
     assert output.splitlines()[-1].startswith("╰")
 
 
@@ -428,6 +475,107 @@ def test_grouped_reads_and_diffs_share_collapsed_preview_caps() -> None:
     assert "context 24" in diff_expanded
 
 
+def test_tool_cards_tint_every_row_and_use_state_timing_contract() -> None:
+    theme = {
+        **THEME,
+        "colors": {
+            **THEME["colors"],
+            "accent": "#0a0b0c",
+            "dim": "#111213",
+            "error": "#1a1b1c",
+            "toolPendingBg": "#010203",
+            "toolSuccessBg": "#040506",
+            "toolErrorBg": "#070809",
+        },
+    }
+    cases = (
+        (
+            Block(
+                id="pending",
+                kind="tool",
+                state=BlockState.ACTIVE,
+                data={
+                    "name": "read_file",
+                    "args": {"path": "a.py"},
+                    "elapsed": 3.0,
+                    "duration": 99.0,
+                    "leading_spacer": False,
+                },
+            ),
+            "Elapsed 3s",
+            (1, 2, 3),
+            "38;2;10;11;12",
+        ),
+        (
+            Block(
+                id="success",
+                kind="tool",
+                state=BlockState.SETTLED,
+                data={
+                    "name": "read_file",
+                    "args": {"path": "a.py"},
+                    "result": "one",
+                    "elapsed": 99.0,
+                    "duration": 1.2,
+                    "leading_spacer": False,
+                },
+            ),
+            "Took 1.2s",
+            (4, 5, 6),
+            "38;2;17;18;19",
+        ),
+        (
+            Block(
+                id="error",
+                kind="tool",
+                state=BlockState.SETTLED,
+                data={
+                    "name": "write_file",
+                    "args": {"path": "readonly.py"},
+                    "result": {"status": "error", "error": "permission denied"},
+                    "duration": 2.0,
+                    "leading_spacer": False,
+                },
+            ),
+            "Took 2s",
+            (7, 8, 9),
+            "38;2;26;27;28",
+        ),
+    )
+
+    for value, timing, background, border in cases:
+        stream = StringIO()
+        card = render_tool(value, theme, 80, 20, False)
+        assert isinstance(card, Text)
+        console = Console(
+            file=stream,
+            width=80,
+            force_terminal=True,
+            color_system="truecolor",
+            no_color=False,
+        )
+        console.print(card)
+        raw = stream.getvalue()
+        rendered = Text.from_ansi(raw).plain
+        assert timing in rendered
+        assert "99" not in rendered
+        offset = 0
+        for line in card.plain.splitlines(keepends=True):
+            if line.rstrip("\n"):
+                color = card.get_style_at_offset(console, offset).bgcolor
+                assert color is not None
+                assert tuple(color.get_truecolor()) == background
+            offset += len(line)
+        timing_style = card.get_style_at_offset(console, card.plain.index(timing))
+        assert timing_style.color is not None
+        assert tuple(timing_style.color.get_truecolor()) == (17, 18, 19)
+        assert border in raw
+
+    error_lines = Text.from_ansi(stream.getvalue()).plain.splitlines()
+    assert "Write" in error_lines[0]
+    assert "permission denied" in error_lines[1]
+
+
 def test_subagent_assistant_is_dim_and_indented_two_columns() -> None:
     rendered = render_assistant(
         block("assistant", text="subagent answer", subagent=True),
@@ -437,13 +585,15 @@ def test_subagent_assistant_is_dim_and_indented_two_columns() -> None:
         False,
     )
 
-    assert isinstance(rendered, Padding)
-    assert (rendered.top, rendered.right, rendered.bottom, rendered.left) == (
+    assert isinstance(rendered, Group)
+    content = rendered.renderables[-1]
+    assert isinstance(content, Padding)
+    assert (content.top, content.right, content.bottom, content.left) == (
         0,
         2,
         0,
         2,
     )
-    assert isinstance(rendered.renderable, Markdown)
-    assert "dim" in str(rendered.renderable.style)
-    assert plain(rendered).startswith("  subagent answer")
+    assert isinstance(content.renderable, Markdown)
+    assert "dim" in str(content.renderable.style)
+    assert plain(rendered).startswith("\n  subagent answer")

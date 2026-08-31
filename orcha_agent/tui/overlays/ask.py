@@ -12,6 +12,7 @@ from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 
 from .base import Overlay
+from .hints import key_hint
 
 
 class AskOverlay(Overlay):
@@ -186,7 +187,8 @@ class AskOverlay(Overlay):
             style = "class:overlay.selection" if current else "class:overlay.item"
             fragments.append((style, f" {marker} {label}\n"))
         if self._custom_mode:
-            fragments.append(("class:overlay.hint", "\nType your answer below, then press Enter"))
+            fragments.append(("", "\n"))
+            fragments.extend(key_hint("enter", "submit answer"))
         return fragments
 
     def _result(self) -> dict[str, Any]:

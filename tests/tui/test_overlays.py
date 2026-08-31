@@ -22,6 +22,7 @@ from orcha_agent.tui.overlays import (
     HelpOverlay,
     HistoryOverlay,
     ModelOverlay,
+    KeyBindingsOverlay,
     Overlay,
     SelectList,
     SessionOverlay,
@@ -32,7 +33,12 @@ from orcha_agent.tui.overlays import (
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 
 
-async def _drive_overlay(overlay: Overlay, keys: bytes | str, wait_until) -> Any:
+async def _drive_overlay(overlay: Overlay, keys: bytes | str, wait_until=None) -> Any:
+    if wait_until is None:
+        async def wait_until(predicate, timeout=1.0):  # local fallback
+            async with asyncio.timeout(timeout):
+                while not predicate():
+                    await asyncio.sleep(0)
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0),
@@ -154,6 +160,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
         )
+        base_float_count = len(runtime.application.layout.container.floats)
         task = asyncio.create_task(runtime.run())
         first = SelectList("First", ["one"])
         second = SelectList("Second", ["two"])
@@ -162,7 +169,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None
         await wait_until(lambda: runtime.active_overlay is first)
         assert runtime.active_overlay is first
         assert runtime.application.mouse_support()
-        assert len(runtime.application.layout.container.floats) == 2
+        assert len(runtime.application.layout.container.floats) == base_float_count + 1
         pipe.send_bytes(b"\r")
         assert await asyncio.wait_for(first_result, 1) == "one"
         await wait_until(lambda: runtime.active_overlay is second)
@@ -171,7 +178,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None
         assert await asyncio.wait_for(second_result, 1) is None
         assert runtime.active_overlay is None
         assert not runtime.application.mouse_support()
-        assert len(runtime.application.layout.container.floats) == 1
+        assert len(runtime.application.layout.container.floats) == base_float_count
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
 
@@ -275,8 +282,14 @@ async def test_history_help_and_ask_overlays_return_specified_shapes(
 
     help_overlay = HelpOverlay(ctx)
     assert "/help" in help_overlay.text
-    assert "escape escape" in help_overlay.text
+    assert "Esc Esc" in help_overlay.text
     assert await _drive_overlay(help_overlay, b"\x1b", wait_until) is None
+
+    key_overlay = KeyBindingsOverlay(ctx)
+    fragments = key_overlay.card.fragments()
+    assert ("class:dim", "Enter") in fragments
+    assert ("class:muted", " submit") in fragments
+    assert await _drive_overlay(key_overlay, b"\x1b") is None
 
     questions = [
         {
@@ -685,6 +698,16 @@ def test_narrow_overlay_keeps_four_columns_of_chrome(
     assert overlay.inner_width == 22
 
 
+def test_overlays_never_exceed_tiny_terminal_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overlay = SelectList("Pick", ["one"])
+    monkeypatch.setattr(overlay, "_terminal_size", lambda: (3, 2))
+
+    assert overlay._width() == 3
+    assert overlay._height() == 2
+
+
 def test_ask_and_approval_dialogs_use_content_aware_heights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -728,6 +751,86 @@ def test_tree_overlay_orders_entries_depth_first_by_parent_hierarchy() -> None:
     ]
 
 
+def test_session_labels_fall_back_to_first_prompt_and_shorten_home_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    cwd = home / "work" / "client" / "packages" / "deep" / "repo"
+    monkeypatch.setenv("HOME", str(home))
+    sessions = [
+        SimpleNamespace(
+            thread_id="prompt-title",
+            title=None,
+            cwd=str(cwd),
+            created="2099-01-01T00:00:00+00:00",
+        ),
+        SimpleNamespace(
+            thread_id="untitled",
+            title=None,
+            cwd=str(home / "short" / "cwd"),
+            created="2099-01-01T00:00:00+00:00",
+        ),
+    ]
+    entries = {
+        "prompt-title": [
+            SimpleNamespace(
+                message={
+                    "type": "human",
+                    "data": {"content": "  First\nprompt  "},
+                }
+            )
+        ],
+        "untitled": [],
+    }
+    ctx = SimpleNamespace(
+        session=SimpleNamespace(list=lambda: sessions),
+        ledger=SimpleNamespace(
+            all=lambda session_id: entries[session_id],
+            count=lambda session_id: 3 if session_id == "prompt-title" else 0,
+        ),
+        resume=lambda _value: asyncio.sleep(0),
+    )
+
+    rendered = SessionOverlay(ctx).render_text()
+
+    assert "First prompt · now · ~/work/client/…/deep/repo · 3 entries" in rendered
+    assert "Untitled · now · ~/short/cwd · 0 entries" in rendered
+
+
+@pytest.mark.asyncio
+async def test_empty_tree_stays_open_with_close_hint() -> None:
+    ctx = SimpleNamespace(
+        ledger=SimpleNamespace(
+            all=lambda _session_id: [],
+            leaf=lambda _session_id: None,
+        ),
+        session_id="empty",
+        branch=lambda _value: asyncio.sleep(0),
+    )
+    overlay = TreeOverlay(ctx)
+
+    assert "No conversation yet" in overlay.render_text()
+    assert ("class:dim", "Esc") in overlay._scroll_footer("select")
+    assert ("class:muted", " close") in overlay._scroll_footer("select")
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
+        )
+        task = asyncio.create_task(runtime.run())
+        shown = asyncio.create_task(runtime.ui.show(overlay))
+        await asyncio.sleep(0.02)
+        pipe.send_bytes(b"\r")
+        await asyncio.sleep(0.02)
+        assert not shown.done()
+        assert not overlay.done
+        pipe.send_bytes(b"\x1b")
+        assert await asyncio.wait_for(shown, 1) is None
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+
 @pytest.mark.asyncio
 async def test_select_list_scrolls_long_navigation_to_selected_row(
     wait_until,
@@ -766,6 +869,66 @@ async def test_select_list_scrolls_long_navigation_to_selected_row(
         assert await asyncio.wait_for(shown, 1) is None
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_select_list_filter_owns_jk_while_arrows_navigate() -> None:
+    picker = SelectList("Pick", ["jacket", "joke", "alpha"])
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
+        )
+        task = asyncio.create_task(runtime.run())
+        shown = asyncio.create_task(runtime.ui.show(picker))
+        await asyncio.sleep(0.02)
+        pipe.send_text("jk")
+        await asyncio.sleep(0.02)
+
+        assert picker.filter.text == "jk"
+        assert picker.filtered_items == ("jacket", "joke")
+
+        pipe.send_bytes(b"\x1b[B\r")
+        assert await asyncio.wait_for(shown, 1) == "joke"
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_select_list_supports_vim_navigation_and_fixed_position_counter() -> None:
+    picker = SelectList(
+        "Long list",
+        [f"item-{index:02d}" for index in range(12)],
+        show_filter=False,
+    )
+
+    assert "(1/12)" in picker.render_text()
+    assert await _drive_overlay(picker, "j\r") == "item-01"
+    assert "(2/12)" in picker.render_text()
+
+    picker = SelectList(
+        "Long list",
+        [f"item-{index:02d}" for index in range(12)],
+        show_filter=False,
+    )
+    assert await _drive_overlay(picker, b"\x1b[6~k\r") == "item-07"
+
+
+@pytest.mark.asyncio
+async def test_help_static_content_uses_shared_page_navigation() -> None:
+    ctx = SimpleNamespace(
+        ui=SimpleNamespace(effective_keys={"submit": ("enter",)}),
+        registry=SimpleNamespace(
+            commands={
+                f"command-{index:02d}": SimpleNamespace(help=f"Help {index}")
+                for index in range(20)
+            }
+        ),
+    )
+    overlay = HelpOverlay(ctx)
+    assert "(1/24)" in overlay.render_text()
+    assert await _drive_overlay(overlay, b"\x1b[6~\x1b") is None
+    assert overlay.index == 8
+    assert "(9/24)" in overlay.render_text()
 
 
 @pytest.mark.asyncio

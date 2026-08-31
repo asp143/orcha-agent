@@ -1,5 +1,5 @@
-<ESC>[90m+--- ⇶ Task · 2 agents --------------------------------------------------------+<ESC>[0m
-<ESC>[90m| ⣾ Research: Research ⟦running⟧  · 0s                                         <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| ⣾ Review: Review ⟦idle⟧  · 0s                                                <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| ⟦0 succeeded · 0 failed · 0 req · 0s⟧                                        <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m+------------------------------------------------------------------------------+<ESC>[0m
+<ESC>[90;40m+--- ⇶ Task · 2 agents <ESC>[0m<ESC>[90;40m--------------------------------------------------------+<ESC>[0m
+<ESC>[90;40m| ⣾ Research: Research ⟦running⟧  · 0s                                         <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| ⣾ Review: Review ⟦idle⟧  · 0s                                                <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| ⟦0 succeeded · 0 failed · 0 req · 0s⟧                                        <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m+------------------------------------------------------------------------------+<ESC>[0m

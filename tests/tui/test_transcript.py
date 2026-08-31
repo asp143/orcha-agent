@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 import pytest
 from langchain_core.messages import AIMessageChunk
+from rich.console import Console
 from rich.text import Text
 
 from orcha_agent.core.events import (
@@ -15,8 +17,11 @@ from orcha_agent.core.events import (
 )
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.console import ConsoleOutput
-from orcha_agent.tui.frame import BlockState, Frame, FrameScheduler
+from orcha_agent.tui.frame import Block, BlockState, Frame, FrameScheduler
 from orcha_agent.tui.transcript import Transcript
+from orcha_agent.tui.blocks.banner import render as render_banner
+from orcha_agent.tui.blocks.thinking import render as render_thinking
+from orcha_agent.tui.blocks import DEFAULT_THEME
 
 
 @pytest.mark.asyncio
@@ -63,6 +68,159 @@ async def test_transcript_maps_turn_stream_tool_and_thread_events() -> None:
     assert frame.blocks[3].data["result"] == "ok"
     assert frame.blocks[4].data["text"] == "⎇ branched to thread.1"
     assert all(block.state is not BlockState.ACTIVE for block in frame.blocks)
+
+
+@pytest.mark.asyncio
+async def test_tool_blocks_expose_live_elapsed_then_settled_duration() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(
+        ToolCallStart(name="execute", args={"command": "sleep"}, id="timed")
+    )
+    block = frame.blocks[-1]
+    assert block.data["elapsed"] == 0.0
+
+    block.created -= 2.0
+    await transcript.handle(ToolCallEnd(name="execute", id="timed", result="ok"))
+
+    assert "elapsed" not in block.data
+    assert isinstance(block.data["duration"], float)
+    assert block.data["duration"] >= 2.0
+
+
+
+@pytest.mark.asyncio
+async def test_working_indicator_disappears_on_first_visible_model_output() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(TurnStart(thread_id="thread", text="question"))
+
+    assert [block.kind for block in frame.blocks] == ["user", "working"]
+    working = frame.blocks[-1]
+    assert working.state is BlockState.ACTIVE
+    assert working.data["message"] == "Working… (Esc to interrupt)"
+
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content="answer"),
+            role="main",
+            source_id="main",
+        )
+    )
+
+    assert [block.kind for block in frame.blocks] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_working_indicator_disappears_on_first_tool_output() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    await transcript.handle(TurnStart(thread_id="thread", text="question"))
+    assert frame.blocks[-1].kind == "working"
+
+    await transcript.handle(ToolCallStart(name="read", args={}, id="call"))
+
+    assert [block.kind for block in frame.blocks] == ["user", "tool"]
+
+
+@pytest.mark.asyncio
+async def test_retry_indicator_uses_warning_countdown_on_shared_ticker() -> None:
+    frame = Frame()
+    scheduler = FrameScheduler(
+        frame,
+        commit=lambda _blocks: None,
+        invalidate=lambda: None,
+    )
+    transcript = Transcript(frame, scheduler=scheduler)
+
+    transcript.show_retry(
+        attempt=2,
+        max_attempts=5,
+        delay_seconds=4,
+        now=10,
+    )
+    retry = frame.blocks[-1]
+    assert retry.data["message"] == "Retrying (2/5) in 4s…"
+    assert retry.data["level"] == "warning"
+
+    scheduler.tick_spinners(now=11.1)
+
+    await scheduler.aclose()
+    assert retry.data["message"] == "Retrying (2/5) in 3s…"
+
+
+@pytest.mark.asyncio
+async def test_retry_event_without_attempt_defaults_to_first_attempt() -> None:
+    class RetryScheduled:
+        delay_seconds = 2
+        max_attempts = 3
+
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(RetryScheduled())
+
+    assert frame.blocks[-1].data["message"] == "Retrying (1/3) in 2s…"
+
+
+@pytest.mark.asyncio
+async def test_provider_error_is_pinned_capped_and_dismissed_by_next_turn() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    message = "\n".join(f"line {index}" for index in range(12))
+
+    await transcript.handle(RuntimeError(message))
+    error = frame.blocks[-1]
+
+    assert error.kind == "banner"
+    assert error.state is BlockState.ACTIVE
+    assert error.data["pinned"] is True
+    assert len(error.data["message"].splitlines()) == 8
+    assert error.data["message"].splitlines()[-1] == "…"
+
+    await transcript.handle(TurnEnd(thread_id="thread"))
+    assert error.state is BlockState.ACTIVE
+
+    await transcript.handle(TurnStart(thread_id="thread", text="try again"))
+    assert error not in frame.blocks
+
+
+@pytest.mark.asyncio
+async def test_tool_error_stays_in_tool_card_instead_of_pinned_banner() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+    await transcript.handle(TurnStart(thread_id="thread", text="question"))
+    await transcript.handle(ToolCallStart(name="execute", args={}, id="tool-error"))
+    await transcript.handle(
+        ToolCallEnd(
+            name="execute",
+            id="tool-error",
+            result={"status": "error", "message": "command failed"},
+        )
+    )
+
+    assert [block.kind for block in frame.blocks] == ["user", "tool"]
+    assert frame.blocks[-1].data["result"]["status"] == "error"
+
+
+
+def test_error_banner_never_exceeds_eight_visual_rows() -> None:
+    output = StringIO()
+    console = Console(file=output, width=80, color_system=None)
+    block = Block(
+        "error",
+        "banner",
+        data={
+            "level": "error",
+            "message": "\n".join(f"line {index}" for index in range(12)),
+        },
+    )
+
+    console.print(render_banner(block, DEFAULT_THEME, 80, 20, False))
+
+    assert len(output.getvalue().splitlines()) <= 8
 
 
 @pytest.mark.asyncio
@@ -242,6 +400,85 @@ async def test_release_committed_drops_tool_and_source_accumulator_references() 
     assert transcript._source_blocks == {}
     assert transcript._tools == {}
     assert transcript._read_groups == {}
+
+
+@pytest.mark.asyncio
+async def test_reasoning_summary_stream_preserves_parts_runs_and_event_order() -> None:
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    async def reasoning(run: int, part: int, text: str) -> None:
+        await transcript.handle(
+            ModelChunk(
+                chunk=AIMessageChunk(
+                    content=[
+                        {
+                            "type": "reasoning",
+                            "index": run,
+                            "summary": [
+                                {
+                                    "type": "summary_text",
+                                    "index": part,
+                                    "text": text,
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                role="main",
+                source_id="main",
+            )
+        )
+
+    await reasoning(0, 0, "directory")
+    await reasoning(0, 1, "Explor")
+    await reasoning(0, 1, "ing…")
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content=[{"type": "text", "text": "Found it.", "index": 1}]),
+            role="main",
+            source_id="main",
+        )
+    )
+    await transcript.handle(
+        ToolCallStart(name="read_file", args={"path": "a.py"}, id="read-a", source_id="main")
+    )
+    await transcript.handle(ToolCallEnd(name="read_file", id="read-a", result="ok"))
+    await reasoning(2, 0, "Reading…")
+    await transcript.handle(
+        ModelChunk(
+            chunk=AIMessageChunk(content=[{"type": "text", "text": "Done.", "index": 3}]),
+            role="main",
+            source_id="main",
+        )
+    )
+
+    assert [block.kind for block in frame.blocks] == [
+        "thinking",
+        "assistant",
+        "tool",
+        "thinking",
+        "assistant",
+    ]
+    thinking = [block for block in frame.blocks if block.kind == "thinking"]
+    output = StringIO()
+    Console(file=output, width=80, color_system=None).print(
+        render_thinking(thinking[0], DEFAULT_THEME, 80, 20, False)
+    )
+    assert [line.rstrip() for line in output.getvalue().splitlines()] == [
+        "",
+        "directory",
+        "",
+        "Exploring…",
+    ]
+    assert [block.data["text"] for block in thinking] == [
+        "directory\n\nExploring…",
+        "Reading…",
+    ]
+    assert [block.data["text"] for block in frame.blocks if block.kind == "assistant"] == [
+        "Found it.",
+        "Done.",
+    ]
 
 
 @pytest.mark.asyncio

@@ -177,6 +177,7 @@ def test_loading_builtins_registers_expected_plugins_and_features(
         "tool",
         "user",
         "welcome",
+        "working",
     }
 
 

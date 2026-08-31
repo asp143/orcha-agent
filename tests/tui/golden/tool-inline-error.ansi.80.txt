@@ -1,1 +1,3 @@
-<ESC>[31m✘ Error: permission denied<ESC>[0m
+
+✘ Grep: needle
+<ESC>[31mpermission denied<ESC>[0m

@@ -1,6 +1,7 @@
 """Translate kernel events and console output into transcript blocks."""
 
 from __future__ import annotations
+import time
 
 from collections.abc import Mapping
 from typing import Any
@@ -41,12 +42,31 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _thinking_text(part: Mapping[str, Any]) -> str:
+def _thinking_fragments(
+    part: Mapping[str, Any],
+) -> list[tuple[tuple[str, Any] | None, str]]:
     if part.get("type") == "reasoning":
-        return _text(part.get("summary"))
+        summary = part.get("summary")
+        if isinstance(summary, (list, tuple)):
+            fragments: list[tuple[tuple[str, Any] | None, str]] = []
+            for position, item in enumerate(summary):
+                part_key: tuple[str, Any] | None = ("position", position)
+                if isinstance(item, Mapping) and "index" in item:
+                    part_key = ("index", item["index"])
+                fragments.append((part_key, _text(item)))
+            return fragments
+        return [(None, _text(summary))]
     if part.get("type") == "thinking":
-        return _text(part.get("thinking"))
-    return ""
+        return [(None, _text(part.get("thinking")))]
+    return []
+
+
+def _reasoning_run_key(part: Mapping[str, Any]) -> tuple[str, Any] | None:
+    if "index" in part:
+        return ("index", part["index"])
+    if part.get("id") is not None:
+        return ("id", part["id"])
+    return None
 
 
 def _reasoning_tokens(chunk: Any) -> int | None:
@@ -79,11 +99,104 @@ class Transcript:
         self.registry = registry
         self.scheduler = scheduler
         self._source_blocks: dict[tuple[str, str], Block] = {}
+        self._source_tails: dict[str, Block] = {}
         self._tools: dict[str, Block] = {}
         self._read_groups: dict[str, Block] = {}
+        self._working: Block | None = None
+        self._pinned_error: Block | None = None
+
+    @staticmethod
+    def _settle(block: Block) -> None:
+        if block.kind == "tool" and block.state is BlockState.ACTIVE:
+            block.data.pop("elapsed", None)
+            block.update(duration=max(0.0, time.monotonic() - block.created))
+        block.settle()
+
+
+    def _discard_working(self) -> None:
+        working = self._working
+        if working is None:
+            return
+        self.frame.blocks[:] = [
+            block for block in self.frame.blocks if block is not working
+        ]
+        self._working = None
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+
+    def _show_working(self) -> Block:
+        self._discard_working()
+        self._working = self.frame.add(
+            "working",
+            {
+                "message": "Working… (Esc to interrupt)",
+                "level": "accent",
+                "spinner_frame": 0,
+            },
+        )
+        if self.scheduler is not None:
+            self.scheduler.start_spinner()
+            self.scheduler.request_invalidate()
+        return self._working
+
+    def show_retry(
+        self,
+        *,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: float,
+        now: float | None = None,
+    ) -> Block:
+        current = time.monotonic() if now is None else now
+        block = self._working
+        if block is None or block.state is not BlockState.ACTIVE:
+            block = self._show_working()
+        block.update(
+            message=(
+                f"Retrying ({attempt}/{max_attempts}) "
+                f"in {max(0, int(delay_seconds + 0.999999))}s…"
+            ),
+            level="warning",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            retry_deadline=current + max(0.0, delay_seconds),
+        )
+        if self.scheduler is not None:
+            self.scheduler.start_spinner()
+            self.scheduler.request_invalidate()
+        return block
+
+    def dismiss_error(self) -> None:
+        error = self._pinned_error
+        if error is None:
+            return
+        self.frame.blocks[:] = [
+            block for block in self.frame.blocks if block is not error
+        ]
+        self._pinned_error = None
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+
+    def pin_error(self, message: str) -> Block:
+        self._discard_working()
+        self.dismiss_error()
+        lines = message.splitlines() or ["Unknown error"]
+        if len(lines) > 8:
+            lines = [*lines[:7], "…"]
+        self._pinned_error = self.frame.add(
+            "banner",
+            {
+                "message": "\n".join(lines),
+                "level": "error",
+                "pinned": True,
+            },
+        )
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
+        return self._pinned_error
 
     def _commit(self, block: Block, *, immediate: bool = False) -> None:
-        block.settle()
+        self._settle(block)
         if self.scheduler is None:
             self.frame.commit_ready()
         elif immediate:
@@ -148,10 +261,13 @@ class Transcript:
 
     async def handle(self, event: object) -> None:
         if isinstance(event, TurnStart):
+            self._discard_working()
+            self.dismiss_error()
             for prior in self.frame.blocks:
                 if prior.state is BlockState.ACTIVE:
-                    prior.settle()
+                    self._settle(prior)
             self._source_blocks.clear()
+            self._source_tails.clear()
             self._tools.clear()
             self._read_groups.clear()
             if self._legacy(event):
@@ -162,15 +278,43 @@ class Transcript:
                 source_id=event.thread_id,
             )
             self._commit(block, immediate=True)
+            self._show_working()
             if self.scheduler is not None:
                 self.scheduler.render_now()
             return
+
+        retry_name = type(event).__name__
+        if retry_name in {
+            "ProviderRetry",
+            "ProviderRetryScheduled",
+            "RetryScheduled",
+        }:
+            delay = float(
+                getattr(
+                    event,
+                    "delay_seconds",
+                    getattr(event, "delay_s", getattr(event, "delay_ms", 0) / 1000),
+                )
+            )
+            self.show_retry(
+                attempt=int(getattr(event, "attempt", 1)),
+                max_attempts=int(
+                    getattr(event, "max_attempts", getattr(event, "max_attempt", 1))
+                ),
+                delay_seconds=delay,
+            )
+            return
+
         if self._legacy(event):
+            if isinstance(event, (ModelChunk, ToolCallStart, BaseException)):
+                self._discard_working()
             return
         if isinstance(event, ModelChunk):
-            self._model_chunk(event)
+            if self._model_chunk(event):
+                self._discard_working()
             return
         if isinstance(event, ToolCallStart):
+            self._discard_working()
             self._tool_start(event)
             return
         if isinstance(event, ToolCallEnd):
@@ -194,18 +338,23 @@ class Transcript:
             self._commit(block)
             return
         if isinstance(event, TurnEnd):
+            self._discard_working()
             for block in self.frame.blocks:
-                if block.state is BlockState.ACTIVE:
-                    block.settle()
+                if (
+                    block.state is BlockState.ACTIVE
+                    and block is not self._pinned_error
+                ):
+                    self._settle(block)
             if self.scheduler is not None:
                 self.scheduler.request_commit()
                 self.scheduler.request_invalidate()
             return
         if isinstance(event, BaseException):
-            self.append_banner(f"{type(event).__name__}: {event}")
+            self.pin_error(f"{type(event).__name__}: {event}")
 
     def _tool_start(self, event: ToolCallStart) -> None:
         source = str(event.source_id or "main")
+        self._source_tails.pop(source, None)
         block = self._read_groups.get(source) if event.name == "read_file" else None
         can_group = (
             block is not None
@@ -231,7 +380,12 @@ class Transcript:
         else:
             block = self.frame.add(
                 "tool",
-                {"name": event.name, "args": event.args, "id": event.id},
+                {
+                    "name": event.name,
+                    "args": event.args,
+                    "id": event.id,
+                    "elapsed": 0.0,
+                },
                 source_id=event.source_id,
             )
             if event.name == "read_file":
@@ -246,7 +400,7 @@ class Transcript:
         if block is None:
             block = self.frame.add(
                 "tool",
-                {"name": event.name, "args": {}, "id": event.id},
+                {"name": event.name, "args": {}, "id": event.id, "elapsed": 0.0},
             )
             self._tools[event.id] = block
         calls = block.data.get("calls")
@@ -263,55 +417,98 @@ class Transcript:
             block.update(result=event.result)
             complete = True
         if complete:
-            block.settle()
+            self._settle(block)
             if self.scheduler is not None:
                 self.scheduler.request_commit()
         if self.scheduler is not None:
             self.scheduler.request_invalidate()
 
-    def _source_block(self, source_id: str, kind: str, role: str) -> Block:
+    def _source_block(
+        self,
+        source_id: str,
+        kind: str,
+        role: str,
+        *,
+        run_key: tuple[str, Any] | None = None,
+    ) -> Block:
         key = (source_id, kind)
         block = self._source_blocks.get(key)
-        if block is not None:
+        if (
+            block is not None
+            and self._source_tails.get(source_id) is block
+            and (
+                kind != "thinking"
+                or run_key is None
+                or block.data.get("run_key") == run_key
+            )
+        ):
             return block
         data: dict[str, Any] = {"text": "", "role": role}
         if kind == "assistant":
-            data.update(role=role, subagent=role == "subagent" or role.startswith("subagent:"))
+            data.update(
+                role=role,
+                subagent=role == "subagent" or role.startswith("subagent:"),
+            )
+        else:
+            data.update(run_key=run_key, summary_part=None)
         block = self.frame.add(kind, data, source_id=source_id)
-        if kind == "thinking":
-            assistant = self._source_blocks.get((source_id, "assistant"))
-            if assistant is not None:
-                self.frame.blocks.remove(block)
-                self.frame.blocks.insert(self.frame.blocks.index(assistant), block)
         self._source_blocks[key] = block
+        self._source_tails[source_id] = block
         return block
 
-    def _model_chunk(self, event: ModelChunk) -> None:
+    def _model_chunk(self, event: ModelChunk) -> bool:
         source_id = str(event.source_id or event.role)
         value = getattr(event.chunk, "content", event.chunk)
         parts = value if isinstance(value, (list, tuple)) else (value,)
         thinking_seen = False
+        visible = False
         usage_tokens = _reasoning_tokens(event.chunk)
         for part in parts:
-            if isinstance(part, Mapping) and part.get("type") in {"reasoning", "thinking"}:
-                content = _thinking_text(part)
-                kind = "thinking"
-            else:
-                content = _text(part)
-                kind = "assistant"
+            if (
+                isinstance(part, Mapping)
+                and part.get("type") in {"reasoning", "thinking"}
+            ):
+                run_key = _reasoning_run_key(part)
+                for summary_part, content in _thinking_fragments(part):
+                    if not content:
+                        continue
+                    block = self._source_block(
+                        source_id,
+                        "thinking",
+                        event.role,
+                        run_key=run_key,
+                    )
+                    prior = str(block.data["text"])
+                    previous_part = block.data.get("summary_part")
+                    separator = (
+                        "\n\n"
+                        if prior
+                        and summary_part is not None
+                        and previous_part is not None
+                        and summary_part != previous_part
+                        else ""
+                    )
+                    accumulated = f"{prior}{separator}{content}"
+                    changes: dict[str, Any] = {
+                        "text": accumulated,
+                        "summary_part": summary_part,
+                        "reasoning_tokens": (
+                            usage_tokens
+                            if usage_tokens is not None
+                            else max(1, (len(accumulated) + 3) // 4)
+                        ),
+                    }
+                    block.update(changes)
+                    visible = True
+                    thinking_seen = True
+                continue
+
+            content = _text(part)
             if not content:
                 continue
-            block = self._source_block(source_id, kind, event.role)
-            accumulated = f"{block.data['text']}{content}"
-            changes: dict[str, Any] = {"text": accumulated}
-            if kind == "thinking":
-                thinking_seen = True
-                changes["reasoning_tokens"] = (
-                    usage_tokens
-                    if usage_tokens is not None
-                    else max(1, (len(accumulated) + 3) // 4)
-                )
-            block.update(changes)
+            block = self._source_block(source_id, "assistant", event.role)
+            block.update(text=f"{block.data['text']}{content}")
+            visible = True
         if usage_tokens is not None:
             thinking = self._source_blocks.get((source_id, "thinking"))
             if (
@@ -324,6 +521,7 @@ class Transcript:
             if thinking_seen:
                 self.scheduler.start_spinner()
             self.scheduler.request_invalidate()
+        return visible
 
     def print(self, *objects: Any, **kwargs: Any) -> Block:
         block = self.frame.add(
@@ -353,6 +551,11 @@ class Transcript:
             for key, block in self._source_blocks.items()
             if block.id not in committed
         }
+        self._source_tails = {
+            key: block
+            for key, block in self._source_tails.items()
+            if block.id not in committed
+        }
         self._tools = {
             key: block
             for key, block in self._tools.items()
@@ -366,6 +569,7 @@ class Transcript:
     def clear(self) -> None:
         self.frame.blocks.clear()
         self._source_blocks.clear()
+        self._source_tails.clear()
         self._tools.clear()
         self._read_groups.clear()
 

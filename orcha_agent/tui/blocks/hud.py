@@ -35,7 +35,12 @@ def render_todo(
         kind="tool",
         state=block.state,
         revision=block.revision,
-        data={"name": "todo", "args": {"items": items}, "result": "ok"},
+        data={
+            "name": "todo",
+            "args": {"items": items},
+            "result": "ok",
+            "leading_spacer": False,
+        },
     )
     return render_tool(tool, theme, width, min(_MAX_ROWS, budget_rows), expanded)
 
@@ -70,6 +75,7 @@ def render_subagents(
             "name": "task",
             "result": {"agents": normalized},
             "spinner_frame": block.data.get("spinner_frame", 0),
+            "leading_spacer": False,
         },
     )
     return render_tool(tool, theme, width, min(_MAX_ROWS, budget_rows), expanded)

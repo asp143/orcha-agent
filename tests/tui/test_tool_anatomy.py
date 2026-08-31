@@ -47,12 +47,233 @@ def test_read_call_result_and_group_match_omp_anatomy() -> None:
         )
     )
 
-    assert "⏳ Read: src/app.py:4-11" in pending
-    assert "• Read src/app.py:4-18" in result
-    assert " 4│line 1" in result
+    assert "⏳ Read: src/app.py:5-12" in pending
+    assert "• Read src/app.py:5-19" in result
+    assert " 5│line 1" in result
     assert "… 3 more lines ⟦Ctrl+O: Expand⟧" in result
     assert "• Read (3)" in grouped
     assert "├─ src/a.py" in grouped and "└─ src/c.py" in grouped
+
+
+def test_empty_successful_read_renders_success_card() -> None:
+    output = _plain(
+        _block("read_file", args={"path": "empty.txt"}, result="")
+    )
+
+    assert "• Read empty.txt" in output
+    assert "✘ Read" not in output
+
+
+def test_tool_headers_stay_single_line_and_shorten_paths_at_common_widths() -> None:
+    cwd = "/workspace/project"
+    basename = "renderer_output.py"
+    long_path = f"{cwd}/{'nested/' * 12}{basename}"
+    assert len(long_path) >= 120
+
+    for width in (60, 80, 120):
+        output = _plain(
+            _block(
+                "read_file",
+                cwd=cwd,
+                args={"path": long_path},
+                result="content",
+            ),
+            width=width,
+        )
+        lines = output.splitlines()
+        assert len(lines) == 4
+        assert len(lines[1]) == width
+        assert basename in lines[1]
+        assert "…" in lines[1]
+        assert cwd not in lines[1]
+
+
+def test_tool_header_flattens_control_lines_and_shortens_home() -> None:
+    from pathlib import Path
+
+    home_path = Path.home() / "projects" / "demo.py"
+    output = _plain(
+        _block(
+            "read_file",
+            args={"path": f"{home_path}\r\nunexpected"},
+            result="content",
+        ),
+        width=120,
+    )
+
+    assert "\r" not in output
+    assert "~/projects/demo.py unexpected" in output
+    assert len(output.splitlines()) == 4
+
+
+def test_read_uses_deepagents_line_numbers_for_gutter_range_and_more_hint() -> None:
+    numbered = "\n".join(f"{line:>3}  source {line}" for line in range(41, 56))
+    collapsed = _plain(
+        _block(
+            "read_file",
+            args={"path": "src/numbered.py", "offset": 40},
+            result=numbered,
+        )
+    )
+    expanded = _plain(
+        _block(
+            "read_file",
+            args={"path": "src/numbered.py", "offset": 40},
+            result=numbered,
+        ),
+        expanded=True,
+    )
+
+    assert "• Read src/numbered.py:41-55" in collapsed
+    assert " 41│source 41" in collapsed
+    assert " 52│source 52" in collapsed
+    assert "source 53" not in collapsed
+    assert "… 3 more lines ⟦Ctrl+O: Expand⟧" in collapsed
+    assert " 55│source 55" in expanded
+    assert "more lines" not in expanded
+
+
+def test_read_keeps_mixed_number_like_content_unnumbered() -> None:
+    output = _plain(
+        _block(
+            "read_file",
+            args={"path": "history.txt"},
+            result="A historical note\n1998  was a year",
+        )
+    )
+
+    assert "• Read history.txt:1-2" in output
+    assert " 1│A historical note" in output
+    assert " 2│1998  was a year" in output
+    assert "1998│was a year" not in output
+
+
+def test_read_numbered_mode_allows_empty_lines_between_numbered_lines() -> None:
+    output = _plain(
+        _block(
+            "read_file",
+            args={"path": "numbered.txt"},
+            result=" 41  first\n\n 43  third",
+        )
+    )
+
+    assert "• Read numbered.txt:41-43" in output
+    assert " 41│first" in output
+    assert " 43│third" in output
+
+
+def test_ls_renders_an_inline_tree_with_directory_suffix_and_row_limits() -> None:
+    entries = [
+        {"path": f"entry-{index}", "type": "directory" if index in {0, 9} else "file"}
+        for index in range(30)
+    ]
+    value = _block("ls", args={"path": "src"}, result={"entries": entries, "count": 30})
+
+    collapsed = _plain(value)
+    expanded = _plain(value, expanded=True)
+
+    assert collapsed.startswith("\n📂 Ls: src  30 items")
+    assert "├─ entry-0/" in collapsed
+    assert "entry-7" in collapsed and "entry-8" not in collapsed
+    assert "… 22 more items ⟦Ctrl+O: Expand⟧" in collapsed
+    assert "entry-23" in expanded and "entry-24" not in expanded
+    assert "… 6 more items ⟦Ctrl+O: Expand⟧" in expanded
+    assert "╭" not in collapsed
+
+
+def test_glob_and_grep_use_authoritative_counts_and_specific_empty_summaries() -> None:
+    glob = _plain(
+        _block(
+            "glob",
+            args={"pattern": "**/*.py"},
+            result={"matches": [f"src/{index}.py" for index in range(9)], "count": 12},
+        )
+    )
+    grep = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle", "path": "src"},
+            result={
+                "matches": [
+                    {"path": "a.py", "line": 2, "text": "needle one"},
+                    {"path": "a.py", "line": 8, "text": "needle two"},
+                    {"path": "b.py", "line": 3, "text": "needle three"},
+                ],
+                "match_count": 17,
+                "file_count": 5,
+            },
+        )
+    )
+    formatted_grep = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle", "output_mode": "content"},
+            result="a.py:\n  2: needle one\n  8: needle two\nb.py:\n  3: needle three",
+        )
+    )
+
+    assert "Glob: **/*.py  12 items" in glob
+    assert "… 4 more items ⟦Ctrl+O: Expand⟧" in glob
+    assert "Grep: needle  17 matches · 5 files · in src" in grep
+    assert "… 14 more matches ⟦Ctrl+O: Expand⟧" in grep
+    assert "Grep: needle  3 matches · 2 files" in formatted_grep
+    assert _plain(_block("glob", args={"pattern": "*.none"}, result="")).strip() == "⚠ No files found"
+    assert _plain(_block("grep", args={"pattern": "none"}, result="")).strip() == "⚠ No matches found"
+
+
+def test_grep_default_mode_keeps_count_shaped_filename_as_one_path() -> None:
+    output = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle"},
+            result="notes: 2",
+        )
+    )
+
+    assert "Grep: needle  1 matches · 1 files" in output
+    assert "notes: 2" in output
+
+
+def test_grep_count_mode_splits_rows_at_the_final_separator() -> None:
+    output = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle", "output_mode": "count"},
+            result="dir:name.py: 5\nsrc/b.py: 2",
+        )
+    )
+
+    assert "Grep: needle  7 matches · 2 files" in output
+
+
+def test_grep_content_mode_keeps_match_ending_in_a_number() -> None:
+    output = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle", "output_mode": "content"},
+            result="src/a.py:12:needle: 5",
+        )
+    )
+
+    assert "Grep: needle  1 matches · 1 files" in output
+    assert "src/a.py:12:needle: 5" in output
+
+
+def test_grep_treats_only_the_deepagents_no_match_sentinel_as_empty() -> None:
+    exact = _plain(_block("grep", args={"pattern": "needle"}, result="No matches found"))
+    padded = _plain(_block("grep", args={"pattern": "needle"}, result=" \n No matches found \n\t"))
+    real_match = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle", "output_mode": "content"},
+            result="No matches found.txt:\n  7: No matches found in this line",
+        )
+    )
+
+    assert exact.strip() == "⚠ No matches found"
+    assert padded.strip() == "⚠ No matches found"
+    assert "Grep: needle  1 matches · 1 files" in real_match
+    assert "No matches found.txt:7:No matches found in this line" in real_match
 
 
 def test_write_streaming_and_result_use_tail_and_line_count() -> None:
@@ -109,7 +330,7 @@ def test_grep_glob_and_web_search_are_inline_without_frames() -> None:
     glob = _plain(_block("glob", args={"pattern": "*.py"}, result=["a.py", "b.py"]))
     web = _plain(_block("web_search", args={"query": "orcha"}, result=["one", "two"]))
 
-    assert grep.startswith("🔍 Grep: needle  3 matches · 2 files · in src")
+    assert grep.lstrip().startswith("🔍 Grep: needle  3 matches · 2 files · in src")
     assert "╭" not in grep and "├─" in grep and "└─" in grep
     assert "Glob: *.py" in glob and "╭" not in glob
     assert "Web Search: orcha" in web and "╭" not in web
@@ -129,9 +350,10 @@ def test_generic_args_hint_and_degradation_rows() -> None:
     single = _plain(value, rows=1)
 
     assert "└─ alpha=1 beta=two" in full
-    assert len(folded.splitlines()) == 2 and folded.startswith("╭─ Custom · 4.0s")
+    assert len(folded.strip().splitlines()) == 2
+    assert folded.lstrip().startswith("╭─ Custom · Elapsed 4s")
     assert folded.splitlines()[-1] == "╰"
-    assert single == "⣾ Custom · 4.0s\n"
+    assert single.strip() == "⣾ Custom · Elapsed 4s"
     assert render(value, DEFAULT_THEME, 80, 0, False) is None
 
 

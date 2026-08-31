@@ -1,3 +1,4 @@
+
 🔍 Grep: needle  3 matches · 2 files · in src
   ├─ a.py:1:needle
   ├─ b.py:2:needle

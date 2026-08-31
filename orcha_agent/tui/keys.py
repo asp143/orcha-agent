@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,63 @@ DEFAULT_BINDINGS: dict[str, tuple[str, ...]] = {
 }
 
 Warn = Callable[[str], None]
+
+_KEY_LABELS = {
+    "backspace": "Backspace",
+    "delete": "Delete",
+    "down": "Down",
+    "end": "End",
+    "enter": "Enter",
+    "escape": "Esc",
+    "home": "Home",
+    "left": "Left",
+    "pagedown": "PgDn",
+    "pageup": "PgUp",
+    "right": "Right",
+    "space": "Space",
+    "tab": "Tab",
+    "up": "Up",
+}
+_MODIFIER_LABELS = {
+    "a": "Alt",
+    "c": "Ctrl",
+    "m": "Alt",
+    "s": "Shift",
+}
+
+
+def _format_key_part(part: str) -> str:
+    lower = part.casefold()
+    label = _KEY_LABELS.get(lower)
+    if label is not None:
+        return label
+
+    pieces = lower.split("-")
+    modifiers: list[str] = []
+    while len(pieces) > 1 and pieces[0] in _MODIFIER_LABELS:
+        modifiers.append(_MODIFIER_LABELS[pieces.pop(0)])
+    key = "-".join(pieces)
+    key_label = _KEY_LABELS.get(key)
+    if key_label is None:
+        key_label = key.upper() if len(key) == 1 else key[:1].upper() + key[1:]
+    return "+".join((*modifiers, key_label))
+
+
+def format_key_name(binding: str) -> str:
+    """Return a human-readable label for one prompt-toolkit binding."""
+
+    parts = binding.split()
+    if len(parts) == 2 and parts[0].casefold() == "escape":
+        if parts[1].casefold() == "escape":
+            return "Esc Esc"
+        return f"Alt+{_format_key_part(parts[1])}"
+    return " ".join(_format_key_part(part) for part in parts)
+
+
+def format_key_bindings(bindings: Sequence[str]) -> str:
+    """Return compact slash-separated labels for alternative bindings."""
+
+    return "/".join(format_key_name(binding) for binding in bindings)
 
 
 def default_keybindings_path() -> Path:
@@ -173,6 +230,8 @@ def create_key_bindings(
 __all__ = [
     "DEFAULT_BINDINGS",
     "create_key_bindings",
+    "format_key_bindings",
+    "format_key_name",
     "default_keybindings_path",
     "load_keybindings",
     "user_keybindings_path",

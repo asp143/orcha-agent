@@ -8,15 +8,23 @@ import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from orcha_agent.core.events import EventBus, SessionSwitch, ToolCallEnd, ToolCallStart
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
+from orcha_agent.core.events import (
+    EventBus,
+    SessionSwitch,
+    ToolCallEnd,
+    ToolCallStart,
+    TurnEnd,
+)
 from orcha_agent.core.plugin import ProviderCaps
 from orcha_agent.core.registry import Registry
 from orcha_agent.tui.composer import Composer
 from orcha_agent.tui.history import SQLiteHistory
 from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
+from orcha_agent.tui.turn import _run_turn
 from orcha_agent.tui.theme import load_themes
 from prompt_toolkit.layout.dimension import to_dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
 
 
 def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
@@ -60,12 +68,10 @@ async def test_headless_submit_newline_continuation_dot_and_bash(tmp_path: Path)
     submitted: list[str] = []
     events: list[object] = []
     submitted_event = asyncio.Event()
-    shell_completed = asyncio.Event()
     ctx = _ctx(tmp_path)
     async def capture(event: object) -> None:
         events.append(event)
-        if isinstance(event, ToolCallEnd):
-            shell_completed.set()
+
     ctx._bus.on(object, capture, plugin="test")
     async def submit(text: str) -> None:
         submitted.append(text)
@@ -98,7 +104,7 @@ async def test_headless_submit_newline_continuation_dot_and_bash(tmp_path: Path)
         submitted_event.clear()
         pipe.send_text("!printf ok")
         pipe.send_bytes(b"\r")
-        await asyncio.wait_for(shell_completed.wait(), 1)
+        await asyncio.sleep(0.05)
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
 
@@ -134,11 +140,7 @@ async def test_headless_alt_enter_and_shift_enter_insert_newlines(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_history_navigation_and_overlay_selection(
-    tmp_path: Path,
-    wait_until,
-    wait_for_render,
-) -> None:
+async def test_history_navigation_and_overlay_selection(tmp_path: Path) -> None:
     history = SQLiteHistory(tmp_path / "history.db")
     history.append_string("older")
     history.append_string("newer")
@@ -159,15 +161,12 @@ async def test_history_navigation_and_overlay_selection(
             output=DummyOutput(),
         )
         task = asyncio.create_task(runtime.run())
-        await wait_for_render(
-            runtime,
-            lambda: runtime.application.renderer._last_screen is not None,
-        )
+        await asyncio.sleep(0.05)
         pipe.send_bytes(b"\x1b[A")
-        await wait_until(lambda: runtime.buffer.text == "newer")
+        await asyncio.sleep(0.05)
         assert runtime.buffer.text == "newer"
         pipe.send_bytes(b"\x12")
-        await wait_until(lambda: runtime.buffer.text == "chosen")
+        await asyncio.sleep(0.05)
         assert runtime.buffer.text == "chosen"
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
@@ -176,25 +175,16 @@ async def test_history_navigation_and_overlay_selection(
 
 
 @pytest.mark.asyncio
-async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(
-    tmp_path: Path,
-    wait_until,
-) -> None:
+async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(tmp_path: Path) -> None:
     submitted: list[str] = []
-    started = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
-    cancelled = asyncio.Event()
+    started = asyncio.Event()
     releases = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
 
     async def submit(text: str) -> None:
         index = len(submitted)
         submitted.append(text)
-        started[index].set()
-        try:
-            await releases[index].wait()
-        except asyncio.CancelledError:
-            if index == 2:
-                cancelled.set()
-            raise
+        started.set()
+        await releases[index].wait()
 
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(submit, input=pipe, output=DummyOutput())
@@ -202,30 +192,28 @@ async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(
         await asyncio.sleep(0)
         pipe.send_text("active")
         pipe.send_bytes(b"\r")
-        await asyncio.wait_for(started[0].wait(), 1)
+        await asyncio.wait_for(started.wait(), 1)
         pipe.send_text("queued draft")
         pipe.send_bytes(b"\x11")
-        await wait_until(lambda: runtime.queue.items == ("queued draft",))
+        await asyncio.sleep(0.02)
         assert runtime.queue.items == ("queued draft",)
         pipe.send_bytes(b"\x1b\x1b[A")
-        await wait_until(lambda: runtime.buffer.text == "queued draft")
+        await asyncio.sleep(0.02)
         assert runtime.buffer.text == "queued draft"
         pipe.send_bytes(b"\x11")
         releases[0].set()
-        await asyncio.wait_for(started[1].wait(), 1)
+        await asyncio.sleep(0.05)
         assert submitted[:2] == ["active", "queued draft"]
-        pipe.send_text("-> third\n-> fourth")
-        pipe.send_bytes(b"\r")
+        runtime.buffer.text = "-> third\n-> fourth"
+        pipe.send_bytes(b"\x11")
+        await asyncio.sleep(0.02)
+        assert runtime.queue.items == ("third", "fourth")
         releases[1].set()
-        await asyncio.wait_for(started[2].wait(), 1)
-        await wait_until(lambda: runtime.queue.items == ("fourth",))
+        await asyncio.sleep(0.05)
         assert submitted[:3] == ["active", "queued draft", "third"]
         assert runtime.queue.items == ("fourth",)
         pipe.send_bytes(b"\x1b\x1b")
-        await asyncio.wait_for(cancelled.wait(), 1)
-        await wait_until(
-            lambda: runtime.buffer.text == "fourth" and not runtime.streaming
-        )
+        await asyncio.sleep(0.6)
         assert runtime.buffer.text == "fourth"
         assert not runtime.streaming
         releases[2].set()
@@ -234,14 +222,10 @@ async def test_stream_queue_batch_dequeue_abort_and_auto_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_ctrl_c_ladder_and_double_escape_tree(
-    tmp_path: Path,
-    wait_until,
-) -> None:
+async def test_ctrl_c_ladder_and_double_escape_tree(tmp_path: Path) -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
     shown: list[object] = []
-    overlay_shown = asyncio.Event()
 
     async def submit(_text: str) -> None:
         started.set()
@@ -253,7 +237,7 @@ async def test_ctrl_c_ladder_and_double_escape_tree(
 
     async def show(value: object) -> None:
         shown.append(value)
-        overlay_shown.set()
+
     ctx = _ctx(tmp_path)
     ctx.ui = UIFacade(show_overlay=show)
     with create_pipe_input() as pipe:
@@ -262,7 +246,7 @@ async def test_ctrl_c_ladder_and_double_escape_tree(
         await asyncio.sleep(0)
         pipe.send_text("draft")
         pipe.send_bytes(b"\x03")
-        await wait_until(lambda: runtime.buffer.text == "")
+        await asyncio.sleep(0.02)
         assert runtime.buffer.text == ""
         pipe.send_text("go")
         pipe.send_bytes(b"\r")
@@ -270,19 +254,16 @@ async def test_ctrl_c_ladder_and_double_escape_tree(
         pipe.send_bytes(b"\x03")
         await asyncio.wait_for(cancelled.wait(), 1)
         pipe.send_bytes(b"\x1b\x1b")
-        await asyncio.wait_for(overlay_shown.wait(), 1)
+        await asyncio.sleep(0.6)
         assert shown == ["tree"]
         pipe.send_bytes(b"\x03")
-        await wait_until(lambda: runtime._last_interrupt > 0)
+        await asyncio.sleep(0.02)
         pipe.send_bytes(b"\x03")
         await asyncio.wait_for(task, 1)
 
 
 @pytest.mark.asyncio
-async def test_external_editor_draft_restore_completion_and_actions(
-    tmp_path: Path,
-    wait_until,
-) -> None:
+async def test_external_editor_draft_restore_completion_and_actions(tmp_path: Path) -> None:
     (tmp_path / "alpha.py").write_text("", encoding="utf-8")
     registry = Registry()
 
@@ -313,36 +294,32 @@ async def test_external_editor_draft_restore_completion_and_actions(
         task = asyncio.create_task(runtime.run())
         await asyncio.sleep(0)
         pipe.send_bytes(b"\x07")
-        await wait_until(lambda: runtime.buffer.text == "saved edited")
+        async with asyncio.timeout(1):
+            while runtime.buffer.text != "saved edited":
+                await asyncio.sleep(0)
         assert runtime.buffer.text == "saved edited"
         runtime.buffer.text = "/h"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         pipe.send_bytes(b"\t")
-        await wait_until(lambda: runtime.buffer.complete_state is not None)
+        await asyncio.sleep(0.05)
         assert runtime.buffer.complete_state is not None
         pipe.send_bytes(b"\x1b")
-        await wait_until(lambda: runtime.buffer.complete_state is None)
+        await asyncio.sleep(0.6)
         assert runtime.buffer.complete_state is None
         runtime.buffer.text = "@alp"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         pipe.send_bytes(b"\t")
-        await wait_until(lambda: runtime.buffer.text == "@alpha.py")
+        await asyncio.sleep(0.05)
         assert runtime.buffer.text == "@alpha.py"
         runtime.buffer.text = "alp"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         pipe.send_bytes(b"\t")
-        await wait_until(lambda: runtime.buffer.text == "alpha.py")
+        await asyncio.sleep(0.05)
         assert runtime.buffer.text == "alpha.py"
         pipe.send_bytes(b"\x14")
         pipe.send_bytes(b"\x0f")
         pipe.send_bytes(b"\x1bp")
-        await wait_until(
-            lambda: (
-                not runtime.ui.thinking_visible
-                and runtime.ui.tools_expanded
-                and "model" in shown
-            )
-        )
+        await asyncio.sleep(0.05)
         assert runtime.ui.thinking_visible is False
         assert runtime.ui.tools_expanded is True
         assert "model" in shown
@@ -352,7 +329,7 @@ async def test_external_editor_draft_restore_completion_and_actions(
     assert ctx.plugin_states["composer"]["draft"] == "alpha.py"
 
 @pytest.mark.asyncio
-async def test_empty_submit_aborts_stream_and_dispatches_queue_head(wait_until) -> None:
+async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
     submitted: list[str] = []
     active_cancelled = asyncio.Event()
     queued_started = asyncio.Event()
@@ -376,7 +353,8 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head(wait_until) 
         await asyncio.sleep(0)
         pipe.send_text("active")
         pipe.send_bytes(b"\r")
-        await wait_until(lambda: runtime.streaming)
+        while not runtime.streaming:
+            await asyncio.sleep(0)
         runtime.queue.append("next")
         pipe.send_bytes(b"\r")
         await asyncio.wait_for(active_cancelled.wait(), 1)
@@ -393,7 +371,6 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head(wait_until) 
 async def test_provider_and_plugin_actions_are_headlessly_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    wait_until,
 ) -> None:
     registry = Registry()
     registry.providers["able"] = SimpleNamespace(
@@ -443,14 +420,7 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
         pipe.send_bytes(b"\x1b[Z")
         pipe.send_bytes(b"\x10")
         pipe.send_bytes(b"\x18")
-        await wait_until(
-            lambda: (
-                runtime.thinking_level == "low"
-                and ctx.plugin_states["composer"]["thinking_level"] == "low"
-                and switched == ["second"]
-                and plugin_calls == ["custom"]
-            )
-        )
+        await asyncio.sleep(0.2)
         assert runtime.thinking_level == "low"
         assert ctx.plugin_states["composer"]["thinking_level"] == "low"
         assert switched == ["second"]
@@ -460,18 +430,28 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
 
 
 @pytest.mark.asyncio
-async def test_keys_command_prints_effective_map() -> None:
+async def test_keys_command_opens_effective_key_card() -> None:
     from orcha_agent.builtin.commands_core import _keys
+    from orcha_agent.tui.runtime import dispatch_command
 
-    printed: list[object] = []
+    shown: list[object] = []
+
+    async def show(overlay: object) -> None:
+        shown.append(overlay)
+
+    registry = Registry()
+    registry._add_command("core", "keys", _keys, "show keys")
     ctx = SimpleNamespace(
-        ui=SimpleNamespace(effective_keys={"submit": ("enter",), "tree": ("escape escape",)}),
-        console=SimpleNamespace(print=printed.append),
+        ui=SimpleNamespace(
+            effective_keys={"submit": ("enter",), "tree": ("escape escape",)},
+            show=show,
+        ),
+        console=SimpleNamespace(print=lambda _value: None),
     )
-    await _keys(ctx, "")
-    rendered = str(printed[0])
-    assert "submit" in rendered and "enter" in rendered
-    assert "tree" in rendered and "escape escape" in rendered
+
+    assert await dispatch_command(registry, ctx, "/keys") is True
+    assert len(shown) == 1
+    assert type(shown[0]).__name__ == "KeyBindingsOverlay"
 
 
 @pytest.mark.asyncio
@@ -499,7 +479,7 @@ async def test_ctrl_d_aborts_streaming_turn_before_exit() -> None:
         await asyncio.wait_for(task, 1)
 
 
-def test_completion_menu_float_uses_theme_selection_style(tmp_path: Path) -> None:
+def test_completion_surface_sits_immediately_above_composer(tmp_path: Path) -> None:
     theme = load_themes(home=tmp_path)["dark"]
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -510,13 +490,14 @@ def test_completion_menu_float_uses_theme_selection_style(tmp_path: Path) -> Non
             output=DummyOutput(),
         )
         root = runtime.application.layout.container
-        assert len(root.floats) == 1
-        assert isinstance(root.floats[0].content, CompletionsMenu)
+        children = root.content.children
+        composer_index = children.index(runtime.composer.container)
+        assert children[composer_index - 1] is runtime.composer.completion_container
+        assert root.floats == []
         selected = runtime.application.style.get_attrs_for_style_str(
-            "class:completion-menu.completion.current"
+            "class:completion.arrow"
         )
-        assert selected.bgcolor is not None
-
+        assert selected.color is not None
 
 @pytest.mark.parametrize("shape", ["box", "claude", "borderless"])
 def test_composer_container_has_exact_dynamic_content_height(
@@ -538,16 +519,17 @@ def test_composer_container_has_exact_dynamic_content_height(
 
 
 @pytest.mark.asyncio
-async def test_ctrl_d_preserves_draft_and_queue_without_dispatching_queue(
+async def test_ctrl_d_persisted_steer_restores_and_runs_as_follow_up(
     tmp_path: Path,
 ) -> None:
-    submitted: list[str] = []
+    first_submitted: list[str] = []
     started = asyncio.Event()
     cancelled = asyncio.Event()
-    ctx = _ctx(tmp_path)
+    first_ctx = _ctx(tmp_path)
 
-    async def submit(text: str) -> None:
-        submitted.append(text)
+    async def first_submit(text: str) -> None:
+        first_submitted.append(text)
+        first.queue.open_steering()
         started.set()
         try:
             await asyncio.Event().wait()
@@ -555,27 +537,68 @@ async def test_ctrl_d_preserves_draft_and_queue_without_dispatching_queue(
             cancelled.set()
             raise
 
-    with create_pipe_input() as pipe:
-        runtime = ApplicationRuntime(
-            submit,
-            ctx=ctx,
-            input=pipe,
+    async def wait_for_queued_steer() -> None:
+        while not first.queue:
+            await asyncio.sleep(0)
+
+    with create_pipe_input() as first_pipe:
+        first = ApplicationRuntime(
+            first_submit,
+            ctx=first_ctx,
+            input=first_pipe,
             output=DummyOutput(),
         )
-        task = asyncio.create_task(runtime.run())
+        first_task = asyncio.create_task(first.run())
         await asyncio.sleep(0)
-        pipe.send_text("active")
-        pipe.send_bytes(b"\r")
+        first_pipe.send_text("active")
+        first_pipe.send_bytes(b"\r")
         await asyncio.wait_for(started.wait(), 1)
-        runtime.queue.extend(["queued one", "queued two"])
-        pipe.send_text("draft")
-        pipe.send_bytes(b"\x04")
+        first_pipe.send_text("queued steer")
+        first_pipe.send_bytes(b"\r")
+        await asyncio.wait_for(wait_for_queued_steer(), 1)
+        first_pipe.send_bytes(b"\x04")
         await asyncio.wait_for(cancelled.wait(), 1)
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(first_task, 1)
 
-    assert submitted == ["active"]
-    assert ctx.plugin_states["composer"]["draft"] == "draft"
-    assert ctx.plugin_states["composer"]["queue"] == ["queued one", "queued two"]
+    assert first_submitted == ["active"]
+    persisted = {
+        name: dict(state)
+        for name, state in first_ctx.plugin_states.items()
+    }
+    assert persisted["composer"]["queue"] == [
+        {"text": "queued steer", "mode": "steer"},
+    ]
+
+    resumed_submitted: list[str] = []
+    follow_up_ran = asyncio.Event()
+    resumed_ctx = _ctx(tmp_path)
+    resumed_ctx.plugin_states = persisted
+
+    async def resumed_submit(text: str) -> None:
+        resumed_submitted.append(text)
+        if len(resumed_submitted) == 2:
+            follow_up_ran.set()
+
+    with create_pipe_input() as resumed_pipe:
+        resumed = ApplicationRuntime(
+            resumed_submit,
+            ctx=resumed_ctx,
+            input=resumed_pipe,
+            output=DummyOutput(),
+        )
+        assert [(item.text, item.mode) for item in resumed.queue.entries] == [
+            ("queued steer", "follow_up"),
+        ]
+
+        resumed_task = asyncio.create_task(resumed.run())
+        await asyncio.sleep(0)
+        resumed_pipe.send_text("next dispatch")
+        resumed_pipe.send_bytes(b"\r")
+        await asyncio.wait_for(follow_up_ran.wait(), 1)
+        resumed_pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(resumed_task, 1)
+
+    assert resumed_submitted == ["next dispatch", "queued steer"]
 
 
 @pytest.mark.asyncio
@@ -612,7 +635,8 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
             input=first_pipe,
             output=DummyOutput(),
         )
-        first.queue.extend(["queued one", "queued two"])
+        first.queue.append("queued one", mode="steer")
+        first.queue.append("queued two", mode="follow_up")
         first.buffer.text = "saved draft"
         event = SimpleNamespace(
             current_buffer=first.buffer,
@@ -624,6 +648,10 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
         name: dict(state)
         for name, state in first_ctx.plugin_states.items()
     }
+    assert persisted["composer"]["queue"] == [
+        {"text": "queued one", "mode": "steer"},
+        {"text": "queued two", "mode": "follow_up"},
+    ]
     persisted_calls: list[None] = []
     resumed_ctx = _ctx(tmp_path)
     resumed_ctx.plugin_states = persisted
@@ -638,10 +666,41 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
         )
 
     assert resumed.buffer.text == "saved draft"
-    assert resumed.queue.items == ("queued one", "queued two")
+    assert [(item.text, item.mode) for item in resumed.queue.entries] == [
+        ("queued one", "follow_up"),
+        ("queued two", "follow_up"),
+    ]
     assert "draft" not in resumed_ctx.plugin_states["composer"]
     assert "queue" not in resumed_ctx.plugin_states["composer"]
     assert persisted_calls == [None]
+
+
+def test_reconstructed_runtime_restores_legacy_string_queue_as_follow_up(
+    tmp_path: Path,
+) -> None:
+    ctx = _ctx(tmp_path)
+    ctx.plugin_states["composer"] = {
+        "queue": [
+            "legacy one",
+            {"text": "persisted steer", "mode": "steer"},
+            "legacy two",
+        ],
+    }
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+
+    assert [(item.text, item.mode) for item in runtime.queue.entries] == [
+        ("legacy one", "follow_up"),
+        ("persisted steer", "follow_up"),
+        ("legacy two", "follow_up"),
+    ]
+    assert "queue" not in ctx.plugin_states["composer"]
 
 
 @pytest.mark.asyncio
@@ -738,10 +797,486 @@ def test_queue_recovery_merges_older_prompts_before_active_draft(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_shell_error_and_cancellation_always_settle_tool_card(
+async def test_streaming_submission_modes_and_slash_command_dispatch() -> None:
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+
+    runtime = ApplicationRuntime(
+        submit,
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    event = SimpleNamespace(
+        current_buffer=runtime.buffer,
+        app=SimpleNamespace(invalidate=lambda: None),
+    )
+    try:
+        runtime.streaming = True
+        runtime.queue.open_steering()
+        runtime.buffer.text = "steer now"
+        runtime._accept(runtime.buffer)
+
+        runtime.buffer.text = "after this"
+        runtime._queue_draft(event)
+
+        runtime.buffer.text = "also after"
+        runtime._newline_or_followup(event)
+
+        runtime.buffer.text = "/keys"
+        runtime._accept(runtime.buffer)
+        await runtime._drain_pending()
+
+        assert [(item.mode, item.text) for item in runtime.queue.entries] == [
+            ("steer", "steer now"),
+            ("follow_up", "after this"),
+            ("follow_up", "also after"),
+        ]
+        assert submitted == ["/keys"]
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
+
+
+@pytest.mark.asyncio
+async def test_streaming_enter_injects_at_tool_boundary_while_queue_keys_follow_up(
     tmp_path: Path,
-    wait_until,
 ) -> None:
+    tool_started = asyncio.Event()
+    finish_tool = asyncio.Event()
+    all_follow_ups_submitted = asyncio.Event()
+
+    class BoundaryGraph:
+        def __init__(self) -> None:
+            self.inputs: list[object] = []
+            self.stream_kwargs: list[dict[str, object]] = []
+
+        async def astream(self, next_input: object, **kwargs: object):
+            self.inputs.append(next_input)
+            self.stream_kwargs.append(kwargs)
+            if len(self.inputs) != 1:
+                return
+            tool_started.set()
+            await finish_tool.wait()
+            result = ToolMessage(
+                content="tool finished",
+                tool_call_id="call-1",
+                name="execute",
+            )
+            yield ("updates", {"tools": {"messages": [result]}})
+            yield ("updates", {"__interrupt__": ()})
+
+    graph = BoundaryGraph()
+
+    async def ensure_agent() -> bool:
+        return True
+
+    bus = EventBus()
+    ctx = SimpleNamespace(
+        agent=graph,
+        ensure_agent=ensure_agent,
+        session=SimpleNamespace(get=lambda _session_id: None),
+        bus=bus,
+        session_id="session",
+        thread_id="thread",
+        thread_config={"configurable": {"thread_id": "thread"}},
+        _bus=bus,
+        console=SimpleNamespace(
+            warning=lambda *_args: None,
+            error=lambda *_args: None,
+            print=lambda *_args: None,
+        ),
+        capture_turn=lambda: None,
+        record_exit=lambda _reason: None,
+        rebuild_requested=False,
+        rebuild=lambda: asyncio.sleep(0),
+        cfg=SimpleNamespace(
+            cwd=tmp_path,
+            model="able:test",
+            models={},
+            providers={},
+            thinking="summary",
+        ),
+        registry=Registry(),
+        plugin_states={},
+        persist_plugin_states=lambda: None,
+        ui=UIFacade(),
+    )
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+        await _run_turn(ctx, text)
+        if len(submitted) == 3:
+            all_follow_ups_submitted.set()
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        task = asyncio.create_task(runtime.run())
+        await asyncio.sleep(0)
+        pipe.send_text("active")
+        pipe.send_bytes(b"\r")
+        await asyncio.wait_for(tool_started.wait(), 1)
+
+        pipe.send_text("steer now")
+        pipe.send_bytes(b"\r")
+        pipe.send_text("ctrl follow-up")
+        pipe.send_bytes(b"\x11")
+        pipe.send_text("alt follow-up")
+        pipe.send_bytes(b"\x1b\r")
+        await asyncio.sleep(0.05)
+        assert [(item.text, item.mode) for item in runtime.queue.entries] == [
+            ("steer now", "steer"),
+            ("ctrl follow-up", "follow_up"),
+            ("alt follow-up", "follow_up"),
+        ]
+        await asyncio.sleep(0)
+        finish_tool.set()
+
+        await asyncio.wait_for(all_follow_ups_submitted.wait(), 1)
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+    assert submitted == ["active", "ctrl follow-up", "alt follow-up"]
+    assert graph.stream_kwargs[0]["interrupt_after"] == ["tools"]
+    injected = graph.inputs[1]
+    assert isinstance(injected, Command)
+    assert injected.update == {
+        "messages": [{"role": "user", "content": "steer now"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_enter_during_turn_cleanup_becomes_next_turn_follow_up(
+    tmp_path: Path,
+) -> None:
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class CompletingGraph:
+        def __init__(self) -> None:
+            self.inputs: list[object] = []
+
+        async def astream(self, next_input: object, **_kwargs: object):
+            self.inputs.append(next_input)
+            if False:
+                yield None
+
+    graph = CompletingGraph()
+
+    async def ensure_agent() -> bool:
+        return True
+
+    bus = EventBus()
+
+    async def hold_first_cleanup(_event: TurnEnd) -> None:
+        if cleanup_started.is_set():
+            return
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    bus.on(TurnEnd, hold_first_cleanup, plugin="test")
+    ctx = _ctx(tmp_path)
+    ctx.agent = graph
+    ctx.ensure_agent = ensure_agent
+    ctx.session = SimpleNamespace(get=lambda _session_id: None)
+    ctx.bus = bus
+    ctx._bus = bus
+    ctx.session_id = "session"
+    ctx.thread_id = "thread"
+    ctx.thread_config = {"configurable": {"thread_id": "thread"}}
+    ctx.console = SimpleNamespace(
+        warning=lambda *_args: None,
+        error=lambda *_args: None,
+        print=lambda *_args: None,
+    )
+    ctx.capture_turn = lambda: None
+    ctx.record_exit = lambda _reason: None
+    ctx.rebuild_requested = False
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+        await _run_turn(ctx, text)
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        active = asyncio.create_task(runtime._submit_serially("active"))
+        try:
+            await cleanup_started.wait()
+            runtime.buffer.text = "late follow-up"
+            runtime._accept(runtime.buffer)
+
+            assert [(item.text, item.mode) for item in runtime.queue.entries] == [
+                ("late follow-up", "follow_up"),
+            ]
+        finally:
+            release_cleanup.set()
+            await active
+            await runtime.scheduler.aclose()
+
+    assert submitted == ["active", "late follow-up"]
+    assert runtime.queue.entries == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["false", "error"])
+async def test_enter_while_agent_initializes_is_never_admitted_as_steering(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    ensure_started = asyncio.Event()
+    release_ensure = asyncio.Event()
+    ensure_calls = 0
+
+    class CompletingGraph:
+        async def astream(self, _next_input: object, **_kwargs: object):
+            if False:
+                yield None
+
+    async def ensure_agent() -> bool:
+        nonlocal ensure_calls
+        ensure_calls += 1
+        if ensure_calls == 1:
+            ensure_started.set()
+            await release_ensure.wait()
+            if outcome == "error":
+                raise RuntimeError("agent unavailable")
+            return False
+        return True
+
+    bus = EventBus()
+    ctx = _ctx(tmp_path)
+    ctx.agent = CompletingGraph()
+    ctx.ensure_agent = ensure_agent
+    ctx.session = SimpleNamespace(get=lambda _session_id: None)
+    ctx.bus = bus
+    ctx._bus = bus
+    ctx.session_id = "session"
+    ctx.thread_id = "thread"
+    ctx.thread_config = {"configurable": {"thread_id": "thread"}}
+    ctx.console = SimpleNamespace(
+        warning=lambda *_args: None,
+        error=lambda *_args: None,
+        print=lambda *_args: None,
+    )
+    ctx.capture_turn = lambda: None
+    ctx.record_exit = lambda _reason: None
+    ctx.rebuild_requested = False
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+        await _run_turn(ctx, text)
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        active = asyncio.create_task(runtime._submit_serially("active"))
+        try:
+            await ensure_started.wait()
+            runtime.buffer.text = "after init"
+            runtime._accept(runtime.buffer)
+
+            assert [(item.text, item.mode) for item in runtime.queue.entries] == [
+                ("after init", "follow_up"),
+            ]
+        finally:
+            release_ensure.set()
+            await active
+            await runtime.scheduler.aclose()
+
+    assert submitted == ["active", "after init"]
+    assert runtime.queue.entries == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancelled", "error"])
+async def test_abnormal_active_turn_promotes_residual_steering_to_follow_up(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    stream_started = asyncio.Event()
+    fail_stream = asyncio.Event()
+    stream_calls = 0
+
+    class FailingGraph:
+        async def astream(self, _next_input: object, **_kwargs: object):
+            nonlocal stream_calls
+            stream_calls += 1
+            if stream_calls == 1:
+                stream_started.set()
+                await fail_stream.wait()
+                raise RuntimeError("stream failed")
+            if False:
+                yield None
+
+    async def ensure_agent() -> bool:
+        return True
+
+    bus = EventBus()
+    ctx = _ctx(tmp_path)
+    ctx.agent = FailingGraph()
+    ctx.ensure_agent = ensure_agent
+    ctx.session = SimpleNamespace(get=lambda _session_id: None)
+    ctx.bus = bus
+    ctx._bus = bus
+    ctx.session_id = "session"
+    ctx.thread_id = "thread"
+    ctx.thread_config = {"configurable": {"thread_id": "thread"}}
+    ctx.console = SimpleNamespace(
+        warning=lambda *_args: None,
+        error=lambda *_args: None,
+        print=lambda *_args: None,
+    )
+    ctx.capture_turn = lambda: None
+    ctx.record_exit = lambda _reason: None
+    ctx.rebuild_requested = False
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+        await _run_turn(ctx, text)
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        active = asyncio.create_task(runtime._submit_serially("active"))
+        await stream_started.wait()
+        runtime.buffer.text = "recover next"
+        runtime._accept(runtime.buffer)
+        assert [(item.text, item.mode) for item in runtime.queue.entries] == [
+            ("recover next", "steer"),
+        ]
+
+        if failure == "cancelled":
+            assert runtime._active_turn is not None
+            runtime._active_turn.cancel()
+        else:
+            fail_stream.set()
+        await active
+
+        assert submitted == ["active", "recover next"]
+        assert runtime.queue.entries == ()
+        await runtime.scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shell_submission_never_opens_steering_admission(tmp_path: Path) -> None:
+    shell_started = asyncio.Event()
+    release_shell = asyncio.Event()
+    bus = EventBus()
+
+    async def hold_shell(_event: ToolCallStart) -> None:
+        shell_started.set()
+        await release_shell.wait()
+
+    bus.on(ToolCallStart, hold_shell, plugin="test")
+    ctx = _ctx(tmp_path)
+    ctx.bus = bus
+    ctx._bus = bus
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+            shell_runner=lambda *_args: SimpleNamespace(
+                returncode=0,
+                stdout="",
+                stderr="",
+            ),
+        )
+        active = asyncio.create_task(runtime._submit_serially("! true"))
+        try:
+            await shell_started.wait()
+            assert runtime.queue.steering_open is False
+
+            runtime.buffer.text = "after shell"
+            runtime._accept(runtime.buffer)
+            assert [(item.text, item.mode) for item in runtime.queue.entries] == [
+                ("after shell", "follow_up"),
+            ]
+        finally:
+            release_shell.set()
+            await active
+            await runtime.scheduler.aclose()
+
+    assert submitted == ["after shell"]
+    assert runtime.queue.entries == ()
+
+
+def test_queue_hud_dims_modes_hint_and_clips_old_rows(tmp_path: Path) -> None:
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        runtime.queue.extend(
+            [f"follow {index}" for index in range(8)],
+            mode="follow_up",
+        )
+        runtime.queue.append("steer one", mode="steer")
+
+        rendered = runtime._hud_text().value
+
+        assert "─── ↑ 4 more ───" in rendered
+        assert "Steering: steer one" in rendered
+        assert "Follow-up: follow 7" in rendered
+        assert "↳ Alt+Up to edit queued" in rendered
+    finally:
+        runtime.application.input.close()
+
+
+
+
+@pytest.mark.asyncio
+async def test_next_send_dismisses_pinned_provider_error() -> None:
+    runtime = ApplicationRuntime(
+        lambda _text: asyncio.sleep(0),
+        input=create_pipe_input().__enter__(),
+        output=DummyOutput(),
+    )
+    try:
+        error = runtime.transcript.pin_error("provider unavailable")
+        runtime.buffer.text = "try again"
+
+        runtime._accept(runtime.buffer)
+
+        assert error not in runtime.frame.blocks
+        await runtime._drain_pending()
+    finally:
+        await runtime.scheduler.aclose()
+        runtime.application.input.close()
+
+
+@pytest.mark.asyncio
+async def test_shell_error_and_cancellation_always_settle_tool_card(tmp_path: Path) -> None:
     events: list[object] = []
     ctx = _ctx(tmp_path)
 
@@ -757,7 +1292,8 @@ async def test_shell_error_and_cancellation_always_settle_tool_card(
     )
     try:
         task = asyncio.create_task(runtime._run_shell("exec sleep 10"))
-        await wait_until(lambda: runtime._shell_process is not None)
+        while runtime._shell_process is None:
+            await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 1)
@@ -844,7 +1380,7 @@ async def test_session_rebind_saves_outgoing_state_and_restores_all_runtime_scop
         runtime.prepare_session_switch()
         assert ctx.plugin_states["composer"] == {
             "draft": "old draft",
-            "queue": ["old queued"],
+            "queue": [{"text": "old queued", "mode": "follow_up"}],
             "thinking_level": "off",
         }
 

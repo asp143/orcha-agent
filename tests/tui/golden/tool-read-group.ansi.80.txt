@@ -1,9 +1,10 @@
-<ESC>[90m+--- • Read (2) ---------------------------------------------------------------+<ESC>[0m
-<ESC>[90m| ├─ src/a.py                                                                  <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m|    one                                                                       <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m|    two                                                                       <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m|    three                                                                     <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m| └─ src/b.py                                                                  <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m|    alpha                                                                     <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m|    beta                                                                      <ESC>[0m<ESC>[90m|<ESC>[0m
-<ESC>[90m+------------------------------------------------------------------------------+<ESC>[0m
+
+<ESC>[90;40m+--- • Read (2) <ESC>[0m<ESC>[90;40m---------------------------------------------------------------+<ESC>[0m
+<ESC>[90;40m| ├─ src/a.py:1-4                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m|    one                                                                       <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m|    two                                                                       <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m|    three                                                                     <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| └─ src/b.py:1-2                                                              <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m|    alpha                                                                     <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m|    beta                                                                      <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m+------------------------------------------------------------------------------+<ESC>[0m
