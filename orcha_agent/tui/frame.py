@@ -293,7 +293,7 @@ class FrameScheduler:
             ):
                 continue
             changes: dict[str, Any] = {
-                "spinner_frame": (int(block.data.get("spinner_frame", 0)) + 1) % 8,
+                "spinner_frame": int(block.data.get("spinner_frame", 0)) + 1,
             }
             elapsed = max(0.0, current - block.created)
             if block.kind == "tool":
@@ -319,7 +319,7 @@ class FrameScheduler:
             if not self._has_spinners():
                 break
             self.tick_spinners()
-            self._spinner_frame = (self._spinner_frame + 1) % 8
+            self._spinner_frame += 1
             if self._on_spinner_tick is not None:
                 self._on_spinner_tick(self._spinner_frame)
             self.request_invalidate()

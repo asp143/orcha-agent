@@ -4,6 +4,8 @@ import asyncio
 
 import pytest
 
+from orcha_agent.tui.blocks import DEFAULT_THEME
+from orcha_agent.tui.blocks.working import render as render_working
 from orcha_agent.tui.frame import (
     Block,
     BlockState,
@@ -169,3 +171,24 @@ def test_shared_ticker_advances_pending_tool_and_thinking_state() -> None:
         "tokens_per_second": 10.0,
     }
     assert tool.revision == thinking.revision == 1
+
+
+def test_working_spinner_ticker_reaches_every_frame_before_cycle() -> None:
+    expected = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    frame = Frame()
+    working = frame.add("working", {"message": "Working…"})
+    scheduler = FrameScheduler(
+        frame,
+        commit=lambda _blocks: None,
+        invalidate=lambda: None,
+    )
+    rendered: list[str] = []
+
+    for _ in range(len(expected) + 1):
+        rendered.append(
+            render_working(working, DEFAULT_THEME, 80, 1, False).plain[0]
+        )
+        scheduler.tick_spinners()
+
+    assert rendered == [*expected, expected[0]]
+    assert working.data["spinner_frame"] == len(expected) + 1
