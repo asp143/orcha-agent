@@ -413,6 +413,11 @@ def _persistence_config(
         home,
         parser,
     )
+    if backend == "turso" and replica_path.resolve() == db_path.resolve():
+        parser.error(
+            "[persistence] replica_path must differ from db_path: the Turso "
+            "embedded replica may not reuse the legacy SQLite database file"
+        )
     url = value.get("url")
     if url is not None and (not isinstance(url, str) or not url.strip()):
         parser.error("[persistence] url must be a non-empty string")

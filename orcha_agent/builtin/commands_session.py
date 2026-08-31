@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 from collections.abc import Mapping
@@ -375,7 +376,9 @@ async def _sync(ctx: Any, args: str) -> None:
         ctx.console.error("Sync is only available with the Turso persistence backend.")
         return
     try:
-        store.sync()
+        # Network I/O; never block the TUI event loop (sync() also holds the
+        # saver lock for its duration).
+        await asyncio.to_thread(store.sync)
     except Exception as exc:
         ctx.console.error(str(exc))
         return

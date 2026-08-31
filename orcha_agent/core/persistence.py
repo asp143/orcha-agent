@@ -258,6 +258,7 @@ def _open_turso_replica(
     """Call the small portion of the libsql API on which the adapter depends."""
 
     connection: Any = _MISSING
+    failure_type: str | None = None
     token = auth_token
     del auth_token
     try:
@@ -267,16 +268,17 @@ def _open_turso_replica(
             auth_token=token,
             _check_same_thread=False,
         )
-    except Exception:
+    except Exception as exc:
         # Do not retain, chain, or render an SDK exception: it may echo credentials.
-        pass
+        failure_type = type(exc).__name__
     finally:
         del token
 
     if connection is _MISSING or connection is None:
+        detail = f" ({failure_type})" if failure_type else ""
         raise TursoPersistenceError(
             "Could not open the Turso embedded replica; verify the replica URL, "
-            "authentication token, and local database path"
+            f"authentication token, and local database path{detail}"
         )
     return connection
 
@@ -385,17 +387,19 @@ class TursoSessionStore(SessionStore):
             raise TursoPersistenceError("Cannot synchronize a closed Turso session store")
 
         result: Any = _MISSING
+        failure_type: str | None = None
         with self.saver.lock:
             try:
                 result = self._connection.sync()
-            except Exception:
+            except Exception as exc:
                 # The SDK error may include its URL or authentication token.
-                pass
+                failure_type = type(exc).__name__
 
         if result is _MISSING:
+            detail = f" ({failure_type})" if failure_type else ""
             raise TursoPersistenceError(
                 "Could not synchronize the Turso embedded replica; verify network "
-                "connectivity and Turso credentials"
+                f"connectivity and Turso credentials{detail}"
             )
         self._last_sync_result = result
         return result

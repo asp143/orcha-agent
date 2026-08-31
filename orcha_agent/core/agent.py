@@ -99,7 +99,9 @@ def _structured_memory_prompt(cfg: Config, session: SessionStore) -> str:
         if document.path is not None:
             attributes.append(f'path="{escape(str(document.path), quote=True)}"')
         lines.append(f"<memory {' '.join(attributes)}>")
-        lines.append(document.content)
+        # Stored content is model-written: escape it so it cannot forge
+        # </memory> framing or sibling tags inside the system prompt.
+        lines.append(escape(document.content))
         lines.append("</memory>")
     for document in sorted(suppressions, key=precedence):
         lines.append(
