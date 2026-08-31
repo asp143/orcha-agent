@@ -221,6 +221,27 @@ def test_glob_and_grep_use_authoritative_counts_and_specific_empty_summaries() -
     assert _plain(_block("grep", args={"pattern": "none"}, result="")).strip() == "⚠ No matches found"
 
 
+def test_grep_distinguishes_count_rows_from_matches_ending_in_a_number() -> None:
+    counts = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle"},
+            result="src/a.py: 2\nsrc/b.py: 5",
+        )
+    )
+    match = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle"},
+            result="src/a.py:12:needle: 5",
+        )
+    )
+
+    assert "Grep: needle  7 matches · 2 files" in counts
+    assert "Grep: needle  1 matches · 1 files" in match
+    assert "src/a.py:12:needle: 5" in match
+
+
 def test_grep_treats_only_the_deepagents_no_match_sentinel_as_empty() -> None:
     exact = _plain(_block("grep", args={"pattern": "needle"}, result="No matches found"))
     padded = _plain(_block("grep", args={"pattern": "needle"}, result=" \n No matches found \n\t"))

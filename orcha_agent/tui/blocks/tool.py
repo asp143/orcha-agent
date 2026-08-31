@@ -551,7 +551,7 @@ def _grep_items(result: Any) -> tuple[list[str], int, int]:
     count_total = 0
     count_mode = True
     for line in raw_lines:
-        count_match = re.match(r"^(.+):\s+(\d+)$", line)
+        count_match = re.match(r"^([^:]+): (\d+)$", line)
         if count_match and not line.startswith((" ", "\t")):
             path, count = count_match.groups()
             paths.add(path)
