@@ -8,6 +8,7 @@ from .approval import ApprovalOverlay
 from .ask import AskOverlay
 from .base import Anchor, Overlay
 from .help import HelpOverlay
+from .hub import HubOverlay
 from .history import HistoryOverlay
 from .model import ModelOverlay
 from .select import SelectList
@@ -22,6 +23,7 @@ def register_builtin_overlays(registry: Any) -> None:
     factories = {
         "model": lambda ctx, **_payload: ModelOverlay(ctx),
         "session": lambda ctx, **_payload: SessionOverlay(ctx),
+        "hub": lambda ctx, **_payload: HubOverlay(ctx),
         "tree": lambda ctx, **_payload: TreeOverlay(ctx),
         "theme": lambda ctx, **_payload: ThemeOverlay(ctx),
         "approval": lambda _ctx, action=None, **payload: ApprovalOverlay(action, **payload),
@@ -38,6 +40,7 @@ __all__ = [
     "ApprovalOverlay",
     "AskOverlay",
     "HelpOverlay",
+    "HubOverlay",
     "HistoryOverlay",
     "ModelOverlay",
     "Overlay",

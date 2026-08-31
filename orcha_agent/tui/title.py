@@ -23,6 +23,7 @@ class TerminalTitle:
         self.session = "new session"
         self.turn_active = False
         self.approval_pending = False
+        self.outstanding_agents = 0
         self.spinner = "✻" if unicode else "*"
         self._last: str | None = None
 
@@ -30,6 +31,9 @@ class TerminalTitle:
     def value(self) -> str:
         separator = " · " if self.unicode else " - "
         base = f"orcha{separator}{_safe(self.session, ascii_only=not self.unicode) or 'new session'}"
+        if self.outstanding_agents:
+            noun = "agent" if self.outstanding_agents == 1 else "agents"
+            base = f"{base}{separator}{self.outstanding_agents} {noun}"
         if self.approval_pending:
             return f"{'⏳' if self.unicode else '[wait]'} {base}"
         if self.turn_active:
@@ -50,6 +54,10 @@ class TerminalTitle:
 
     def set_session(self, title: Any) -> bool:
         self.session = _safe(title, ascii_only=not self.unicode) or "new session"
+        return self._emit()
+
+    def set_agents(self, outstanding: int) -> bool:
+        self.outstanding_agents = max(0, int(outstanding))
         return self._emit()
 
     def set_turn(self, active: bool, *, spinner: str | None = None) -> bool:

@@ -159,6 +159,7 @@ from .banner import render as render_banner
 from .diff import render as render_diff
 from .hud import render_queue, render_subagents, render_todo
 from .marker import render as render_marker
+from .task import render_delivery, render_task
 from .thinking import render as render_thinking
 from .tool import render as render_tool
 from .welcome import render as render_welcome
@@ -183,6 +184,8 @@ __all__ = [
     "BlockRendererDispatcher",
     "DEFAULT_RENDERERS",
     "DEFAULT_THEME",
+    "render_delivery",
+    "render_task",
     "theme_id",
     "theme_symbol",
     "theme_value",

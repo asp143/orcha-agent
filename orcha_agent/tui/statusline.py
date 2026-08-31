@@ -13,6 +13,8 @@ from typing import Any
 
 from prompt_toolkit.utils import get_cwidth
 
+from orcha_agent.core.usage import DEFAULT_PRICING
+
 from .symbols import resolve_symbols
 
 
@@ -56,23 +58,6 @@ WINDOWS = {
     "codex:gpt-5.4": 272_000,
     "codex:gpt-5.4-mini": 272_000,
     "codex:gpt-5.3-codex-spark": 128_000,
-}
-
-DEFAULT_PRICING: dict[str, dict[str, float]] = {
-    "codex:gpt-5.6-sol": {"input": 5, "output": 30, "cache_read": 0.5},
-    "codex:gpt-5.6-luna": {"input": 5, "output": 30, "cache_read": 0.5},
-    "codex:gpt-5.6-terra": {"input": 5, "output": 30, "cache_read": 0.5},
-    "codex:gpt-5.5": {"input": 5, "output": 30, "cache_read": 0.5},
-    "codex:gpt-5.4": {"input": 5, "output": 30, "cache_read": 0.5},
-    "codex:gpt-5.4-mini": {"input": 1.5, "output": 6, "cache_read": 0.15},
-    "codex:gpt-5.3-codex-spark": {
-        "input": 1.5,
-        "output": 6,
-        "cache_read": 0.15,
-    },
-    "anthropic:claude-opus-5": {"input": 15, "output": 75, "cache_read": 1.5},
-    "anthropic:claude-sonnet-5": {"input": 3, "output": 15, "cache_read": 0.3},
-    "anthropic:claude-haiku-4-5": {"input": 0.8, "output": 4, "cache_read": 0.08},
 }
 
 _GIT_REFRESH_SECONDS = 2.0
@@ -316,41 +301,60 @@ def session_segment(ctx: Any) -> Segment | None:
     return Segment(str(title), "text")
 
 
-def _live_agents(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return max(0, value)
-    if not isinstance(value, (list, tuple)):
-        return None
-    live = {"running", "active", "pending", "working", "starting"}
-    count = 0
-    for item in value:
-        status = item.get("status", "running") if isinstance(item, Mapping) else "running"
-        count += str(status).lower() in live
-    return count
+def agent_counts(ctx: Any) -> tuple[int, int, int]:
+    """Return running, idle, and outstanding counts from the agent registry."""
+
+    agents = getattr(ctx, "agents", None)
+    list_runs = getattr(agents, "list", None)
+    if not callable(list_runs):
+        legacy = getattr(getattr(ctx, "ui", None), "subagents", ())
+        rows = legacy if isinstance(legacy, list) else []
+        running = sum(
+            isinstance(run, Mapping)
+            and str(run.get("status", "")).casefold() == "running"
+            for run in rows
+        )
+        idle = sum(
+            isinstance(run, Mapping)
+            and str(run.get("status", "")).casefold() == "idle"
+            for run in rows
+        )
+        outstanding = sum(
+            isinstance(run, Mapping)
+            and str(run.get("status", "")).casefold()
+            not in {"done", "failed", "aborted"}
+            for run in rows
+        )
+        return running, idle, outstanding
+
+    running = idle = outstanding = 0
+    for run in list_runs():
+        value = (
+            run.get("status", "")
+            if isinstance(run, Mapping)
+            else getattr(run, "status", "")
+        )
+        status = str(value).casefold()
+        running += status == "running"
+        idle += status == "idle"
+        outstanding += status not in {"done", "failed", "aborted"}
+    return running, idle, outstanding
 
 
 def subagents_segment(ctx: Any) -> Segment | None:
-    ui = getattr(ctx, "ui", None)
-    count = _live_agents(getattr(ui, "subagents", None))
-    if count is None:
-        hud = getattr(ctx, "plugin_states", {}).get("hud", {})
-        count = _live_agents(hud.get("subagents") if isinstance(hud, Mapping) else None)
-    if count is None:
-        transcript = getattr(ctx, "transcript", None)
-        frame = getattr(transcript, "frame", None)
-        sources = {
-            block.source_id
-            for block in getattr(frame, "blocks", ())
-            if block.source_id
-            and block.source_id != "main"
-            and getattr(getattr(block, "state", None), "value", None) == "active"
-        }
-        count = len(sources)
-    if not count:
+    agents = getattr(ctx, "agents", None)
+    if not callable(getattr(agents, "list", None)):
+        legacy = getattr(getattr(ctx, "ui", None), "subagents", ())
+        if isinstance(legacy, list) and legacy:
+            return Segment(str(len(legacy)), "statusLineSubagents", "icon.subagents")
+    running, idle, _outstanding = agent_counts(ctx)
+    if not running and not idle:
         return None
-    return Segment(str(count), "statusLineSubagents", "icon.subagents")
+    return Segment(
+        f"{running} running · {idle} idle",
+        "statusLineSubagents",
+        "icon.subagents",
+    )
 
 
 def _quantity(value: float) -> str:
@@ -837,6 +841,7 @@ __all__ = [
     "SEPARATORS",
     "Segment",
     "WINDOWS",
+    "agent_counts",
     "cache_segment",
     "context_segment",
     "cost_segment",

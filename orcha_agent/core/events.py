@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 from .plugin import Handled
@@ -58,6 +58,7 @@ class AgentFinished(Event):
 class AgentDelivered(Event):
     parent_id: str
     run_ids: tuple[str, ...]
+    jobs: tuple[dict[str, Any], ...] = field(default=(), compare=False)
 
 
 @dataclass(slots=True)

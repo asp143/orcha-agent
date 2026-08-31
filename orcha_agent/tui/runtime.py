@@ -34,7 +34,10 @@ from rich.console import Console
 
 from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import (
+    AgentDelivered,
     AgentFinished,
+    AgentSpawned,
+    AgentStatus,
     AppExit,
     AppStart,
     Event,
@@ -49,10 +52,18 @@ from orcha_agent.core.events import (
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.models import ModelResolver
-from orcha_agent.core.registry import Registry
+from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
-from .blocks import BlockRendererDispatcher, DEFAULT_RENDERERS, DEFAULT_THEME, theme_spinner
+from .blocks import (
+    BlockRendererDispatcher,
+    DEFAULT_RENDERERS,
+    DEFAULT_THEME,
+    render_delivery,
+    render_task,
+    theme_spinner,
+)
+from .blocks.hud import subagent_hud_data
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -63,18 +74,19 @@ from .context import (
     _stored_model,
     _uncheckpointed_seed_target,
 )
-from .frame import Block, Frame, FrameScheduler
+from .frame import Block, BlockState, Frame, FrameScheduler
 from .history import SQLiteHistory, history_path
 from .keys import create_key_bindings, load_keybindings
 from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
-from .statusline import render_statusline
+from .statusline import agent_counts, render_statusline
 from .theme import Theme, load_themes, select_theme
 from .title import TerminalTitle
 from .turn import _run_cancellable_turn
-from .overlays import register_builtin_overlays
+from .overlays import HubOverlay, register_builtin_overlays
 from .overlays.base import Overlay
+from .overlays.hub import ledger_transcript_frame
 
 
 def _completion_style(theme: Any) -> Any:
@@ -149,6 +161,9 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
         return False
     command_text = text[1:]
     name, separator, args = command_text.partition(" ")
+    if name == "agents":
+        await ctx.ui.show("hub")
+        return True
     registration = registry.commands.get(name)
     if registration is None:
         ctx.console.error(f"Unknown command: /{name}")
@@ -276,6 +291,8 @@ class ApplicationRuntime:
         self._submit = submit
         self.ctx = ctx
         self.registry = registry
+        if registry is not None:
+            _ensure_agent_command(registry)
         completion_registry = registry or Registry()
         self.frame = Frame()
         self.theme: Any = theme
@@ -285,9 +302,19 @@ class ApplicationRuntime:
             getattr(theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default")
         )
         self._themes.setdefault(current_theme_id, theme)
-        self._block_dispatcher = BlockRendererDispatcher(
-            registry.block_renderers if registry is not None else DEFAULT_RENDERERS
-        )
+        if registry is None:
+            block_renderers: Any = {
+                **DEFAULT_RENDERERS,
+                "task": render_task,
+                "delivery": render_delivery,
+            }
+        else:
+            block_renderers = {
+                entry.kind: entry.render for entry in registry.block_renderers
+            }
+            block_renderers.setdefault("task", render_task)
+            block_renderers.setdefault("delivery", render_delivery)
+        self._block_dispatcher = BlockRendererDispatcher(block_renderers)
         previous_ui = getattr(ctx, "ui", None)
         self._fallback_show = getattr(previous_ui, "_show_overlay", None)
         self.ui = UIFacade(
@@ -297,6 +324,7 @@ class ApplicationRuntime:
             set_theme=self._set_theme,
         )
         self.ui.theme = theme
+        self.ui.active_agent = None
         self.ui.themes = self._themes
         self.ui.history = history
         self._status = status or self._status_text
@@ -317,7 +345,11 @@ class ApplicationRuntime:
         self._overlay_lock = asyncio.Lock()
         self._last_escape = 0.0
         self._last_interrupt = 0.0
-        self._live_subagents: dict[str, dict[str, str]] = {}
+        self._last_left = 0.0
+        self._drilled_run_id: str | None = None
+        self._drilled_frame: Frame | None = None
+        self._last_drill_refresh = float("-inf")
+        self._drill_refresh_task: asyncio.Future[Any] | None = None
         self._turn_active = False
         self._spinner_frame = 0
         self._hud_sections = {
@@ -367,6 +399,25 @@ class ApplicationRuntime:
 
         if self._tree_double_escape:
             core_bindings.add("s-escape")(self._tree_handler)
+
+        @core_bindings.add(
+            "left",
+            filter=Condition(
+                lambda: (
+                    self._active_overlay is None
+                    and self._drilled_run_id is not None
+                    and self.buffer.cursor_position == 0
+                )
+            ),
+        )
+        def _drill_back(event: Any) -> None:
+            now = time.monotonic()
+            if now - self._last_left <= 0.5:
+                self._last_left = 0.0
+                self._leave_agent()
+            else:
+                self._last_left = now
+            event.app.invalidate()
 
         @core_bindings.add("?")
         def _help_or_insert(event: Any) -> None:
@@ -445,6 +496,7 @@ class ApplicationRuntime:
             enabled=bool(getattr(getattr(ctx, "cfg", None), "notify", False)),
             output=self.application.output,
         )
+        self._outstanding_agents = agent_counts(ctx)[2] if ctx is not None else 0
         self.application.key_processor.before_key_press += self._record_keypress
         self._refresh_title()
         self.scheduler = FrameScheduler(
@@ -467,10 +519,118 @@ class ApplicationRuntime:
     def active_overlay(self) -> Overlay | None:
         return self._active_overlay
 
+    @property
+    def drilled_run_id(self) -> str | None:
+        return self._drilled_run_id
+
+    def _drill_in(self, run_id: str) -> bool:
+        agents = getattr(self.ctx, "agents", None)
+        get_run = getattr(agents, "get", None)
+        run = get_run(run_id) if callable(get_run) else None
+        if run is None:
+            return False
+        self._drilled_run_id = run_id
+        self.ui.active_agent = run
+        self._last_left = 0.0
+        self._refresh_drilled_frame(force=True)
+        self._refresh_title()
+        self.application.invalidate()
+        return True
+
+    def _leave_agent(self) -> bool:
+        if self._drilled_run_id is None:
+            return False
+        self._cancel_drilled_refresh()
+        self._drilled_run_id = None
+        self._drilled_frame = None
+        self.ui.active_agent = None
+        self._last_left = 0.0
+        self._refresh_title()
+        try:
+            self.application.layout.focus(self.buffer)
+        except ValueError:
+            pass
+        self.application.invalidate()
+        return True
+
+    def _refresh_drilled_frame(
+        self,
+        *,
+        force: bool = False,
+        include_live: bool = True,
+    ) -> bool:
+        run_id = self._drilled_run_id
+        if run_id is None:
+            return False
+        now = time.monotonic()
+        if not force and now - self._last_drill_refresh < 0.25:
+            return False
+        agents = getattr(self.ctx, "agents", None)
+        get_run = getattr(agents, "get", None)
+        run = get_run(run_id) if callable(get_run) else None
+        if run is None:
+            return self._leave_agent()
+        self._last_drill_refresh = now
+        frame = ledger_transcript_frame(self.ctx, run)
+        if include_live:
+            frame.blocks.extend(
+                deepcopy(block)
+                for block in self.frame.blocks
+                if block.source_id == run_id and block.state is not BlockState.COMMITTED
+            )
+        self._drilled_frame = frame
+        self.ui.active_agent = run
+        return True
+
+    def _cancel_drilled_refresh(self) -> None:
+        pending = self._drill_refresh_task
+        if pending is not None and not pending.done():
+            self._pending.discard(pending)
+            self._terminal_pending.discard(pending)
+            pending.cancel()
+        self._drill_refresh_task = None
+
+    def _schedule_drilled_refresh(self) -> None:
+        pending = self._drill_refresh_task
+        if pending is not None and not pending.done():
+            return
+        delay = max(0.0, 0.25 - (time.monotonic() - self._last_drill_refresh))
+
+        async def refresh() -> None:
+            await asyncio.sleep(delay)
+            if self._drilled_run_id is not None:
+                self._refresh_drilled_frame(force=True, include_live=True)
+                self.application.invalidate()
+
+        self._drill_refresh_task = self._track(refresh())
+
+    async def _send_to_drilled(self, text: str) -> bool:
+        run_id = self._drilled_run_id
+        send = getattr(getattr(self.ctx, "agents", None), "send", None)
+        if run_id is None or not callable(send) or not text.strip():
+            return False
+        try:
+            await send(run_id, text.strip())
+        except Exception as exc:
+            self.ui.notify(f"{type(exc).__name__}: {exc}")
+            return False
+        self._refresh_drilled_frame(force=True)
+        self.application.invalidate()
+        return True
+
+    async def _send_drilled_batch(self, prompts: list[str]) -> None:
+        for prompt in prompts:
+            if not await self._send_to_drilled(prompt):
+                break
+
     def _record_keypress(self, _event: Any = None) -> None:
         self.notifier.record_keypress()
 
     def _session_title(self) -> str:
+        if self._drilled_run_id is not None:
+            run = getattr(self.ui, "active_agent", None)
+            if run is not None:
+                return f"{getattr(run, 'name', 'agent')} · {self._drilled_run_id}"
         session = getattr(self.ctx, "session", None)
         session_id = getattr(self.ctx, "session_id", None)
         try:
@@ -481,9 +641,12 @@ class ApplicationRuntime:
 
     def _refresh_title(self) -> None:
         self.title.set_session(self._session_title())
+        outstanding = agent_counts(self.ctx)[2] if self.ctx is not None else 0
+        self.title.set_agents(outstanding)
 
     def _has_spinner_activity(self) -> bool:
-        return self._turn_active or bool(self._live_subagents)
+        outstanding = agent_counts(self.ctx)[2] if self.ctx is not None else 0
+        return self._turn_active or outstanding > 0
 
     def _spinner_tick(self, frame: int) -> None:
         self._spinner_frame = frame
@@ -506,13 +669,24 @@ class ApplicationRuntime:
         blocks: list[Block] = []
         if self.ui.todos:
             blocks.append(self._hud_block("todo", {"items": self.ui.todos[:7]}))
-        if self.ui.subagents:
+        if self.ctx is not None:
+            agents = subagent_hud_data(self.ctx, spinner_frame=self._spinner_frame)
+            if agents is not None:
+                blocks.append(self._hud_block("subagents", agents))
+        if not any(block.kind == "subagents" for block in blocks) and self.ui.subagents:
+            running = sum(
+                str(agent.get("status", "")).casefold() == "running"
+                for agent in self.ui.subagents
+                if isinstance(agent, Mapping)
+            )
             blocks.append(
                 self._hud_block(
                     "subagents",
                     {
-                        "agents": self.ui.subagents[:7],
-                        "spinner_frame": self._spinner_frame,
+                        "agents": list(self.ui.subagents),
+                        "running": running,
+                        "idle": len(self.ui.subagents) - running,
+                        "spinner_frame": 0,
                     },
                 )
             )
@@ -546,16 +720,60 @@ class ApplicationRuntime:
         return len(value.splitlines()) if value else 0
 
     async def handle_presentation(self, event: Event) -> None:
-        if isinstance(event, TurnStart):
+        if getattr(self.ctx, "agents", None) is None:
+            if isinstance(event, ToolCallStart) and event.name == "task":
+                self.ui.subagents.append(
+                    {
+                        "id": event.id,
+                        "name": event.id,
+                        "description": str(
+                            event.args.get("description")
+                            or event.args.get("task")
+                            or "task"
+                        ),
+                        "status": "running",
+                    }
+                )
+            elif isinstance(event, ToolCallEnd) and event.name == "task":
+                self.ui.subagents[:] = [
+                    agent
+                    for agent in self.ui.subagents
+                    if not isinstance(agent, Mapping) or agent.get("id") != event.id
+                ]
+
+        active_overlay = self._active_overlay
+        if isinstance(active_overlay, HubOverlay):
+            active_overlay.refresh_from_event(event)
+
+        source_id = str(getattr(event, "source_id", "main"))
+        drilled_event = (
+            source_id == self._drilled_run_id
+            or getattr(event, "run_id", None) == self._drilled_run_id
+        )
+        if self._drilled_run_id is not None and (
+            drilled_event
+            or isinstance(event, (AgentSpawned, AgentStatus, AgentFinished, AgentDelivered))
+        ):
+            lifecycle_refresh = isinstance(
+                event, (TurnEnd, AgentStatus, AgentFinished, AgentDelivered)
+            )
+            if lifecycle_refresh:
+                self._cancel_drilled_refresh()
+            refreshed = self._refresh_drilled_frame(
+                force=lifecycle_refresh,
+                include_live=not lifecycle_refresh,
+            )
+            if not refreshed and drilled_event:
+                self._schedule_drilled_refresh()
+
+        if isinstance(event, TurnStart) and source_id == "main":
             self._turn_active = True
             self._refresh_title()
             spinner = theme_spinner(self.theme, "spinner.status", self._spinner_frame, ("✻",))
             self.title.set_turn(True, spinner=spinner)
             self.scheduler.start_spinner()
-        elif isinstance(event, TurnEnd):
+        elif isinstance(event, TurnEnd) and source_id == "main":
             self._turn_active = False
-            self._live_subagents.clear()
-            self.ui.subagents = []
             self.title.set_turn(False)
             await self.notifier.notify("Orcha", "Turn complete")
         elif (
@@ -564,30 +782,24 @@ class ApplicationRuntime:
             and not self._shutting_down
         ):
             self._track(self._submit_serially(None))
-        elif isinstance(event, ToolCallStart) and event.name == "task":
-            label = str(
-                event.args.get("description")
-                or event.args.get("subagent_type")
-                or event.args.get("name")
-                or event.id
-            )
-            self._live_subagents[event.id] = {
-                "id": event.id,
-                "name": label,
-                "status": "running",
-            }
-            self.ui.subagents = list(self._live_subagents.values())
-            self.scheduler.start_spinner()
-        elif isinstance(event, ToolCallEnd) and event.name == "task":
-            self._live_subagents.pop(event.id, None)
-            self.ui.subagents = list(self._live_subagents.values())
         elif isinstance(event, InterruptRaised):
             if self._approval_notification_sent:
                 self._approval_notification_sent = False
             else:
                 await self.notifier.notify("Orcha", "Approval required")
         elif isinstance(event, SessionSwitch):
+            self._leave_agent()
+            self._outstanding_agents = agent_counts(self.ctx)[2]
             self._refresh_title()
+
+        if isinstance(event, (AgentSpawned, AgentStatus, AgentFinished, AgentDelivered)):
+            previous = self._outstanding_agents
+            self._outstanding_agents = agent_counts(self.ctx)[2]
+            self.title.set_agents(self._outstanding_agents)
+            if previous > 0 and self._outstanding_agents == 0 and not self._shutting_down:
+                await self.notifier.notify("Orcha", "All agent jobs settled")
+            if self._outstanding_agents:
+                self.scheduler.start_spinner()
         self.application.invalidate()
 
     def _resolve_overlay(
@@ -645,8 +857,10 @@ class ApplicationRuntime:
                     self.application.layout.focus(resolved.focus_target)
                 except ValueError:
                     pass
-                self.application.invalidate()
-                return await resolved.wait()
+                result = await resolved.wait()
+                if isinstance(resolved, HubOverlay) and isinstance(result, str):
+                    self._drill_in(result)
+                return result
             finally:
                 if resolved in self._root.floats:
                     self._root.floats.remove(resolved)
@@ -757,6 +971,9 @@ class ApplicationRuntime:
         if text == ".":
             text = "keep going"
         prompts = split_submission(text)
+        if self._drilled_run_id is not None:
+            self._track(self._send_drilled_batch(prompts))
+            return False
         is_batch = len(prompts) > 1
         if self.streaming:
             self.queue.extend(prompts)
@@ -834,6 +1051,9 @@ class ApplicationRuntime:
             self._active_turn.cancel()
 
     def _escape_ladder(self, event: Any) -> None:
+        if self._drilled_run_id is not None:
+            self._leave_agent()
+            return
         buffer = event.current_buffer
         if buffer.complete_state is not None:
             buffer.cancel_completion()
@@ -1279,8 +1499,11 @@ class ApplicationRuntime:
             composer_rows=self.composer.height_for_width(width) + self._hud_height(),
             status_rows=1,
         )
+        frame = self._drilled_frame if self._drilled_run_id is not None else self.frame
+        if frame is None:
+            return ANSI("")
         rendered: list[str] = []
-        for item in self.frame.viewport_plan(
+        for item in frame.viewport_plan(
             budget,
             width=width,
             measure=self._measure_block,
@@ -1577,13 +1800,13 @@ async def run_app(cfg: Config) -> int:
                     Event,
                     runtime.handle_presentation,
                     plugin="<tui-presentation>",
-                    priority=9_000,
+                    priority=10_000,
                 )
             bus.on(
                 Event,
                 runtime.transcript.handle,
                 plugin="<tui>",
-                priority=10_000,
+                priority=9_000,
             )
             if isinstance(ctx.console, ConsoleOutput):
                 ctx.console = ConsoleOutput(
@@ -1591,3 +1814,18 @@ async def run_app(cfg: Config) -> int:
                     transcript=runtime.transcript,
                 )
         return await _run_runtime(ctx, runtime, bus)
+
+
+async def _show_agents(ctx: Any, _args: str) -> None:
+    await ctx.ui.show("hub")
+
+
+def _ensure_agent_command(registry: Registry) -> None:
+    registry.commands.setdefault(
+        "agents",
+        CommandRegistration(
+            plugin="commands_core",
+            handler=_show_agents,
+            help="Open the agent hub",
+        ),
+    )

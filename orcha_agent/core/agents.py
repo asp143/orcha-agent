@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import reprlib
 import secrets
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
@@ -27,11 +28,13 @@ from .events import (
     AgentStatus,
     EventBus,
     ModelChunk,
+    ToolCallEnd,
     ToolCallStart,
 )
 from .ledger import CustomEntry, Ledger
 from .registry import Registry
 from .session import SessionStore
+from .usage import usage_cost
 
 AgentStatusName = Literal[
     "running", "idle", "parked", "done", "failed", "aborted"
@@ -40,6 +43,30 @@ AbortReason = Literal["cancel", "timeout", "budget", "shutdown"]
 _TERMINAL = frozenset({"done", "failed", "aborted"})
 _WRAP_UP = "Wrap up and yield now."
 _WAKE = object()
+_MAX_TOOL_ARGS_CHARS = 4096
+_TOOL_ARGS_REPR = reprlib.Repr()
+_TOOL_ARGS_REPR.maxlevel = 4
+_TOOL_ARGS_REPR.maxdict = 16
+_TOOL_ARGS_REPR.maxlist = 16
+_TOOL_ARGS_REPR.maxtuple = 16
+_TOOL_ARGS_REPR.maxset = 16
+_TOOL_ARGS_REPR.maxfrozenset = 16
+_TOOL_ARGS_REPR.maxdeque = 16
+_TOOL_ARGS_REPR.maxstring = 1024
+_TOOL_ARGS_REPR.maxother = 1024
+
+
+def _model_label(value: str | list[str]) -> str:
+    if isinstance(value, list):
+        return value[0] if value else ""
+    return value
+
+
+def _tool_args_text(args: Mapping[str, Any]) -> str:
+    rendered = _TOOL_ARGS_REPR.repr(args)
+    if len(rendered) <= _MAX_TOOL_ARGS_CHARS:
+        return rendered
+    return f"{rendered[: _MAX_TOOL_ARGS_CHARS - 1]}…"
 
 
 def _restored_status(value: Any) -> AgentStatusName:
@@ -60,14 +87,50 @@ class _RunEventBus:
         self._target = target
 
     async def emit(self, event: Any) -> Any:
+        persist = False
         if isinstance(event, ToolCallStart) and event.source_id == self._run.id:
             self._run.tool_calls += 1
             self._run.last_tool = event.name
+            self._run.last_tool_args = _tool_args_text(event.args)
+            self._run.current_tool = event.name
+            self._run.current_tool_args = self._run.last_tool_args
+            self._run._active_tool_calls[event.id] = (
+                event.name,
+                self._run.last_tool_args,
+            )
+            persist = True
+        elif isinstance(event, ToolCallEnd) and event.source_id == self._run.id:
+            active = self._run._active_tool_calls
+            removed = active.pop(event.id, None)
+            if removed is not None and (
+                self._run.current_tool,
+                self._run.current_tool_args,
+            ) == removed:
+                if active:
+                    self._run.current_tool, self._run.current_tool_args = next(
+                        reversed(active.values())
+                    )
+                else:
+                    self._run.current_tool = None
+                    self._run.current_tool_args = None
+                persist = True
         elif isinstance(event, ModelChunk) and event.source_id == self._run.id:
+            if event.model_name and event.model_name != self._run.model_label:
+                self._run.model_label = event.model_name
+                persist = True
             usage = getattr(event.chunk, "usage_metadata", None)
             if isinstance(usage, dict):
                 self._run.tokens_in += int(usage.get("input_tokens", 0) or 0)
                 self._run.tokens_out += int(usage.get("output_tokens", 0) or 0)
+                self._run.cost += usage_cost(
+                    self._run.model_label,
+                    usage,
+                    self._run.cfg.pricing,
+                )
+                persist = True
+        if persist:
+            self._run.updated_at = datetime.now(UTC)
+            self._run.owner._persist_job(self._run)
         return await self._target.emit(event)
 
 
@@ -90,6 +153,8 @@ class AgentRun:
         output_schema: dict[str, Any] | None,
         schema_mode: str,
         blocking: bool,
+        description: str = "",
+        model_label: str = "",
     ) -> None:
         self.owner = owner
         self.id = run_id
@@ -104,6 +169,8 @@ class AgentRun:
         self.output_schema = output_schema
         self.schema_mode = schema_mode
         self.blocking = blocking
+        self.description = description
+        self.model_label = model_label or _model_label(cfg.model)
         self.cwd = cfg.cwd
         self.source_id = run_id
         self.session = owner.session
@@ -122,6 +189,10 @@ class AgentRun:
         self.tokens_out = 0
         self.cost = 0.0
         self.last_tool: str | None = None
+        self.last_tool_args: str | None = None
+        self.current_tool: str | None = None
+        self.current_tool_args: str | None = None
+        self._active_tool_calls: dict[str, tuple[str, str]] = {}
         self.result: Any = None
         self.partial_findings: list[Any] = []
         self.schema_overridden = False
@@ -151,11 +222,15 @@ class AgentRun:
     def terminal(self) -> bool:
         return self.status in _TERMINAL
 
-    def _job_data(self, *, delivered: bool | None = None) -> dict[str, Any]:
+
+    def snapshot(self, *, delivered: bool | None = None) -> dict[str, Any]:
+        """Return this run's durable, JSON-serializable presentation state."""
         return {
             "run_id": self.id,
             "name": self.name,
             "agent_type": self.agent_type.name,
+            "description": self.description,
+            "model_label": self.model_label,
             "parent_id": self.parent_id,
             "parent_session": self.parent_session,
             "session_id": self.session_id,
@@ -170,6 +245,9 @@ class AgentRun:
             "tokens_out": self.tokens_out,
             "cost": self.cost,
             "last_tool": self.last_tool,
+            "last_tool_args": self.last_tool_args,
+            "current_tool": self.current_tool,
+            "current_tool_args": self.current_tool_args,
             "partial_findings": self.partial_findings,
             "validation_attempts": self.validation_attempts,
             "yield_count": self.yield_count,
@@ -280,6 +358,10 @@ class AgentRun:
     async def _set_status(
         self, status: AgentStatusName, reason: str | None = None
     ) -> None:
+        if status != "running":
+            self.current_tool = None
+            self.current_tool_args = None
+            self._active_tool_calls.clear()
         self.status = status
         self.updated_at = datetime.now(UTC)
         self.owner._persist_job(self)
@@ -452,7 +534,7 @@ class AgentRegistry:
             run.parent_session,
             CustomEntry(
                 custom_type="agent_job",
-                data=run._job_data(delivered=delivered),
+                data=run.snapshot(delivered=delivered),
             ),
         )
 
@@ -533,6 +615,12 @@ class AgentRegistry:
             schema_mode = (
                 "strict" if data.get("schema_mode") == "strict" else "permissive"
             )
+            description = data.get("description")
+            if not isinstance(description, str):
+                description = name
+            model_label = data.get("model_label")
+            if not isinstance(model_label, str):
+                model_label = _model_label(info.model)
             run = AgentRun(
                 self,
                 run_id=run_id,
@@ -547,6 +635,8 @@ class AgentRegistry:
                 output_schema=output_schema,
                 schema_mode=schema_mode,
                 blocking=bool(data.get("blocking", spec.blocking)),
+                description=description,
+                model_label=model_label,
             )
             run.status = _restored_status(data.get("status"))
             run.result = data.get("result")
@@ -594,6 +684,9 @@ class AgentRegistry:
             last_tool = data.get("last_tool")
             if isinstance(last_tool, str):
                 run.last_tool = last_tool
+            last_tool_args = data.get("last_tool_args")
+            if isinstance(last_tool_args, str):
+                run.last_tool_args = last_tool_args[:_MAX_TOOL_ARGS_CHARS]
             partial_findings = data.get("partial_findings")
             if isinstance(partial_findings, list):
                 run.partial_findings = list(partial_findings)
@@ -755,6 +848,8 @@ class AgentRegistry:
             ),
             schema_mode=schema_mode,
             blocking=blocking or spec.blocking,
+            description=prompt,
+            model_label=_model_label(model),
         )
         self._persist_job(run)
         self._runs[run.id] = run
@@ -918,20 +1013,25 @@ class AgentRegistry:
             parent_sessions = {run.parent_session for run in delivered}
             if len(parent_sessions) != 1:
                 raise RuntimeError("Agent jobs for one parent span multiple sessions")
+            snapshots = tuple(run.snapshot(delivered=True) for run in delivered)
             Ledger(self.session).append_many(
                 parent_sessions.pop(),
                 [
                     CustomEntry(
                         custom_type="agent_job",
-                        data=run._job_data(delivered=True),
+                        data=snapshot,
                     )
-                    for run in delivered
+                    for snapshot in snapshots
                 ],
             )
             for run in delivered:
                 run.delivered = True
         await self.bus.emit(
-            AgentDelivered(parent_id=parent, run_ids=tuple(run.id for run in delivered))
+            AgentDelivered(
+                parent_id=parent,
+                run_ids=tuple(run.id for run in delivered),
+                jobs=snapshots,
+            )
         )
         await self._notify()
         return delivered
