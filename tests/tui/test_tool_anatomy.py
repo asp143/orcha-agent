@@ -133,6 +133,35 @@ def test_read_uses_deepagents_line_numbers_for_gutter_range_and_more_hint() -> N
     assert "more lines" not in expanded
 
 
+def test_read_keeps_mixed_number_like_content_unnumbered() -> None:
+    output = _plain(
+        _block(
+            "read_file",
+            args={"path": "history.txt"},
+            result="A historical note\n1998  was a year",
+        )
+    )
+
+    assert "• Read history.txt:1-2" in output
+    assert " 1│A historical note" in output
+    assert " 2│1998  was a year" in output
+    assert "1998│was a year" not in output
+
+
+def test_read_numbered_mode_allows_empty_lines_between_numbered_lines() -> None:
+    output = _plain(
+        _block(
+            "read_file",
+            args={"path": "numbered.txt"},
+            result=" 41  first\n\n 43  third",
+        )
+    )
+
+    assert "• Read numbered.txt:41-43" in output
+    assert " 41│first" in output
+    assert " 43│third" in output
+
+
 def test_ls_renders_an_inline_tree_with_directory_suffix_and_row_limits() -> None:
     entries = [
         {"path": f"entry-{index}", "type": "directory" if index in {0, 9} else "file"}

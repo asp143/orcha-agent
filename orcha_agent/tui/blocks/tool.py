@@ -361,17 +361,18 @@ def _read_source_rows(
     lines = _result_text(value).splitlines()
     parsed: list[tuple[str, str]] = []
     real_numbers: list[int] = []
-    numbered = False
+    numbered = True
     for line in lines:
         match = re.match(r"^\s*(\d+(?:\.\d+)?)  (.*)$", line)
         if match:
-            numbered = True
             marker, source = match.groups()
             parsed.append((marker, source))
             real_numbers.append(int(marker.partition(".")[0]))
         else:
             parsed.append(("", line))
-    if numbered:
+            if line:
+                numbered = False
+    if numbered and real_numbers:
         return parsed, min(real_numbers), max(real_numbers)
 
     offset = args.get("offset")
