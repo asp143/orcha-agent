@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from orcha_agent.core.events import (
+    Advisory,
     AgentDelivered,
     AgentFinished,
     AgentSpawned,
@@ -195,6 +196,21 @@ class Transcript:
             self._commit(block, immediate=True)
             if self.scheduler is not None:
                 self.scheduler.render_now()
+            return
+        if isinstance(event, Advisory):
+            if event.note is None:
+                return
+            block = self.frame.add(
+                "advisory",
+                {
+                    "note": event.note,
+                    "severity": event.severity,
+                    "advisor_id": event.advisor_id,
+                    "interrupt": event.interrupt,
+                },
+                source_id=event.advisor_id,
+            )
+            self._commit(block)
             return
         if self._legacy(event):
             return

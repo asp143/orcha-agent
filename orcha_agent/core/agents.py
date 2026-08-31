@@ -131,6 +131,8 @@ class _RunEventBus:
         if persist:
             self._run.updated_at = datetime.now(UTC)
             self._run.owner._persist_job(self._run)
+        if not getattr(self._run, "visible", True):
+            return None
         return await self._target.emit(event)
 
 
@@ -153,6 +155,7 @@ class AgentRun:
         output_schema: dict[str, Any] | None,
         schema_mode: str,
         blocking: bool,
+        visible: bool = True,
         description: str = "",
         model_label: str = "",
     ) -> None:
@@ -169,6 +172,7 @@ class AgentRun:
         self.output_schema = output_schema
         self.schema_mode = schema_mode
         self.blocking = blocking
+        self.visible = visible
         self.description = description
         self.model_label = model_label or _model_label(cfg.model)
         self.cwd = cfg.cwd
@@ -181,6 +185,7 @@ class AgentRun:
         self.agent: Any = None
         self.task: asyncio.Task[None] | None = None
         self.inbox: asyncio.Queue[str | object | None] = asyncio.Queue()
+        self.advice_outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.status: AgentStatusName = "running"
         self.abort_reason: AbortReason | None = None
         self.requests = 0
@@ -210,7 +215,7 @@ class AgentRun:
         self._runtime_timer: asyncio.Task[None] | None = None
         self._runtime_deadline = (
             monotonic() + cfg.agents.max_runtime_s
-            if cfg.agents.max_runtime_s > 0
+            if cfg.agents.max_runtime_s > 0 and agent_type.name != "advisor"
             else None
         )
 
@@ -229,6 +234,11 @@ class AgentRun:
             "run_id": self.id,
             "name": self.name,
             "agent_type": self.agent_type.name,
+            "tools": (
+                sorted(self.agent_type.tools)
+                if self.agent_type.tools is not None
+                else None
+            ),
             "description": self.description,
             "model_label": self.model_label,
             "parent_id": self.parent_id,
@@ -239,6 +249,7 @@ class AgentRun:
             "output_schema": self.output_schema,
             "schema_mode": self.schema_mode,
             "blocking": self.blocking,
+            "visible": self.visible,
             "requests": self.requests,
             "tool_calls": self.tool_calls,
             "tokens_in": self.tokens_in,
@@ -271,7 +282,7 @@ class AgentRun:
                 self.registry,
                 self.cfg,
                 self.session,
-                self.owner.bus,
+                self.bus,
                 always_allowed=self.owner.always_allowed,
                 extra_tools=extras,
                 system_prompt=self.agent_type.system_prompt,
@@ -289,7 +300,8 @@ class AgentRun:
         }
         may_spawn = self.agent_type.spawns and self.depth < self.cfg.agents.max_depth
         if scope is not None:
-            scope.update(extra_names & {"yield", "hub"})
+            if self.agent_type.name != "advisor":
+                scope.update(extra_names & {"yield", "hub"})
             if may_spawn and "task" in extra_names:
                 scope.add("task")
         if may_spawn:
@@ -367,17 +379,17 @@ class AgentRun:
         self.owner._persist_job(self)
         async with self._status_changed:
             self._status_changed.notify_all()
-        await self.owner.bus.emit(
-            AgentStatus(
-                run_id=self.id,
-                parent_id=self.parent_id,
-                name=self.name,
-                agent_type=self.agent_type.name,
-                status=status,
-                reason=reason,
+        if self.visible:
+            await self.owner.bus.emit(
+                AgentStatus(
+                    run_id=self.id,
+                    parent_id=self.parent_id,
+                    name=self.name,
+                    agent_type=self.agent_type.name,
+                    status=status,
+                    reason=reason,
+                )
             )
-        )
-        await self.owner._notify()
 
     async def _runtime_watchdog(self) -> None:
         if self._runtime_deadline is None:
@@ -389,7 +401,7 @@ class AgentRun:
         self.task = asyncio.create_task(self._run(prompt), name=f"agent:{self.id}")
 
     async def _run(self, prompt: str | None) -> None:
-        if self.cfg.agents.max_runtime_s > 0:
+        if self._runtime_deadline is not None:
             self._runtime_timer = asyncio.create_task(self._runtime_watchdog())
         try:
             await self.ensure_agent()
@@ -432,21 +444,25 @@ class AgentRun:
                     status, result = self._completion
                     await self._settle(status, result)
                     return
-                budget = self.cfg.agents.soft_request_budget
-                if self.requests >= budget + 10:
-                    await self._settle_abort("budget")
-                    return
-                if self.requests >= budget:
-                    message = _WRAP_UP
-                    continue
+                if self.agent_type.name != "advisor":
+                    budget = self.cfg.agents.soft_request_budget
+                    if self.requests >= budget + 10:
+                        await self._settle_abort("budget")
+                        return
+                    if self.requests >= budget:
+                        message = _WRAP_UP
+                        continue
             await self._set_status("idle")
-            try:
-                incoming = await asyncio.wait_for(
-                    self.inbox.get(), timeout=self.cfg.agents.idle_ttl_s
-                )
-            except TimeoutError:
-                await self._set_status("parked")
-                return
+            if self.agent_type.name == "advisor":
+                incoming = await self.inbox.get()
+            else:
+                try:
+                    incoming = await asyncio.wait_for(
+                        self.inbox.get(), timeout=self.cfg.agents.idle_ttl_s
+                    )
+                except TimeoutError:
+                    await self._set_status("parked")
+                    return
             if incoming is _WAKE:
                 message = None
                 continue
@@ -481,15 +497,16 @@ class AgentRun:
             ),
         )
         await self._set_status(status, self.abort_reason)
-        await self.owner.bus.emit(
-            AgentFinished(
-                run_id=self.id,
-                parent_id=self.parent_id,
-                name=self.name,
-                agent_type=self.agent_type.name,
-                result=result,
+        if self.visible:
+            await self.owner.bus.emit(
+                AgentFinished(
+                    run_id=self.id,
+                    parent_id=self.parent_id,
+                    name=self.name,
+                    agent_type=self.agent_type.name,
+                    result=result,
+                )
             )
-        )
 
 
 class AgentRegistry:
@@ -604,6 +621,15 @@ class AgentRegistry:
                 spec = self.registry.agent_types.get("task")
             if spec is None:
                 continue
+            visible = bool(data.get("visible", spec.name != "advisor"))
+            stored_tools = data.get("tools")
+            if (
+                spec.name == "advisor"
+                and not visible
+                and isinstance(stored_tools, list)
+                and all(isinstance(tool, str) for tool in stored_tools)
+            ):
+                spec = replace(spec, tools=set(stored_tools))
             name = data.get("name")
             if not isinstance(name, str) or not name:
                 name = info.title or spec.name
@@ -635,6 +661,7 @@ class AgentRegistry:
                 output_schema=output_schema,
                 schema_mode=schema_mode,
                 blocking=bool(data.get("blocking", spec.blocking)),
+                visible=visible,
                 description=description,
                 model_label=model_label,
             )
@@ -746,8 +773,22 @@ class AgentRegistry:
         return [
             self._runs[run_id]
             for run_id in self._order
-            if status is None or self._runs[run_id].status == status
+            if self._runs[run_id].visible
+            and (status is None or self._runs[run_id].status == status)
         ]
+
+    def advisor_run(self, parent_session: str) -> AgentRun | None:
+        return next(
+            (
+                run
+                for run_id in reversed(self._order)
+                if (run := self._runs[run_id]).agent_type.name == "advisor"
+                and not run.visible
+                and run.parent_session == parent_session
+                and not run.terminal
+            ),
+            None,
+        )
 
     def tree(self) -> list[AgentRun]:
         children: dict[str, list[AgentRun]] = {}
@@ -809,11 +850,19 @@ class AgentRegistry:
         output_schema: dict[str, Any] | None = None,
         schema_mode: Literal["permissive", "strict"] = "permissive",
         blocking: bool = False,
+        model: str | list[str] | None = None,
+        tools: Iterable[str] | None = None,
+        visible: bool = True,
     ) -> AgentRun:
         spec = self.registry.agent_types.get(agent_type)
         if spec is None:
             available = ", ".join(sorted(self.registry.agent_types))
             raise LookupError(f"Unknown agent type {agent_type!r}; available: {available}")
+        if tools is not None:
+            scoped_tools = set(tools)
+            if spec.name == "advisor":
+                scoped_tools.add("advise")
+            spec = replace(spec, tools=scoped_tools)
         if schema_mode not in {"permissive", "strict"}:
             raise ValueError("schema_mode must be permissive or strict")
         parent_id, parent_session, depth = self._parent(parent)
@@ -822,7 +871,7 @@ class AgentRegistry:
                 f"maximum agent depth {self.cfg.agents.max_depth} exceeded by depth {depth}"
             )
         run_name = self._name(prompt, name, parent_id)
-        model = self._model(spec)
+        model = self._model(spec) if model is None else model
         info = self.session.create(
             self.cfg.cwd,
             model,
@@ -848,20 +897,22 @@ class AgentRegistry:
             ),
             schema_mode=schema_mode,
             blocking=blocking or spec.blocking,
+            visible=visible,
             description=prompt,
             model_label=_model_label(model),
         )
         self._persist_job(run)
         self._runs[run.id] = run
         self._order.append(run.id)
-        await self.bus.emit(
-            AgentSpawned(
-                run_id=run.id,
-                parent_id=run.parent_id,
-                name=run.name,
-                agent_type=spec.name,
+        if run.visible:
+            await self.bus.emit(
+                AgentSpawned(
+                    run_id=run.id,
+                    parent_id=run.parent_id,
+                    name=run.name,
+                    agent_type=spec.name,
+                )
             )
-        )
         run.start(prompt)
         await self._notify()
         return run
@@ -998,6 +1049,13 @@ class AgentRegistry:
         run.yield_count += 1
         run.last_yield = payload
         await self._notify()
+
+    async def record_advice(
+        self, run: AgentRun, payload: dict[str, Any]
+    ) -> None:
+        if run.owner is not self or run.agent_type.name != "advisor":
+            raise ValueError("advice can only be recorded by a registered advisor run")
+        await run.advice_outbox.put(payload)
 
     async def deliver(
         self, parent: str, ids: Iterable[str] | None = None

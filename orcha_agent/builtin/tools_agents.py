@@ -69,6 +69,22 @@ _HUB_SCHEMA: dict[str, Any] = {
     "required": ["op"],
     "additionalProperties": False,
 }
+_ADVISE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "note": {"type": "string", "minLength": 1},
+        "severity": {"type": "string", "enum": ["nit", "concern", "blocker"]},
+        "none": {"type": "boolean", "const": True},
+    },
+    "oneOf": [
+        {"required": ["note", "severity"], "not": {"required": ["none"]}},
+        {
+            "required": ["none"],
+            "not": {"anyOf": [{"required": ["note"]}, {"required": ["severity"]}]},
+        },
+    ],
+    "additionalProperties": False,
+}
 
 
 def _registry(host: Any) -> Any:
@@ -213,6 +229,20 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
         await run.complete(payload, status=status)
         return {"accepted": True, "terminal": True, "status": status, "schema_overridden": run.schema_overridden}
 
+    async def advise_call(
+        note: str | None = None,
+        severity: str | None = None,
+        none: bool | None = None,
+    ) -> dict[str, Any]:
+        if none is True and note is None and severity is None:
+            payload: dict[str, Any] = {"none": True}
+        elif none is None and isinstance(note, str) and note.strip() and severity in {"nit", "concern", "blocker"}:
+            payload = {"note": note.strip(), "severity": severity}
+        else:
+            raise ValueError("advise requires exactly note and severity, or none=true")
+        await registry.record_advice(host, payload)
+        return {"accepted": True, "terminal": False}
+
     async def hub_call(**kwargs: Any) -> dict[str, Any]:
         op = str(kwargs["op"])
         if op == "list":
@@ -272,8 +302,16 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     task_tool = StructuredTool.from_function(coroutine=task_call, name="task", description="Spawn one concurrent batch. Give each self-contained task Target, Change, and Acceptance sections. Results arrive asynchronously through hub unless blocking; blocking is runtime-bounded.", args_schema=_TASK_SCHEMA)
     yield_tool = StructuredTool.from_function(coroutine=yield_call, name="yield", description="Submit incremental findings or a terminal schema-validated result. Validation retries up to three times; permissive overrides and strict failures then settle.", args_schema=_YIELD_SCHEMA)
     hub_tool = StructuredTool.from_function(coroutine=hub_call, name="hub", description="List, message, wait for, cancel, and collect serializable snapshots of registered agents.", args_schema=_HUB_SCHEMA)
-    may_spawn = is_main or (bool(getattr(getattr(host, "agent_type", None), "spawns", False)) and int(getattr(host, "depth", 0)) < int(registry.cfg.agents.max_depth))
-    return tuple([*( [task_tool] if may_spawn else []), *( [yield_tool] if not is_main else []), hub_tool])
+    advise_tool = StructuredTool.from_function(coroutine=advise_call, name="advise", description="Submit one nonterminal advisor assessment: either a note with nit, concern, or blocker severity, or none=true.", args_schema=_ADVISE_SCHEMA)
+    agent_type = getattr(host, "agent_type", None)
+    is_advisor = not is_main and str(getattr(agent_type, "name", "")) == "advisor"
+    may_spawn = is_main or (bool(getattr(agent_type, "spawns", False)) and int(getattr(host, "depth", 0)) < int(registry.cfg.agents.max_depth))
+    return tuple([
+        *([task_tool] if may_spawn else []),
+        *([yield_tool] if not is_main else []),
+        hub_tool,
+        *([advise_tool] if is_advisor else []),
+    ])
 
 
 def register(api: PluginAPI) -> None:

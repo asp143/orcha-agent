@@ -638,3 +638,30 @@ async def test_agents_command_and_alt_a_binding_open_the_hub() -> None:
     assert binding.default == "escape a"
     assert shown == ["hub", "hub"]
     await runtime.scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_advisor_followup_is_dropped_after_session_switch() -> None:
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+
+    ctx = SimpleNamespace(
+        cfg=SimpleNamespace(
+            cwd=Path.cwd(),
+            models={},
+            notify=False,
+            statusbar=False,
+            symbols="ascii",
+        ),
+        plugin_states={},
+        session=SimpleNamespace(get=lambda _session_id: None),
+        session_id="new-session",
+    )
+    runtime = ApplicationRuntime(submit, ctx=ctx, output=DummyOutput())
+
+    await runtime._submit_advisor_followup("old-session", "advice")
+
+    assert submitted == []
+    await runtime.scheduler.aclose()

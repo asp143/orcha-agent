@@ -31,6 +31,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
+from orcha_agent.builtin.advisor import AdvisorService
 
 from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import (
@@ -341,6 +342,12 @@ class ApplicationRuntime:
         self.streaming = False
         self._shutting_down = False
         self._active_turn: asyncio.Task[Any] | None = None
+        advisor_cfg = getattr(getattr(ctx, "cfg", None), "advisor", None)
+        self.advisor = (
+            AdvisorService(ctx, submit_followup=self._submit_advisor_followup)
+            if ctx is not None and bool(getattr(advisor_cfg, "enabled", False))
+            else None
+        )
         self._active_overlay: Overlay | None = None
         self._overlay_lock = asyncio.Lock()
         self._last_escape = 0.0
@@ -974,6 +981,8 @@ class ApplicationRuntime:
         if self._drilled_run_id is not None:
             self._track(self._send_drilled_batch(prompts))
             return False
+        if self.advisor is not None:
+            self.advisor.before_user_prompt()
         is_batch = len(prompts) > 1
         if self.streaming:
             self.queue.extend(prompts)
@@ -1352,9 +1361,22 @@ class ApplicationRuntime:
             future.add_done_callback(self._terminal_pending.discard)
         return future
 
-    async def _submit_serially(self, text: str | None) -> None:
+    async def _submit_serially(
+        self,
+        text: str | None,
+        *,
+        user_prompt: bool = True,
+        expected_session: str | None = None,
+    ) -> None:
+        if text is not None and user_prompt and self.advisor is not None:
+            self.advisor.before_user_prompt()
         async with self._submit_lock:
             if self._shutting_down:
+                return
+            if (
+                expected_session is not None
+                and str(getattr(self.ctx, "session_id", "")) != expected_session
+            ):
                 return
             pending_user = text
             current = await self._claim_agent_delivery()
@@ -1377,13 +1399,25 @@ class ApplicationRuntime:
                 if self._shutting_down:
                     break
                 current = await self._claim_agent_delivery()
+                next_is_user = False
                 if current is None and pending_user is not None:
                     current = pending_user
                     pending_user = None
+                    next_is_user = user_prompt
                 elif current is None:
                     current = self.queue.pop()
+                    next_is_user = current is not None
+                if next_is_user and self.advisor is not None:
+                    self.advisor.before_user_prompt()
                 if current is not None:
                     self.application.invalidate()
+
+    async def _submit_advisor_followup(self, session_id: str, text: str) -> None:
+        await self._submit_serially(
+            text,
+            user_prompt=False,
+            expected_session=session_id,
+        )
 
     def _notify(self, text: str) -> None:
         transcript = getattr(self, "transcript", None)
@@ -1574,6 +1608,8 @@ class ApplicationRuntime:
             self._shutting_down = True
             if self._active_overlay is not None:
                 self._active_overlay.cancel()
+            if self.advisor is not None:
+                await self.advisor.aclose()
             await self._drain_pending()
             self.scheduler.commit_now()
             await self._drain_pending()
@@ -1792,6 +1828,14 @@ async def run_app(cfg: Config) -> int:
         )
         if hasattr(runtime, "replace_themes"):
             _register_theme_refresh(bus, ctx, runtime)
+        advisor = getattr(runtime, "advisor", None)
+        if advisor is not None:
+            bus.on(
+                TurnEnd,
+                advisor.on_main_turn_end,
+                plugin="<advisor>",
+                priority=8_500,
+            )
         if hasattr(runtime, "transcript"):
             ctx.transcript = runtime.transcript
             ctx.ui = runtime.ui

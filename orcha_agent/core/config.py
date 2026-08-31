@@ -126,6 +126,58 @@ def _agents_config(value: Any, parser: argparse.ArgumentParser) -> AgentsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AdvisorConfig:
+    enabled: bool = False
+    model: str = "@advisor"
+    tools: tuple[str, ...] = ("read_file", "grep", "glob")
+    immune_turns: int = 3
+    timeout_s: float = 30.0
+
+
+def _advisor_config(value: Any, parser: argparse.ArgumentParser) -> AdvisorConfig:
+    if not isinstance(value, Mapping):
+        parser.error("advisor must be a TOML table")
+
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        parser.error("[advisor] enabled must be true or false")
+
+    model = value.get("model", "@advisor")
+    if not isinstance(model, str) or not model.strip():
+        parser.error("[advisor] model must be a non-empty role or model string")
+
+    raw_tools = value.get("tools", ("read_file", "grep", "glob"))
+    if isinstance(raw_tools, (str, bytes)) or not isinstance(raw_tools, Sequence):
+        parser.error("[advisor] tools must be a sequence of strings")
+    if not all(isinstance(tool, str) and tool.strip() for tool in raw_tools):
+        parser.error("[advisor] tools must contain only non-empty strings")
+
+    immune_turns = value.get("immune_turns", 3)
+    if (
+        isinstance(immune_turns, bool)
+        or not isinstance(immune_turns, int)
+        or immune_turns < 1
+    ):
+        parser.error("[advisor] immune_turns must be an integer >= 1")
+
+    timeout_s = value.get("timeout_s", 30.0)
+    if (
+        isinstance(timeout_s, bool)
+        or not isinstance(timeout_s, (int, float))
+        or timeout_s <= 0
+    ):
+        parser.error("[advisor] timeout_s must be a number > 0")
+
+    return AdvisorConfig(
+        enabled=enabled,
+        model=model.strip(),
+        tools=tuple(tool.strip() for tool in raw_tools),
+        immune_turns=immune_turns,
+        timeout_s=float(timeout_s),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
 
@@ -170,6 +222,7 @@ class Config:
     agents: AgentsConfig = field(default_factory=AgentsConfig)
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
+    advisor: AdvisorConfig = field(default_factory=AdvisorConfig)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -428,12 +481,13 @@ def load_config(
     ui = values.get("ui", {})
     pricing = values.get("pricing", {})
     agents = values.get("agents", {})
+    advisor = values.get("advisor", {})
     if not all(
         isinstance(table, dict)
-        for table in (models, providers, plugins, ui, pricing, agents)
+        for table in (models, providers, plugins, ui, pricing, agents, advisor)
     ):
         _parser().error(
-            "models, providers, plugins, ui, pricing, and agents must be TOML tables"
+            "models, providers, plugins, ui, pricing, agents, and advisor must be TOML tables"
         )
     raw_roles = models.get("roles", {})
     if not isinstance(raw_roles, Mapping):
@@ -446,6 +500,7 @@ def load_config(
     if subagent_model is not None:
         model_roles.setdefault("task", subagent_model)
     agent_config = _agents_config(agents, parser)
+    advisor_config = _advisor_config(advisor, parser)
     thinking = str(ui.get("thinking", "summary"))
     if thinking not in {"summary", "off", "all"}:
         parser.error("[ui] thinking must be summary, off, or all")
@@ -508,6 +563,7 @@ def load_config(
         statusline=statusline,
         model_roles=model_roles,
         agents=agent_config,
+        advisor=advisor_config,
         pricing={
             str(model_name): {
                 str(key): float(value)

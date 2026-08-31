@@ -99,6 +99,14 @@ class InterruptRaised(Event):
 
 
 @dataclass(slots=True)
+class Advisory(Event):
+    note: str | None
+    severity: str
+    advisor_id: str
+    interrupt: bool
+
+
+@dataclass(slots=True)
 class TurnEnd(Event):
     thread_id: str
     source_id: str = "main"
@@ -196,6 +204,7 @@ class EventBus:
 
 
 __all__ = [
+    "Advisory",
     "AgentBuildAfter",
     "AgentBuildBefore",
     "AgentDelivered",

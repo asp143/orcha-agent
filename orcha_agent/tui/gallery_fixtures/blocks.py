@@ -71,6 +71,28 @@ GALLERY_FIXTURES: dict[
         "success": _settled(text="## Done\n\nEvery renderer produced output."),
         "error": _settled(text="> Gallery render recovered from an error."),
     },
+    "advisory": {
+        "streaming": _active(
+            note="Check the active implementation assumption.",
+            severity="nit",
+            advisor_id="advisor",
+        ),
+        "progress": _active(
+            note="The current change may skip an edge case.",
+            severity="concern",
+            advisor_id="advisor",
+        ),
+        "success": _settled(
+            note="No blocking issue; retain the verification step.",
+            severity="nit",
+            advisor_id="advisor",
+        ),
+        "error": _settled(
+            note="Stop before shipping this unsafe path.",
+            severity="blocker",
+            advisor_id="advisor",
+        ),
+    },
     "thinking": {
         "streaming": _active(
             text="Inspecting renderer state",
