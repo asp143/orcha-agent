@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.completion import Completion
 from prompt_toolkit.utils import get_cwidth
 
 from orcha_agent.tui.composer import Composer
+from orcha_agent.tui.symbols import resolve_symbols
 
 
 GOLDEN_DIR = Path(__file__).with_name("golden")
@@ -47,6 +49,33 @@ def test_composer_chrome_golden(
         + "\n"
     )
     golden = GOLDEN_DIR / f"composer-{shape}.{width}.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+@pytest.mark.parametrize("shape", ["box", "claude"])
+def test_ascii_composer_chrome_golden(
+    shape: str,
+    update_goldens: bool,
+) -> None:
+    composer = Composer(
+        shape=shape,
+        theme=SimpleNamespace(symbols=resolve_symbols("ascii")),
+        model=lambda: "claude-sonnet-4",
+        thinking=lambda: "high",
+    )
+    actual = _encode_trailing_spaces(
+        "\n".join(
+            composer.render_lines(
+                ["first line", "last line"],
+                80,
+                scrollbar_rows={0},
+            )
+        )
+        + "\n"
+    )
+    golden = GOLDEN_DIR / f"composer-{shape}-ascii.80.txt"
     if update_goldens:
         golden.write_text(actual)
     assert golden.read_text() == actual

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import secrets
 import sqlite3
 import stat
 import threading
+import warnings
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -116,14 +118,15 @@ class _AsyncSqliteSaver(SqliteSaver):
 
 class SessionStore:
     """Own one SQLite connection shared by checkpoints and session metadata."""
+    _warned_parent_chmods: set[Path] = set()
+
 
     supports_sync = False
     structured_memory: Any | None = None
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.db_path.parent.chmod(0o700)
+        self._prepare_database_directory()
         self._reject_database_symlinks()
         if self.db_path.exists():
             owner = self.db_path.stat().st_uid
@@ -146,6 +149,33 @@ class SessionStore:
         except BaseException:
             self._connection.close()
             raise
+
+    def _prepare_database_directory(self) -> None:
+        parent = self.db_path.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=False, mode=0o700)
+        except FileExistsError:
+            created = False
+        else:
+            created = True
+
+        resolved_parent = parent.resolve()
+        if not created and not resolved_parent.is_relative_to(Path.home().resolve()):
+            return
+
+        try:
+            parent.chmod(0o700)
+        except PermissionError as exc:
+            if created or exc.errno != errno.EPERM:
+                raise
+            if resolved_parent in self._warned_parent_chmods:
+                return
+            self._warned_parent_chmods.add(resolved_parent)
+            warnings.warn(
+                f"Could not secure session database directory {parent}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _database_files(self) -> tuple[Path, Path, Path]:
         return (

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application.current import set_app
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
 from prompt_toolkit.filters import Condition
@@ -471,9 +472,11 @@ class ApplicationRuntime:
         root = FloatContainer(
             content=HSplit(
                 [
+                    Window(height=Dimension(weight=1)),
                     Window(
                         FormattedTextControl(self._viewport_text),
                         height=Dimension(min=0),
+                        dont_extend_height=True,
                     ),
                     Window(
                         FormattedTextControl(self._hud_text),
@@ -486,7 +489,8 @@ class ApplicationRuntime:
                         FormattedTextControl(self._status),
                         height=1,
                     ),
-                ]
+                ],
+                height=self._root_height,
             ),
             floats=[],
         )
@@ -889,7 +893,7 @@ class ApplicationRuntime:
                     self.title.set_approval(False)
                 return None
             self._active_overlay = resolved
-            self._root.floats.append(resolved)
+            self._root.floats.extend((resolved.backdrop, resolved))
             try:
                 try:
                     self.application.layout.focus(resolved.focus_target)
@@ -900,8 +904,9 @@ class ApplicationRuntime:
                     self._drill_in(result)
                 return result
             finally:
-                if resolved in self._root.floats:
-                    self._root.floats.remove(resolved)
+                for overlay_float in (resolved, resolved.backdrop):
+                    if overlay_float in self._root.floats:
+                        self._root.floats.remove(overlay_float)
                 self._active_overlay = None
                 if approval:
                     self.title.set_approval(False)
@@ -1537,6 +1542,9 @@ class ApplicationRuntime:
         return self._apply_theme(selected)
 
 
+    def _root_height(self) -> int:
+        return max(1, self.application.output.get_size().rows - 1)
+
     def _render_block(self, block: Block, width: int, rows: int) -> Any:
         return self._block_dispatcher.render(
             block,
@@ -1605,8 +1613,12 @@ class ApplicationRuntime:
         size = self.application.output.get_size()
         width = max(1, size.columns)
         budget = Frame.row_budget(
-            terminal_rows=size.rows,
-            composer_rows=self.composer.height_for_width(width) + self._hud_height(),
+            terminal_rows=self._root_height(),
+            composer_rows=(
+                self.composer.height_for_width(width)
+                + self._hud_height()
+                + self.composer.completion_row_count()
+            ),
             status_rows=1,
         )
         frame = self._drilled_frame if self._drilled_run_id is not None else self.frame
@@ -1679,6 +1691,13 @@ class ApplicationRuntime:
                 viewport=False,
             )
 
+    async def _run_in_app_terminal(self, func: Callable[[], Any]) -> Any:
+        """Run a terminal callback bound to this prompt-toolkit application."""
+        if not self.application.is_running:
+            return func()
+        with set_app(self.application):
+            return await run_in_terminal(func)
+
     def _commit_blocks(self, blocks: list[Block]) -> None:
         def write_and_prune() -> None:
             self._write_blocks(blocks)
@@ -1691,7 +1710,7 @@ class ApplicationRuntime:
             self._block_dispatcher.evict(blocks)
 
         async def write_and_release() -> None:
-            await run_in_terminal(write_and_prune)
+            await self._run_in_app_terminal(write_and_prune)
             self.application.invalidate()
 
         self._track(write_and_release(), terminal=True)
@@ -1700,7 +1719,7 @@ class ApplicationRuntime:
         self.scheduler.commit_now()
         await self._drain(self._terminal_pending)
         await self._track(
-            run_in_terminal(self._scrollback.clear),
+            self._run_in_app_terminal(self._scrollback.clear),
             terminal=True,
         )
         self.transcript.clear()

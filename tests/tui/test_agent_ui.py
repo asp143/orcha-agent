@@ -679,13 +679,9 @@ async def test_advisor_followup_is_dropped_after_session_switch() -> None:
 @pytest.mark.asyncio
 async def test_late_agent_event_after_settled_task_card_does_not_duplicate_it() -> None:
     transcript = Transcript()
-    await transcript.handle(
-        ToolCallStart("task", {"tasks": [{"task": "count things"}]}, "call-1")
-    )
+    await transcript.handle(ToolCallStart("task", {"tasks": [{"task": "count things"}]}, "call-1"))
     await transcript.handle(AgentSpawned("run-9", "main", "Scout", "scout"))
-    await transcript.handle(
-        AgentStatus("run-9", "main", "Scout", "scout", status="done")
-    )
+    await transcript.handle(AgentStatus("run-9", "main", "Scout", "scout", status="done"))
     block = transcript._agent_tasks["run-9"]
     block.data["tool_complete"] = True
     for agent in block.data.get("agents", []):
@@ -698,8 +694,6 @@ async def test_late_agent_event_after_settled_task_card_does_not_duplicate_it() 
 
     # A late per-agent update (e.g. delivered-flag refresh) must not create a
     # second aggregate task card.
-    await transcript.handle(
-        AgentStatus("run-9", "main", "Scout", "scout", status="done")
-    )
+    await transcript.handle(AgentStatus("run-9", "main", "Scout", "scout", status="done"))
     task_blocks_after = [b for b in transcript.frame.blocks if b.kind == "task"]
     assert task_blocks_after == task_blocks_before

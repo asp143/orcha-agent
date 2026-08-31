@@ -169,7 +169,11 @@ async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None
         await wait_until(lambda: runtime.active_overlay is first)
         assert runtime.active_overlay is first
         assert runtime.application.mouse_support()
-        assert len(runtime.application.layout.container.floats) == base_float_count + 1
+        assert len(runtime.application.layout.container.floats) == base_float_count + 2
+        assert runtime.application.layout.container.floats[-2:] == [
+            first.backdrop,
+            first,
+        ]
         pipe.send_bytes(b"\r")
         assert await asyncio.wait_for(first_result, 1) == "one"
         await wait_until(lambda: runtime.active_overlay is second)

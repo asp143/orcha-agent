@@ -12,6 +12,7 @@ from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from prompt_toolkit.data_structures import Size
+from prompt_toolkit.layout.dimension import to_dimension
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.styles import Style
@@ -42,6 +43,54 @@ class _SizedDummyOutput(DummyOutput):
 
     def get_size(self) -> Size:
         return self._size
+
+
+@pytest.mark.asyncio
+async def test_root_has_dynamic_terminal_height_and_bottom_filler() -> None:
+    output = _SizedDummyOutput(columns=100, rows=30)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=output,
+        )
+        root = runtime.application.layout.container.content
+
+        dimension = to_dimension(root.height)
+        assert (dimension.min, dimension.preferred, dimension.max) == (29, 29, 29)
+        assert to_dimension(root.children[0].height).weight == 1
+        assert root.children[1].dont_extend_height()
+
+        output._size = Size(rows=18, columns=70)
+        resized = to_dimension(root.height)
+        assert (resized.min, resized.preferred, resized.max) == (17, 17, 17)
+        await runtime.scheduler.aclose()
+
+
+@pytest.mark.asyncio
+async def test_viewport_budget_counts_every_fixed_layout_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _SizedDummyOutput(columns=100, rows=30)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            input=pipe,
+            output=output,
+        )
+        runtime.buffer.text = "one\ntwo\nthree"
+        monkeypatch.setattr(runtime.composer, "completion_row_count", lambda: 5)
+        monkeypatch.setattr(runtime, "_hud_height", lambda: 3)
+        runtime.frame.add(
+            "raw",
+            {"renderable": "\n".join(f"marker-{index}" for index in range(40))},
+        )
+
+        rendered = runtime._viewport_text()
+        await runtime.scheduler.aclose()
+
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered.value)
+    assert len(plain.splitlines()) == 16
 
 
 @pytest.mark.asyncio
@@ -416,10 +465,15 @@ async def test_tool_viewport_reserves_spacer_before_selecting_card_shape(
 
 
 @pytest.mark.asyncio
-async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
+async def test_commit_uses_runtime_app_context_and_prunes_after_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    active_apps: list[object] = []
+
     async def immediate(callback: object) -> None:
+        from prompt_toolkit.application.current import get_app
+
+        active_apps.append(get_app())
         callback()
 
     monkeypatch.setattr("orcha_agent.tui.runtime.run_in_terminal", immediate)
@@ -429,6 +483,7 @@ async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
             input=pipe,
             output=DummyOutput(),
         )
+        runtime.application._is_running = True
         block = runtime.frame.add("assistant", {"text": "done"})
         runtime._render_block(block, 80, 3)
         runtime.frame.settle(block)
@@ -437,8 +492,10 @@ async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
         runtime._commit_blocks(ready)
         await runtime._drain_pending()
 
+        assert active_apps == [runtime.application]
         assert runtime.frame.blocks == []
         assert not runtime._block_dispatcher._cache
+        runtime.application._is_running = False
         await runtime.scheduler.aclose()
 
 

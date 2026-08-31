@@ -29,3 +29,21 @@ def test_overlay_chrome_and_clipping_golden(
     if update_goldens:
         golden.write_text(actual)
     assert golden.read_text() == actual
+
+def test_overlay_backdrop_rows_are_full_width_golden(
+    update_goldens: bool,
+) -> None:
+    actual = "\n".join(
+        row.replace(" ", "·")
+        for row in Overlay.render_lines(
+            "Picker",
+            [f"row {index}" for index in range(1, 6)],
+            width=32,
+            height=7,
+            terminal_width=50,
+        )
+    ) + "\n"
+    golden = GOLDEN_DIR / "overlay-backdrop.50x7.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
