@@ -838,14 +838,44 @@ async def test_select_list_scrolls_long_navigation_to_selected_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_select_list_filter_owns_jk_while_arrows_navigate() -> None:
+    picker = SelectList("Pick", ["jacket", "joke", "alpha"])
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
+        )
+        task = asyncio.create_task(runtime.run())
+        shown = asyncio.create_task(runtime.ui.show(picker))
+        await asyncio.sleep(0.02)
+        pipe.send_text("jk")
+        await asyncio.sleep(0.02)
+
+        assert picker.filter.text == "jk"
+        assert picker.filtered_items == ("jacket", "joke")
+
+        pipe.send_bytes(b"\x1b[B\r")
+        assert await asyncio.wait_for(shown, 1) == "joke"
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
 async def test_select_list_supports_vim_navigation_and_fixed_position_counter() -> None:
-    picker = SelectList("Long list", [f"item-{index:02d}" for index in range(12)])
+    picker = SelectList(
+        "Long list",
+        [f"item-{index:02d}" for index in range(12)],
+        show_filter=False,
+    )
 
     assert "(1/12)" in picker.render_text()
     assert await _drive_overlay(picker, "j\r") == "item-01"
     assert "(2/12)" in picker.render_text()
 
-    picker = SelectList("Long list", [f"item-{index:02d}" for index in range(12)])
+    picker = SelectList(
+        "Long list",
+        [f"item-{index:02d}" for index in range(12)],
+        show_filter=False,
+    )
     assert await _drive_overlay(picker, b"\x1b[6~k\r") == "item-07"
 
 

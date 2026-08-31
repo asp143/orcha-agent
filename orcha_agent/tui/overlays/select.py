@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Generic, TypeVar
 
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import HSplit, Window
@@ -89,6 +90,11 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         )
         bindings = KeyBindings()
         self._bind_navigation(bindings)
+        filter_focused = has_focus(self.filter_control)
+        for key in ("j", "k"):
+            binding = bindings.get_bindings_for_keys((key,))[0]
+            bindings.remove(key)
+            bindings.add(key, filter=~filter_focused)(binding)
 
         @bindings.add(" ")
         def _toggle(event: Any) -> None:
