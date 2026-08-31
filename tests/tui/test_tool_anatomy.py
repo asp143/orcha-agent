@@ -207,7 +207,7 @@ def test_glob_and_grep_use_authoritative_counts_and_specific_empty_summaries() -
     formatted_grep = _plain(
         _block(
             "grep",
-            args={"pattern": "needle"},
+            args={"pattern": "needle", "output_mode": "content"},
             result="a.py:\n  2: needle one\n  8: needle two\nb.py:\n  3: needle three",
         )
     )
@@ -221,25 +221,42 @@ def test_glob_and_grep_use_authoritative_counts_and_specific_empty_summaries() -
     assert _plain(_block("grep", args={"pattern": "none"}, result="")).strip() == "⚠ No matches found"
 
 
-def test_grep_distinguishes_count_rows_from_matches_ending_in_a_number() -> None:
-    counts = _plain(
+def test_grep_default_mode_keeps_count_shaped_filename_as_one_path() -> None:
+    output = _plain(
         _block(
             "grep",
             args={"pattern": "needle"},
-            result="src/a.py: 2\nsrc/b.py: 5",
+            result="notes: 2",
         )
     )
-    match = _plain(
+
+    assert "Grep: needle  1 matches · 1 files" in output
+    assert "notes: 2" in output
+
+
+def test_grep_count_mode_splits_rows_at_the_final_separator() -> None:
+    output = _plain(
         _block(
             "grep",
-            args={"pattern": "needle"},
+            args={"pattern": "needle", "output_mode": "count"},
+            result="dir:name.py: 5\nsrc/b.py: 2",
+        )
+    )
+
+    assert "Grep: needle  7 matches · 2 files" in output
+
+
+def test_grep_content_mode_keeps_match_ending_in_a_number() -> None:
+    output = _plain(
+        _block(
+            "grep",
+            args={"pattern": "needle", "output_mode": "content"},
             result="src/a.py:12:needle: 5",
         )
     )
 
-    assert "Grep: needle  7 matches · 2 files" in counts
-    assert "Grep: needle  1 matches · 1 files" in match
-    assert "src/a.py:12:needle: 5" in match
+    assert "Grep: needle  1 matches · 1 files" in output
+    assert "src/a.py:12:needle: 5" in output
 
 
 def test_grep_treats_only_the_deepagents_no_match_sentinel_as_empty() -> None:
@@ -248,7 +265,7 @@ def test_grep_treats_only_the_deepagents_no_match_sentinel_as_empty() -> None:
     real_match = _plain(
         _block(
             "grep",
-            args={"pattern": "needle"},
+            args={"pattern": "needle", "output_mode": "content"},
             result="No matches found.txt:\n  7: No matches found in this line",
         )
     )

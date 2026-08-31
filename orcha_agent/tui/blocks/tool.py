@@ -522,7 +522,7 @@ def _path_item(item: Any) -> str:
     return f"{value}/" if is_dir and value and not value.endswith("/") else value
 
 
-def _grep_items(result: Any) -> tuple[list[str], int, int]:
+def _grep_items(result: Any, output_mode: str) -> tuple[list[str], int, int]:
     structured = _items_from_result(result, "matches")
     has_structured_matches = any(
         isinstance(item.get("matches"), Sequence) and not isinstance(item.get("matches"), (str, bytes))
@@ -545,13 +545,16 @@ def _grep_items(result: Any) -> tuple[list[str], int, int]:
         return rows, len(rows), len(paths - {""})
 
     raw_lines = _result_text(result).splitlines()
+    if output_mode == "files_with_matches":
+        rows = [line for line in raw_lines if line]
+        return rows, len(rows), len(set(rows))
     rows = []
     paths: set[str] = set()
     current_path: str | None = None
     count_total = 0
-    count_mode = True
+    count_mode = output_mode == "count"
     for line in raw_lines:
-        count_match = re.match(r"^([^:]+): (\d+)$", line)
+        count_match = re.match(r"^(.+): (\d+)$", line) if count_mode else None
         if count_match and not line.startswith((" ", "\t")):
             path, count = count_match.groups()
             paths.add(path)
@@ -620,7 +623,8 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
         return output
     if name == "grep":
         grep_result = None if _result_text(result).strip() == "No matches found" else result
-        items, parsed_total, parsed_files = _grep_items(grep_result)
+        output_mode = str(args.get("output_mode", "files_with_matches"))
+        items, parsed_total, parsed_files = _grep_items(grep_result, output_mode)
         supplied_total = _numeric_value(grep_result, "match_count", "total_matches", "count")
         supplied_files = _numeric_value(grep_result, "file_count", "files_with_matches")
         total = parsed_total if supplied_total is None else supplied_total
