@@ -314,6 +314,7 @@ class AgentRun:
         self.agent_ready = asyncio.Event()
         self._status_changed = asyncio.Condition()
         self._turn_task: asyncio.Task[None] | None = None
+        self._agent_rebuild_pending = False
         self._completion: tuple[AgentStatusName, Any] | None = None
         self._abort_requested: AbortReason | None = None
         self._runtime_timer: asyncio.Task[None] | None = None
@@ -427,6 +428,11 @@ class AgentRun:
             }
         scope.discard("task")
         return scope
+
+    def _invalidate_agent(self) -> None:
+        self.agent = None
+        self.agent_ready.clear()
+        self._agent_rebuild_pending = False
 
     def capture_turn(self) -> None:
         state = self.agent.get_state(self.thread_config)
@@ -557,6 +563,8 @@ class AgentRun:
                         await self._turn_task
                     finally:
                         self._turn_task = None
+                    if self._agent_rebuild_pending:
+                        self._invalidate_agent()
                 if self._abort_requested is not None:
                     await self._settle_abort(self._abort_requested)
                     return
@@ -977,8 +985,11 @@ class AgentRegistry:
         if mode_changed:
             run.cfg = replace(run.cfg, mode=self.cfg.mode)
             if not run.terminal:
-                run.agent = None
-                run.agent_ready.clear()
+                turn = run._turn_task
+                if turn is not None and not turn.done():
+                    run._agent_rebuild_pending = True
+                else:
+                    run._invalidate_agent()
             self.session.set_mode(run.session_id, self.cfg.mode)
 
     def retarget(

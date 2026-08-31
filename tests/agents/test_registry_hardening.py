@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -580,6 +581,46 @@ def test_hydration_restores_child_mode_cwd_and_recomputes_trust(tmp_path: Path) 
         assert restored.cwd == child_cwd
         assert restored.cfg.mode == "yolo"
         assert restored.cfg.trust_cwd is True
+
+
+@pytest.mark.asyncio
+async def test_mode_refresh_defers_graph_rebuild_until_active_turn_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = asyncio.Event()
+    first = _Graph(gate)
+    second = _Graph()
+    graphs = deque((first, second))
+    built_modes: list[str] = []
+
+    async def build(
+        _registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any
+    ) -> _Graph:
+        built_modes.append(cfg.mode)
+        return graphs.popleft()
+
+    monkeypatch.setattr("orcha_agent.core.agents.build_agent", build)
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        yolo = _config(tmp_path)
+        agents = AgentRegistry(
+            _registry(), yolo, store, EventBus(), parent.thread_id
+        )
+        run = await agents.spawn("task", "work", parent="main")
+        await first.started.wait()
+
+        agents.retarget(parent.thread_id, replace(yolo, mode="ask"))
+        assert run.cfg.mode == "ask"
+        assert run.agent is first
+
+        gate.set()
+        await run.wait_status("idle")
+        assert run.agent is None
+        await agents.send(run.id, "again")
+        await second.started.wait()
+        await run.wait_status("idle")
+        assert built_modes == ["yolo", "ask"]
+        await agents.shutdown()
 
 
 @pytest.mark.asyncio
