@@ -253,6 +253,14 @@ async def _keys(ctx: Any, _args: str) -> None:
     ctx.console.print("\n".join(lines))
 
 
+async def _agents(ctx: Any, _args: str) -> None:
+    await ctx.ui.show("hub")
+
+
+async def _agents_key(ctx: Any, _event: Any) -> None:
+    await ctx.ui.show("hub")
+
+
 def register(api: PluginAPI) -> None:
     api.add_command("help", _help, help="List available slash commands")
     api.add_command("exit", _exit, help="Exit orcha-agent")
@@ -262,3 +270,4 @@ def register(api: PluginAPI) -> None:
     api.add_command("logout", _logout, help="Log out of a provider: /logout <prefix>")
     api.add_command("theme", _theme, help="Switch themes: /theme <name>")
     api.add_command("keys", _keys, help="List effective keybindings")
+    api.add_keybinding("agents", _agents_key, default="escape a")

@@ -13,11 +13,13 @@ from typing import Any
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
-    message_to_dict,
     messages_from_dict,
 )
 
+from orcha_agent.builtin.tools_agents import agent_tools
 from orcha_agent.core.agent import build_agent
+from orcha_agent.core.agents import AgentRegistry
+from orcha_agent.core.capture import capture_graph_values
 from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import ModelSwitch, SessionSwitch, ThreadSwitch
 from orcha_agent.core.ledger import (
@@ -47,7 +49,10 @@ def _compat(name: str, default: Any) -> Any:
     return getattr(facade, name, default) if facade is not None else default
 
 
-_SUMMARIZATION_PREFIX = "Here is a summary of the conversation to date:\n\n"
+DEFAULT_MODE = "default"
+DEFAULT_CONTEXT_LIMIT = 114_688
+_SESSION_SCHEMA_VERSION = 1
+
 
 def _stored_model(value: str | list[str]) -> str | list[str]:
     if isinstance(value, list):
@@ -180,6 +185,7 @@ class AppContext:
     console: ConsoleOutput
     session_id: str = field(kw_only=True)
     thread_id: str
+    source_id: str = field(default="main", init=False)
     agent: Any = None
     summarizer: Any = None
     history_model: str | list[str] | None = None
@@ -188,12 +194,14 @@ class AppContext:
     ui: Any = None
     transcript: Any = None
     queue: Any = None
+    agents: AgentRegistry | None = None
     _title_written: bool = False
     _pending_switch_old_thread: str | None = field(
         default=None, init=False, repr=False
     )
     _registry: Registry = field(init=False, repr=False)
     _bus: Any = field(init=False, repr=False)
+    _always_allowed_tools: set[str] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.registry, Registry):
@@ -203,6 +211,16 @@ class AppContext:
             self._registry = self.registry._registry
         self._bus = self.bus._bus if isinstance(self.bus, EventBusView) else self.bus
         self.bus = EventBusView(self._bus)
+        if self.agents is None:
+            self.agents = AgentRegistry(
+                self._registry,
+                self.cfg,
+                self.session,
+                self._bus,
+                self.session_id,
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools,
+            )
 
     @property
     def ledger(self) -> Ledger:
@@ -228,7 +246,14 @@ class AppContext:
             value = state.get("always_allowed", ())
             if isinstance(value, list):
                 allowed.update(item for item in value if isinstance(item, str))
-        return allowed
+        self._always_allowed_tools.clear()
+        self._always_allowed_tools.update(allowed)
+        return self._always_allowed_tools
+
+    def _retarget_agents(self) -> None:
+        self._always_allowed()
+        if self.agents is not None:
+            self.agents.retarget(self.session_id, self.cfg)
 
     def persist_plugin_states(self) -> None:
         for plugin, state in self.plugin_states.items():
@@ -274,11 +299,15 @@ class AppContext:
                 await self._seed_ready_thread("reseed")
             return True
         try:
-            candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-            self.cfg,
-            self.session,
-            self._bus,
-            always_allowed=self._always_allowed(),)
+            candidate_agent = await _compat("build_agent", build_agent)(
+                self.registry,
+                self.cfg,
+                self.session,
+                self._bus,
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools(self),
+                exclude_general_purpose=True,
+            )
             candidate_summarizer = self._resolve_summarizer(self.cfg)
             if not reseed_pending:
                 self._clean_history_for_model(
@@ -302,11 +331,15 @@ class AppContext:
             self.rebuild_requested = False
             return
         self.persist_plugin_states()
-        candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-        self.cfg,
-        self.session,
-        self._bus,
-        always_allowed=self._always_allowed(),)
+        candidate_agent = await _compat("build_agent", build_agent)(
+            self.registry,
+            self.cfg,
+            self.session,
+            self._bus,
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+            exclude_general_purpose=True,
+        )
         candidate_summarizer = self._resolve_summarizer(self.cfg)
         self.agent = candidate_agent
         self.summarizer = candidate_summarizer
@@ -464,6 +497,7 @@ class AppContext:
             self._pending_switch_old_thread = old_switch_thread
             self.session.delete_session(created.thread_id)
             raise
+        self._retarget_agents()
         await self._bus.emit(SessionSwitch(old=old_session, new=self.session_id))
 
     async def new_session(self) -> None:
@@ -475,11 +509,15 @@ class AppContext:
             state.clear()
         try:
             if old_agent is not None:
-                candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-                self.cfg,
-                self.session,
-                self._bus,
-                always_allowed=self._always_allowed(),)
+                candidate_agent = await _compat("build_agent", build_agent)(
+                    self.registry,
+                    self.cfg,
+                    self.session,
+                    self._bus,
+                    always_allowed=self._always_allowed(),
+                    extra_tools=agent_tools(self),
+                    exclude_general_purpose=True,
+                )
                 candidate_summarizer = self._resolve_summarizer(self.cfg)
             else:
                 candidate_agent = None
@@ -504,6 +542,7 @@ class AppContext:
         self.history_model = None
         self._pending_switch_old_thread = None
         self.rebuild_requested = False
+        self._retarget_agents()
         await self._clear_terminal()
         await self._bus.emit(SessionSwitch(old=old_session, new=self.session_id))
 
@@ -635,11 +674,15 @@ class AppContext:
             if old_agent is None:
                 self.summarizer = None
             else:
-                candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-                candidate_cfg,
-                self.session,
-                self._bus,
-                always_allowed=self._always_allowed(),)
+                candidate_agent = await _compat("build_agent", build_agent)(
+                    self.registry,
+                    candidate_cfg,
+                    self.session,
+                    self._bus,
+                    always_allowed=self._always_allowed(),
+                    extra_tools=agent_tools(self),
+                    exclude_general_purpose=True,
+                )
                 candidate_summarizer = self._resolve_summarizer(candidate_cfg)
                 if not needs_reseed:
                     self._clean_history_for_model(
@@ -680,6 +723,7 @@ class AppContext:
                 state.update(old_states.get(name, {}))
             raise
 
+        self._retarget_agents()
         await self._bus.emit(
             SessionSwitch(old=old_session, new=saved_session.thread_id)
         )
@@ -690,11 +734,15 @@ class AppContext:
         old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
         new_label = spec if isinstance(spec, str) else ",".join(spec)
         candidate_cfg = replace(self.cfg, model=spec)
-        candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-        candidate_cfg,
-        self.session,
-        self._bus,
-        always_allowed=self._always_allowed(),)
+        candidate_agent = await _compat("build_agent", build_agent)(
+            self.registry,
+            candidate_cfg,
+            self.session,
+            self._bus,
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+            exclude_general_purpose=True,
+        )
         candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         provider_changed = _primary_provider_prefix(
             self.cfg.model,
@@ -732,6 +780,7 @@ class AppContext:
         self.summarizer = candidate_summarizer
         self.agent = candidate_agent
         self.rebuild_requested = False
+        self._retarget_agents()
         await self._bus.emit(ModelSwitch(old=old_label, new=new_label))
 
     async def switch_mode(self, name: str) -> None:
@@ -744,11 +793,15 @@ class AppContext:
             candidate_agent = None
             candidate_summarizer = None
         else:
-            candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-            candidate_cfg,
-            self.session,
-            self._bus,
-            always_allowed=self._always_allowed(),)
+            candidate_agent = await _compat("build_agent", build_agent)(
+                self.registry,
+                candidate_cfg,
+                self.session,
+                self._bus,
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools(self),
+                exclude_general_purpose=True,
+            )
             candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         self.session.set_mode(self.session_id, name)
         try:
@@ -761,6 +814,7 @@ class AppContext:
             self.agent = candidate_agent
             self.summarizer = candidate_summarizer
         self.rebuild_requested = False
+        self._retarget_agents()
 
     async def compact(self) -> None:
         if self.agent is None and not await self.ensure_agent(seed_pending=False):
@@ -824,127 +878,14 @@ class AppContext:
         *,
         only_if_new: bool,
     ) -> bool:
-        thread = self.session.get_thread(thread_id)
-        if thread is None or thread.session_id != session_id:
-            raise LookupError(f"Unknown graph thread: {thread_id}")
-        messages = list(values.get("messages", ()))
-        current_message_ids = tuple(
-            message.id
-            for message in messages
-            if isinstance(message.id, str)
+        return capture_graph_values(
+            self.session,
+            session_id,
+            thread_id,
+            values,
+            only_if_new=only_if_new,
+            report_error=self.console.error,
         )
-        previous_message_ids = thread.captured_message_ids
-        previous_id_set = set(previous_message_ids)
-        current_id_set = set(current_message_ids)
-        shrunk = (
-            bool(previous_message_ids)
-            and not previous_id_set.issubset(current_id_set)
-        ) or (not previous_message_ids and len(messages) < thread.captured)
-        entries: list[CompactionEntry | MessageEntry | CustomEntry] = []
-        candidates = messages
-        summary_index: int | None = None
-        if shrunk:
-            summary_index = next(
-                (
-                    index
-                    for index, message in enumerate(messages)
-                    if isinstance(message, HumanMessage)
-                    and message.additional_kwargs.get("lc_source")
-                    == "summarization"
-                ),
-                None,
-            )
-            if summary_index is not None:
-                summary_message = messages[summary_index]
-                summary = (
-                    summary_message.content
-                    if isinstance(summary_message.content, str)
-                    else str(summary_message.content)
-                )
-                candidates = messages[summary_index + 1 :]
-                first_retained_id = next(
-                    (
-                        message.id
-                        for message in candidates
-                        if isinstance(message.id, str)
-                        and message.id in previous_id_set
-                    ),
-                    None,
-                )
-                first_kept_id = None
-                if first_retained_id is not None:
-                    path = self.ledger.path(session_id)
-                    retained_at = next(
-                        (
-                            index
-                            for index, entry in enumerate(path)
-                            if isinstance(entry, MessageEntry)
-                            and messages_from_dict([entry.message])[0].id
-                            == first_retained_id
-                        ),
-                        None,
-                    )
-                    if retained_at is not None and retained_at > 0:
-                        first_kept_id = path[retained_at - 1].id
-                entries.append(
-                    CompactionEntry(
-                        summary=summary.removeprefix(_SUMMARIZATION_PREFIX),
-                        first_kept_id=first_kept_id,
-                    )
-                )
-
-        if previous_message_ids:
-            for index, message in enumerate(candidates):
-                message_id = message.id
-                if isinstance(message_id, str):
-                    unseen = message_id not in previous_id_set
-                else:
-                    absolute_index = (
-                        index
-                        if summary_index is None
-                        else summary_index + 1 + index
-                    )
-                    unseen = absolute_index >= thread.captured
-                if unseen:
-                    entries.append(MessageEntry(message=message_to_dict(message)))
-        elif summary_index is not None:
-            entries.extend(
-                MessageEntry(message=message_to_dict(message))
-                for message in candidates
-            )
-        else:
-            entries.extend(
-                MessageEntry(message=message_to_dict(message))
-                for message in messages[thread.captured :]
-            )
-
-        if only_if_new and not entries:
-            return False
-        entries.append(
-            CustomEntry(
-                custom_type="turn_state",
-                data={
-                    "todos": values.get("todos", []),
-                    "files": values.get("files", {}),
-                },
-            )
-        )
-        try:
-            self.ledger.capture(
-                session_id,
-                thread_id,
-                entries,
-                captured=len(messages),
-                captured_message_ids=current_message_ids,
-            )
-        except Exception as exc:
-            message = (
-                f"Failed to capture session {session_id} "
-                f"thread {thread_id}: {exc}"
-            )
-            self.console.error(message)
-            raise RuntimeError(message) from exc
-        return True
 
     def recover_checkpoint(self, session_id: str, thread_id: str) -> bool:
         values = self.session.checkpoint_values(thread_id)

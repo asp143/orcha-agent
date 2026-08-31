@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
-from deepagents import create_deep_agent
+from deepagents import (
+    GeneralPurposeSubagentProfile,
+    create_deep_agent,
+)
+import deepagents.graph as deepagents_graph
 from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
@@ -133,6 +138,25 @@ def _subagents(
     return configured
 
 
+def _create_graph(kwargs: dict[str, Any], *, exclude_general_purpose: bool) -> Any:
+    if not exclude_general_purpose:
+        return create_deep_agent(**kwargs)
+    resolve_profile = deepagents_graph._harness_profile_for_model
+
+    def without_general_purpose(model: Any, spec: str | None) -> Any:
+        profile = resolve_profile(model, spec)
+        return dataclass_replace(
+            profile,
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+        )
+
+    deepagents_graph._harness_profile_for_model = without_general_purpose
+    try:
+        return create_deep_agent(**kwargs)
+    finally:
+        deepagents_graph._harness_profile_for_model = resolve_profile
+
+
 async def build_agent(
     registry: Registry,
     cfg: Config,
@@ -140,6 +164,10 @@ async def build_agent(
     bus: EventBus,
     *,
     always_allowed: Iterable[str] = (),
+    extra_tools: Iterable[Any] = (),
+    system_prompt: str | None = None,
+    exclude_general_purpose: bool = False,
+    tool_scope: set[str] | None = None,
 ) -> Any:
     """Resolve plugin contributions and compile one deepagents graph."""
 
@@ -152,11 +180,15 @@ async def build_agent(
 
     resolver = ModelResolver(registry, cfg)
     main_models = resolver.resolve_chain(cfg.model, "main")
-    roles = {
-        "main": main_models[0],
-        "subagent": resolver.resolve(cfg.subagent_model or cfg.model, "subagent"),
-        "summarizer": resolver.resolve(cfg.summarizer_model or cfg.model, "summarizer"),
-    }
+    roles = {"main": main_models[0]}
+    subagent_model = (
+        None
+        if exclude_general_purpose
+        else resolver.resolve(cfg.subagent_model or cfg.model, "subagent")
+    )
+    roles["summarizer"] = resolver.resolve(
+        cfg.summarizer_model or cfg.model, "summarizer"
+    )
     backend = registry.backends[cfg.backend].factory(cfg)
     mode = registry.modes[cfg.mode]
     allowed = set(always_allowed)
@@ -164,8 +196,14 @@ async def build_agent(
     middleware = [entry.middleware for entry in registry.middleware]
     middleware.append(TodoListMiddleware())
     filesystem: FilesystemMiddleware | None = None
-    if mode.allowed_tools is not None:
-        filesystem_tools = set(mode.allowed_tools) & FILESYSTEM_TOOL_NAMES
+    if mode.allowed_tools is not None or tool_scope is not None:
+        filesystem_tools = (
+            set(FILESYSTEM_TOOL_NAMES)
+            if mode.allowed_tools is None
+            else set(mode.allowed_tools) & FILESYSTEM_TOOL_NAMES
+        )
+        if tool_scope is not None:
+            filesystem_tools &= tool_scope
         constructor_tools = filesystem_tools | {"read_file"}
         filesystem = FilesystemMiddleware(
             backend=backend,
@@ -183,23 +221,40 @@ async def build_agent(
     tools = [
         tool
         for name, tool in registry.tools.items()
-        if mode.allowed_tools is None or name in mode.allowed_tools
+        if (mode.allowed_tools is None or name in mode.allowed_tools)
+        and (tool_scope is None or name in tool_scope)
     ]
+    tools.extend(
+        tool
+        for tool in extra_tools
+        if tool_scope is None or getattr(tool, "name", None) in tool_scope
+    )
     if len(main_models) > 1:
         middleware.append(ModelFallbackMiddleware(*main_models[1:]))
     middleware.append(create_summarization_middleware(roles["summarizer"], backend))
 
-    prompt = "\n\n".join(fragment.text for fragment in registry.prompt_fragments)
+    prompt = "\n\n".join(
+        value
+        for value in (
+            system_prompt,
+            *(fragment.text for fragment in registry.prompt_fragments),
+        )
+        if value
+    )
     kwargs: dict[str, Any] = {
         "model": roles["main"],
         "tools": tools,
         "middleware": middleware,
-        "subagents": _subagents(
-            registry,
-            resolver,
-            roles["subagent"],
-            filesystem,
-            _general_purpose_enabled(registry, cfg),
+        "subagents": (
+            []
+            if exclude_general_purpose
+            else _subagents(
+                registry,
+                resolver,
+                subagent_model,
+                filesystem,
+                _general_purpose_enabled(registry, cfg),
+            )
         ),
         "backend": backend,
         "memory": _memory_sources(cfg),
@@ -208,6 +263,8 @@ async def build_agent(
         "checkpointer": session.saver,
     }
     await bus.emit(AgentBuildBefore(kwargs))
-    graph = create_deep_agent(**kwargs)
+    graph = _create_graph(
+        kwargs, exclude_general_purpose=exclude_general_purpose
+    )
     await bus.emit(AgentBuildAfter(graph))
     return graph

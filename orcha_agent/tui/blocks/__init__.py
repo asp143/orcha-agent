@@ -99,6 +99,8 @@ class BlockRendererDispatcher:
             self._renderers = dict(renderers)
         else:
             self._renderers = {entry.kind: entry.render for entry in renderers}
+        self._renderers.setdefault("advisory", render_advisory)
+        self._renderers.setdefault("review", render_review)
         self._cache: dict[
             tuple[str, str, int],
             dict[tuple[int, int, bool, str], Any],
@@ -208,10 +210,13 @@ def render_queue(
 
 
 from .assistant import render as render_assistant
+from .advisory import render as render_advisory
 from .banner import render as render_banner
 from .diff import render as render_diff
 from .hud import render_subagents, render_todo
 from .marker import render as render_marker
+from .review import render as render_review
+from .task import render_delivery, render_task
 from .thinking import render as render_thinking
 from .tool import render as render_tool
 from .welcome import render as render_welcome
@@ -221,6 +226,8 @@ from .user import render as render_user
 DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
     "user": render_user,
     "assistant": render_assistant,
+    "advisory": render_advisory,
+    "review": render_review,
     "thinking": render_thinking,
     "tool": render_tool,
     "diff": render_diff,
@@ -239,6 +246,10 @@ __all__ = [
     "DEFAULT_RENDERERS",
     "DEFAULT_THEME",
     "LEADING_SPACER_KINDS",
+    "render_advisory",
+    "render_review",
+    "render_delivery",
+    "render_task",
     "theme_id",
     "theme_spinner",
     "theme_symbol",

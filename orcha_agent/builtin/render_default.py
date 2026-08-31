@@ -58,6 +58,8 @@ def register(api: PluginAPI) -> None:
         help="Toggle thinking display: /thinking on|off",
     )
     for kind, renderer in DEFAULT_RENDERERS.items():
+        if kind in {"task", "delivery", "advisory", "review"}:
+            continue
         api.add_block_renderer(
             kind,
             _thinking_renderer(api) if kind == "thinking" else renderer,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import signal
 import shlex
@@ -29,14 +30,21 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
+from orcha_agent.builtin.advisor import AdvisorService
+from orcha_agent.builtin.commands_review import review
 
 from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import (
+    AgentDelivered,
+    AgentFinished,
+    AgentSpawned,
+    AgentStatus,
     AppExit,
     AppStart,
     Event,
     EventBus,
     InterruptRaised,
+    ModelChunk,
     SessionSwitch,
     ToolCallEnd,
     ToolCallStart,
@@ -46,7 +54,7 @@ from orcha_agent.core.events import (
 from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.core.loader import load_plugins
 from orcha_agent.core.models import ModelResolver
-from orcha_agent.core.registry import Registry
+from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
 from .blocks import (
@@ -54,8 +62,11 @@ from .blocks import (
     DEFAULT_RENDERERS,
     DEFAULT_THEME,
     LEADING_SPACER_KINDS,
+    render_delivery,
+    render_task,
     theme_spinner,
 )
+from .blocks.hud import subagent_hud_data
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -66,18 +77,19 @@ from .context import (
     _stored_model,
     _uncheckpointed_seed_target,
 )
-from .frame import Block, Frame, FrameScheduler
+from .frame import Block, BlockState, Frame, FrameScheduler
 from .history import SQLiteHistory, history_path
 from .keys import create_key_bindings, format_key_bindings, load_keybindings
 from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
-from .statusline import render_statusline
+from .statusline import agent_counts, render_statusline
 from .theme import Theme, load_themes, select_theme
 from .title import TerminalTitle
 from .turn import _run_cancellable_turn
-from .overlays import KeyBindingsOverlay, register_builtin_overlays
+from .overlays import HubOverlay, KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
+from .overlays.hub import ledger_transcript_frame
 
 
 def _completion_style(theme: Any) -> Any:
@@ -139,6 +151,27 @@ def _bottom_toolbar(ctx: Any) -> Any:
         composer_shape=getattr(ctx.cfg, "composer", "box"),
     )
 
+_MAIN_ACCOUNTING_EVENTS = (TurnStart, ModelChunk, TurnEnd)
+
+
+def _scope_main_statusbar_accounting(bus: EventBus) -> None:
+    """Keep main-session status accounting isolated from forwarded agent turns."""
+
+    for index, registration in enumerate(bus.handlers):
+        if (
+            registration.plugin != "statusbar"
+            or registration.event_type not in _MAIN_ACCOUNTING_EVENTS
+        ):
+            continue
+        handler = registration.handler
+
+        async def main_only(event: Any, *, _handler: Any = handler) -> Any:
+            if getattr(event, "source_id", "main") != "main":
+                return None
+            return await _handler(event)
+
+        bus.handlers[index] = replace(registration, handler=main_only)
+
 
 async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
     """Dispatch slash commands without invoking the model."""
@@ -149,6 +182,9 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
     name, separator, args = command_text.partition(" ")
     if name == "keys" and not separator:
         await ctx.ui.show(KeyBindingsOverlay(ctx))
+        return True
+    if name == "agents":
+        await ctx.ui.show("hub")
         return True
     registration = registry.commands.get(name)
     if registration is None:
@@ -277,6 +313,9 @@ class ApplicationRuntime:
         self._submit = submit
         self.ctx = ctx
         self.registry = registry
+        if registry is not None:
+            _ensure_agent_command(registry)
+            _ensure_review_command(registry)
         completion_registry = registry or Registry()
         self.frame = Frame()
         self.theme: Any = theme
@@ -286,9 +325,19 @@ class ApplicationRuntime:
             getattr(theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default")
         )
         self._themes.setdefault(current_theme_id, theme)
-        self._block_dispatcher = BlockRendererDispatcher(
-            registry.block_renderers if registry is not None else DEFAULT_RENDERERS
-        )
+        if registry is None:
+            block_renderers: Any = {
+                **DEFAULT_RENDERERS,
+                "task": render_task,
+                "delivery": render_delivery,
+            }
+        else:
+            block_renderers = {
+                entry.kind: entry.render for entry in registry.block_renderers
+            }
+            block_renderers.setdefault("task", render_task)
+            block_renderers.setdefault("delivery", render_delivery)
+        self._block_dispatcher = BlockRendererDispatcher(block_renderers)
         previous_ui = getattr(ctx, "ui", None)
         self._fallback_show = getattr(previous_ui, "_show_overlay", None)
         self.ui = UIFacade(
@@ -298,6 +347,7 @@ class ApplicationRuntime:
             set_theme=self._set_theme,
         )
         self.ui.theme = theme
+        self.ui.active_agent = None
         self.ui.themes = self._themes
         self.ui.history = history
         self._status = status or self._status_text
@@ -314,11 +364,21 @@ class ApplicationRuntime:
         self.streaming = False
         self._shutting_down = False
         self._active_turn: asyncio.Task[Any] | None = None
+        advisor_cfg = getattr(getattr(ctx, "cfg", None), "advisor", None)
+        self.advisor = (
+            AdvisorService(ctx, submit_followup=self._submit_advisor_followup)
+            if ctx is not None and bool(getattr(advisor_cfg, "enabled", False))
+            else None
+        )
         self._active_overlay: Overlay | None = None
         self._overlay_lock = asyncio.Lock()
         self._last_escape = 0.0
         self._last_interrupt = 0.0
-        self._live_subagents: dict[str, dict[str, str]] = {}
+        self._last_left = 0.0
+        self._drilled_run_id: str | None = None
+        self._drilled_frame: Frame | None = None
+        self._last_drill_refresh = float("-inf")
+        self._drill_refresh_task: asyncio.Future[Any] | None = None
         self._turn_active = False
         self._spinner_frame = 0
         self._hud_sections = {
@@ -369,6 +429,25 @@ class ApplicationRuntime:
 
         if self._tree_double_escape:
             core_bindings.add("s-escape")(self._tree_handler)
+
+        @core_bindings.add(
+            "left",
+            filter=Condition(
+                lambda: (
+                    self._active_overlay is None
+                    and self._drilled_run_id is not None
+                    and self.buffer.cursor_position == 0
+                )
+            ),
+        )
+        def _drill_back(event: Any) -> None:
+            now = time.monotonic()
+            if now - self._last_left <= 0.5:
+                self._last_left = 0.0
+                self._leave_agent()
+            else:
+                self._last_left = now
+            event.app.invalidate()
 
         @core_bindings.add("?")
         def _help_or_insert(event: Any) -> None:
@@ -442,6 +521,7 @@ class ApplicationRuntime:
             enabled=bool(getattr(getattr(ctx, "cfg", None), "notify", False)),
             output=self.application.output,
         )
+        self._outstanding_agents = agent_counts(ctx)[2] if ctx is not None else 0
         self.application.key_processor.before_key_press += self._record_keypress
         self._refresh_title()
         self.scheduler = FrameScheduler(
@@ -464,10 +544,118 @@ class ApplicationRuntime:
     def active_overlay(self) -> Overlay | None:
         return self._active_overlay
 
+    @property
+    def drilled_run_id(self) -> str | None:
+        return self._drilled_run_id
+
+    def _drill_in(self, run_id: str) -> bool:
+        agents = getattr(self.ctx, "agents", None)
+        get_run = getattr(agents, "get", None)
+        run = get_run(run_id) if callable(get_run) else None
+        if run is None:
+            return False
+        self._drilled_run_id = run_id
+        self.ui.active_agent = run
+        self._last_left = 0.0
+        self._refresh_drilled_frame(force=True)
+        self._refresh_title()
+        self.application.invalidate()
+        return True
+
+    def _leave_agent(self) -> bool:
+        if self._drilled_run_id is None:
+            return False
+        self._cancel_drilled_refresh()
+        self._drilled_run_id = None
+        self._drilled_frame = None
+        self.ui.active_agent = None
+        self._last_left = 0.0
+        self._refresh_title()
+        try:
+            self.application.layout.focus(self.buffer)
+        except ValueError:
+            pass
+        self.application.invalidate()
+        return True
+
+    def _refresh_drilled_frame(
+        self,
+        *,
+        force: bool = False,
+        include_live: bool = True,
+    ) -> bool:
+        run_id = self._drilled_run_id
+        if run_id is None:
+            return False
+        now = time.monotonic()
+        if not force and now - self._last_drill_refresh < 0.25:
+            return False
+        agents = getattr(self.ctx, "agents", None)
+        get_run = getattr(agents, "get", None)
+        run = get_run(run_id) if callable(get_run) else None
+        if run is None:
+            return self._leave_agent()
+        self._last_drill_refresh = now
+        frame = ledger_transcript_frame(self.ctx, run)
+        if include_live:
+            frame.blocks.extend(
+                deepcopy(block)
+                for block in self.frame.blocks
+                if block.source_id == run_id and block.state is not BlockState.COMMITTED
+            )
+        self._drilled_frame = frame
+        self.ui.active_agent = run
+        return True
+
+    def _cancel_drilled_refresh(self) -> None:
+        pending = self._drill_refresh_task
+        if pending is not None and not pending.done():
+            self._pending.discard(pending)
+            self._terminal_pending.discard(pending)
+            pending.cancel()
+        self._drill_refresh_task = None
+
+    def _schedule_drilled_refresh(self) -> None:
+        pending = self._drill_refresh_task
+        if pending is not None and not pending.done():
+            return
+        delay = max(0.0, 0.25 - (time.monotonic() - self._last_drill_refresh))
+
+        async def refresh() -> None:
+            await asyncio.sleep(delay)
+            if self._drilled_run_id is not None:
+                self._refresh_drilled_frame(force=True, include_live=True)
+                self.application.invalidate()
+
+        self._drill_refresh_task = self._track(refresh())
+
+    async def _send_to_drilled(self, text: str) -> bool:
+        run_id = self._drilled_run_id
+        send = getattr(getattr(self.ctx, "agents", None), "send", None)
+        if run_id is None or not callable(send) or not text.strip():
+            return False
+        try:
+            await send(run_id, text.strip())
+        except Exception as exc:
+            self.ui.notify(f"{type(exc).__name__}: {exc}")
+            return False
+        self._refresh_drilled_frame(force=True)
+        self.application.invalidate()
+        return True
+
+    async def _send_drilled_batch(self, prompts: list[str]) -> None:
+        for prompt in prompts:
+            if not await self._send_to_drilled(prompt):
+                break
+
     def _record_keypress(self, _event: Any = None) -> None:
         self.notifier.record_keypress()
 
     def _session_title(self) -> str:
+        if self._drilled_run_id is not None:
+            run = getattr(self.ui, "active_agent", None)
+            if run is not None:
+                return f"{getattr(run, 'name', 'agent')} · {self._drilled_run_id}"
         session = getattr(self.ctx, "session", None)
         session_id = getattr(self.ctx, "session_id", None)
         try:
@@ -478,9 +666,12 @@ class ApplicationRuntime:
 
     def _refresh_title(self) -> None:
         self.title.set_session(self._session_title())
+        outstanding = agent_counts(self.ctx)[2] if self.ctx is not None else 0
+        self.title.set_agents(outstanding)
 
     def _has_spinner_activity(self) -> bool:
-        return self._turn_active or bool(self._live_subagents)
+        outstanding = agent_counts(self.ctx)[2] if self.ctx is not None else 0
+        return self._turn_active or outstanding > 0
 
     def _spinner_tick(self, frame: int) -> None:
         self._spinner_frame = frame
@@ -503,13 +694,24 @@ class ApplicationRuntime:
         blocks: list[Block] = []
         if self.ui.todos:
             blocks.append(self._hud_block("todo", {"items": self.ui.todos[:7]}))
-        if self.ui.subagents:
+        if self.ctx is not None:
+            agents = subagent_hud_data(self.ctx, spinner_frame=self._spinner_frame)
+            if agents is not None:
+                blocks.append(self._hud_block("subagents", agents))
+        if not any(block.kind == "subagents" for block in blocks) and self.ui.subagents:
+            running = sum(
+                str(agent.get("status", "")).casefold() == "running"
+                for agent in self.ui.subagents
+                if isinstance(agent, Mapping)
+            )
             blocks.append(
                 self._hud_block(
                     "subagents",
                     {
-                        "agents": self.ui.subagents[:7],
-                        "spinner_frame": self._spinner_frame,
+                        "agents": list(self.ui.subagents),
+                        "running": running,
+                        "idle": len(self.ui.subagents) - running,
+                        "spinner_frame": 0,
                     },
                 )
             )
@@ -555,42 +757,86 @@ class ApplicationRuntime:
         return len(value.splitlines()) if value else 0
 
     async def handle_presentation(self, event: Event) -> None:
-        if isinstance(event, TurnStart):
+        if getattr(self.ctx, "agents", None) is None:
+            if isinstance(event, ToolCallStart) and event.name == "task":
+                self.ui.subagents.append(
+                    {
+                        "id": event.id,
+                        "name": event.id,
+                        "description": str(
+                            event.args.get("description")
+                            or event.args.get("task")
+                            or "task"
+                        ),
+                        "status": "running",
+                    }
+                )
+            elif isinstance(event, ToolCallEnd) and event.name == "task":
+                self.ui.subagents[:] = [
+                    agent
+                    for agent in self.ui.subagents
+                    if not isinstance(agent, Mapping) or agent.get("id") != event.id
+                ]
+
+        active_overlay = self._active_overlay
+        if isinstance(active_overlay, HubOverlay):
+            active_overlay.refresh_from_event(event)
+
+        source_id = str(getattr(event, "source_id", "main"))
+        drilled_event = (
+            source_id == self._drilled_run_id
+            or getattr(event, "run_id", None) == self._drilled_run_id
+        )
+        if self._drilled_run_id is not None and (
+            drilled_event
+            or isinstance(event, (AgentSpawned, AgentStatus, AgentFinished, AgentDelivered))
+        ):
+            lifecycle_refresh = isinstance(
+                event, (TurnEnd, AgentStatus, AgentFinished, AgentDelivered)
+            )
+            if lifecycle_refresh:
+                self._cancel_drilled_refresh()
+            refreshed = self._refresh_drilled_frame(
+                force=lifecycle_refresh,
+                include_live=not lifecycle_refresh,
+            )
+            if not refreshed and drilled_event:
+                self._schedule_drilled_refresh()
+
+        if isinstance(event, TurnStart) and source_id == "main":
             self._turn_active = True
             self._refresh_title()
             spinner = theme_spinner(self.theme, "spinner.status", self._spinner_frame, ("✻",))
             self.title.set_turn(True, spinner=spinner)
             self.scheduler.start_spinner()
-        elif isinstance(event, TurnEnd):
+        elif isinstance(event, TurnEnd) and source_id == "main":
             self._turn_active = False
-            self._live_subagents.clear()
-            self.ui.subagents = []
             self.title.set_turn(False)
             await self.notifier.notify("Orcha", "Turn complete")
-        elif isinstance(event, ToolCallStart) and event.name == "task":
-            label = str(
-                event.args.get("description")
-                or event.args.get("subagent_type")
-                or event.args.get("name")
-                or event.id
-            )
-            self._live_subagents[event.id] = {
-                "id": event.id,
-                "name": label,
-                "status": "running",
-            }
-            self.ui.subagents = list(self._live_subagents.values())
-            self.scheduler.start_spinner()
-        elif isinstance(event, ToolCallEnd) and event.name == "task":
-            self._live_subagents.pop(event.id, None)
-            self.ui.subagents = list(self._live_subagents.values())
+        elif (
+            isinstance(event, AgentFinished)
+            and event.parent_id == "main"
+            and not self._shutting_down
+        ):
+            self._track(self._submit_serially(None))
         elif isinstance(event, InterruptRaised):
             if self._approval_notification_sent:
                 self._approval_notification_sent = False
             else:
                 await self.notifier.notify("Orcha", "Approval required")
         elif isinstance(event, SessionSwitch):
+            self._leave_agent()
+            self._outstanding_agents = agent_counts(self.ctx)[2]
             self._refresh_title()
+
+        if isinstance(event, (AgentSpawned, AgentStatus, AgentFinished, AgentDelivered)):
+            previous = self._outstanding_agents
+            self._outstanding_agents = agent_counts(self.ctx)[2]
+            self.title.set_agents(self._outstanding_agents)
+            if previous > 0 and self._outstanding_agents == 0 and not self._shutting_down:
+                await self.notifier.notify("Orcha", "All agent jobs settled")
+            if self._outstanding_agents:
+                self.scheduler.start_spinner()
         self.application.invalidate()
 
     def _resolve_overlay(
@@ -648,8 +894,10 @@ class ApplicationRuntime:
                     self.application.layout.focus(resolved.focus_target)
                 except ValueError:
                     pass
-                self.application.invalidate()
-                return await resolved.wait()
+                result = await resolved.wait()
+                if isinstance(resolved, HubOverlay) and isinstance(result, str):
+                    self._drill_in(result)
+                return result
             finally:
                 if resolved in self._root.floats:
                     self._root.floats.remove(resolved)
@@ -763,6 +1011,11 @@ class ApplicationRuntime:
             self._track(self._dispatch_submission(text))
             return False
         prompts = split_submission(text)
+        if self._drilled_run_id is not None:
+            self._track(self._send_drilled_batch(prompts))
+            return False
+        if self.advisor is not None:
+            self.advisor.before_user_prompt()
         is_batch = len(prompts) > 1
         if self.streaming:
             mode = "steer" if self.queue.steering_open else "follow_up"
@@ -847,6 +1100,9 @@ class ApplicationRuntime:
             self._active_turn.cancel()
 
     def _escape_ladder(self, event: Any) -> None:
+        if self._drilled_run_id is not None:
+            self._leave_agent()
+            return
         buffer = event.current_buffer
         if buffer.complete_state is not None:
             buffer.cancel_completion()
@@ -1099,6 +1355,71 @@ class ApplicationRuntime:
         else:
             await self._submit(text)
 
+    @staticmethod
+    def _agent_delivery_payload(run: Any) -> Any:
+        findings = getattr(run, "partial_findings", None)
+        if not findings:
+            return run.result
+        return {
+            "result": run.result,
+            "partial_findings": findings,
+        }
+
+    @staticmethod
+    def _agent_delivery_snapshot(job: Mapping[str, Any]) -> dict[str, Any]:
+        snapshot = dict(job)
+        findings = snapshot.get("partial_findings")
+        if findings:
+            snapshot["result"] = {
+                "result": snapshot.get("result"),
+                "partial_findings": findings,
+            }
+        return snapshot
+
+    @classmethod
+    def _agent_delivery_notification(cls, runs: list[Any]) -> str:
+        lines = ["<system-notification>"]
+        for index, run in enumerate(runs):
+            if index:
+                lines.append("")
+            lines.append(f"Job {run.id} ({run.name}) finished: {run.status}")
+            payload = json.dumps(
+                cls._agent_delivery_payload(run),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            lines.append(
+                payload.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+        lines.append("</system-notification>")
+        return "\n".join(lines)
+
+    @classmethod
+    async def _prepare_agent_delivery(cls, event: AgentDelivered) -> None:
+        event.jobs = tuple(
+            cls._agent_delivery_snapshot(job) if isinstance(job, Mapping) else job
+            for job in event.jobs
+        )
+
+    async def _claim_agent_delivery(self) -> str | None:
+        agents = getattr(self.ctx, "agents", None)
+        if agents is None:
+            return None
+        runs = [
+            run
+            for run in agents.jobs("main")
+            if run.terminal and not run.delivered
+        ]
+        if not runs:
+            return None
+        notification = self._agent_delivery_notification(runs)
+        delivered = await agents.deliver("main", (run.id for run in runs))
+        if not delivered:
+            return None
+        if [run.id for run in delivered] != [run.id for run in runs]:
+            return self._agent_delivery_notification(delivered)
+        return notification
+
     def _track(
         self,
         awaitable: Awaitable[Any],
@@ -1113,9 +1434,28 @@ class ApplicationRuntime:
             future.add_done_callback(self._terminal_pending.discard)
         return future
 
-    async def _submit_serially(self, text: str) -> None:
+    async def _submit_serially(
+        self,
+        text: str | None,
+        *,
+        user_prompt: bool = True,
+        expected_session: str | None = None,
+    ) -> None:
+        if text is not None and user_prompt and self.advisor is not None:
+            self.advisor.before_user_prompt()
         async with self._submit_lock:
-            current: str | None = text
+            if self._shutting_down:
+                return
+            if (
+                expected_session is not None
+                and str(getattr(self.ctx, "session_id", "")) != expected_session
+            ):
+                return
+            pending_user = text
+            current = await self._claim_agent_delivery()
+            if current is None:
+                current = pending_user
+                pending_user = None
             while current is not None:
                 self.streaming = True
                 self._active_turn = asyncio.create_task(self._dispatch_submission(current))
@@ -1132,9 +1472,26 @@ class ApplicationRuntime:
                     self.application.invalidate()
                 if self._shutting_down:
                     break
-                current = self.queue.pop(mode="follow_up")
+                current = await self._claim_agent_delivery()
+                next_is_user = False
+                if current is None and pending_user is not None:
+                    current = pending_user
+                    pending_user = None
+                    next_is_user = user_prompt
+                elif current is None:
+                    current = self.queue.pop(mode="follow_up")
+                    next_is_user = current is not None
+                if next_is_user and self.advisor is not None:
+                    self.advisor.before_user_prompt()
                 if current is not None:
                     self.application.invalidate()
+
+    async def _submit_advisor_followup(self, session_id: str, text: str) -> None:
+        await self._submit_serially(
+            text,
+            user_prompt=False,
+            expected_session=session_id,
+        )
 
     def _notify(self, text: str) -> None:
         transcript = getattr(self, "transcript", None)
@@ -1251,8 +1608,11 @@ class ApplicationRuntime:
             composer_rows=self.composer.height_for_width(width) + self._hud_height(),
             status_rows=1,
         )
+        frame = self._drilled_frame if self._drilled_run_id is not None else self.frame
+        if frame is None:
+            return ANSI("")
         rendered: list[str] = []
-        plan = self.frame.viewport_plan(
+        plan = frame.viewport_plan(
             budget,
             width=width,
             measure=self._measure_block,
@@ -1346,6 +1706,7 @@ class ApplicationRuntime:
         await self._drain(self._pending)
 
     async def run(self) -> None:
+        self._track(self._submit_serially(None))
         try:
             await self.application.run_async()
         except EOFError:
@@ -1354,6 +1715,8 @@ class ApplicationRuntime:
             self._shutting_down = True
             if self._active_overlay is not None:
                 self._active_overlay.cancel()
+            if self.advisor is not None:
+                await self.advisor.aclose()
             await self._drain_pending()
             self.scheduler.commit_now()
             await self._drain_pending()
@@ -1380,6 +1743,31 @@ def _register_theme_refresh(
         plugin="<tui-session>",
         priority=9_000,
     )
+
+async def _run_runtime(ctx: AppContext, runtime: Any, bus: EventBus) -> int:
+    shutdown_completed = False
+    try:
+        await bus.emit(AppStart(ctx=ctx))
+        if hasattr(runtime, "flush_early_notifications"):
+            runtime.flush_early_notifications()
+        if ctx._reseed_pending() and ctx.agent is not None:
+            await ctx.ensure_agent()
+        if ctx.rebuild_requested:
+            await ctx.rebuild()
+        if ctx.cfg.resume:
+            ctx._warn_interrupted_resume()
+        await runtime.run()
+        ctx.persist_plugin_states()
+        ctx.record_exit("normal")
+        if ctx.agents is not None:
+            await ctx.agents.shutdown()
+            shutdown_completed = True
+        await bus.emit(AppExit())
+        return 0
+    finally:
+        if ctx.agents is not None and not shutdown_completed:
+            await ctx.agents.shutdown()
+
 
 async def run_app(cfg: Config) -> int:
     """Compose plugins and run the interactive terminal application."""
@@ -1466,6 +1854,7 @@ async def run_app(cfg: Config) -> int:
 
         loader = _compat("load_plugins", load_plugins)
         records = loader(registry, bus, cfg, states, request_rebuild)
+        _scope_main_statusbar_accounting(bus)
         ctx = AppContext(
             cfg=cfg,
             registry=registry,
@@ -1547,6 +1936,14 @@ async def run_app(cfg: Config) -> int:
         )
         if hasattr(runtime, "replace_themes"):
             _register_theme_refresh(bus, ctx, runtime)
+        advisor = getattr(runtime, "advisor", None)
+        if advisor is not None:
+            bus.on(
+                TurnEnd,
+                advisor.on_main_turn_end,
+                plugin="<advisor>",
+                priority=8_500,
+            )
         if hasattr(runtime, "transcript"):
             ctx.transcript = runtime.transcript
             ctx.ui = runtime.ui
@@ -1555,30 +1952,50 @@ async def run_app(cfg: Config) -> int:
                     Event,
                     runtime.handle_presentation,
                     plugin="<tui-presentation>",
-                    priority=9_000,
+                    priority=10_000,
+                )
+            if hasattr(runtime, "_prepare_agent_delivery"):
+                bus.on(
+                    AgentDelivered,
+                    runtime._prepare_agent_delivery,
+                    plugin="<tui-delivery>",
+                    priority=8_900,
                 )
             bus.on(
                 Event,
                 runtime.transcript.handle,
                 plugin="<tui>",
-                priority=10_000,
+                priority=9_000,
             )
             if isinstance(ctx.console, ConsoleOutput):
                 ctx.console = ConsoleOutput(
                     ctx.console.console,
                     transcript=runtime.transcript,
                 )
-        await bus.emit(AppStart(ctx=ctx))
-        if hasattr(runtime, "flush_early_notifications"):
-            runtime.flush_early_notifications()
-        if ctx._reseed_pending() and ctx.agent is not None:
-            await ctx.ensure_agent()
-        if ctx.rebuild_requested:
-            await ctx.rebuild()
-        if cfg.resume:
-            ctx._warn_interrupted_resume()
-        await runtime.run()
-        ctx.persist_plugin_states()
-        ctx.record_exit("normal")
-        await bus.emit(AppExit())
-        return 0
+        return await _run_runtime(ctx, runtime, bus)
+
+
+async def _show_agents(ctx: Any, _args: str) -> None:
+    await ctx.ui.show("hub")
+
+
+def _ensure_agent_command(registry: Registry) -> None:
+    registry.commands.setdefault(
+        "agents",
+        CommandRegistration(
+            plugin="commands_core",
+            handler=_show_agents,
+            help="Open the agent hub",
+        ),
+    )
+
+
+def _ensure_review_command(registry: Registry) -> None:
+    registry.commands.setdefault(
+        "review",
+        CommandRegistration(
+            plugin="commands_review",
+            handler=review,
+            help="Review code changes with parallel agents",
+        ),
+    )

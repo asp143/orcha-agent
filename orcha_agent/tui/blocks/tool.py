@@ -28,7 +28,7 @@ _WRITE = frozenset({"write", "write_file"})
 _EDIT = frozenset({"edit", "edit_file", "apply_patch"})
 _BASH = frozenset({"execute", "bash", "shell"})
 _INLINE = frozenset({"grep", "glob", "ls", "web_search"})
-_MUTED_FRAME = frozenset({"edit", "edit_file", "apply_patch", "task", "ask", "todo"})
+_MUTED_FRAME = frozenset({"edit", "edit_file", "apply_patch", "ask", "todo"})
 
 
 def _mappings(value: Any) -> list[Mapping[str, Any]]:
@@ -672,35 +672,6 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
     )
 
 
-def _task_rows(result: Any, theme: Any) -> tuple[str, list[str]]:
-    agents = _items_from_result(result, "agents", "tasks")
-    rows: list[str] = []
-    succeeded = failed = requests = 0
-    for agent in agents[-4:]:
-        item = agent if isinstance(agent, Mapping) else {"description": str(agent)}
-        status = str(item.get("status", "running")).casefold()
-        glyph = "✔" if status in {"success", "succeeded", "done"} else ("✘" if status in {"error", "failed"} else "⣾")
-        succeeded += glyph == "✔"
-        failed += glyph == "✘"
-        requests += int(item.get("requests", item.get("req", 0)) or 0)
-        metrics = []
-        if item.get("tokens") is not None: metrics.append(str(item["tokens"]))
-        if item.get("requests") is not None: metrics.append(f"{item['requests']} req")
-        if item.get("cost") is not None: metrics.append(f"${float(item['cost']):.2f}")
-        rows.append(f"{glyph} {item.get('id', item.get('name', 'agent'))}: {item.get('description', item.get('task', ''))} ⟦{status}⟧ {'/'.join(metrics)} · {item.get('elapsed', 0)}s")
-        if item.get("tool"):
-            rows.append(f"└ {item['tool']}: {str(item.get('args', ''))[:40]}")
-    elapsed = 0
-    for item in _mappings(result):
-        requests = int(item.get("requests", requests) or requests)
-        elapsed = item.get("elapsed", 0)
-        break
-    rows.append(f"⟦{succeeded} succeeded · {failed} failed · {requests} req · {elapsed}s⟧")
-    separator = theme_symbol(theme, "sep.thin", "·")
-    task_glyph = "Task" if str(separator).isascii() else "⇶ Task"
-    return f"{task_glyph} {separator} {len(agents)} agents", rows
-
-
 def _todo_rows(args: Mapping[str, Any], result: Any, theme: Any) -> tuple[str, list[Text]]:
     items = _items_from_result(args.get("items", result), "items", "todos", "tasks")
     rows: list[Text] = []
@@ -729,6 +700,11 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     if budget_rows <= 0:
         return None
     name = str(block.data.get("name", "tool"))
+    if name == "task":
+        from .task import render_task
+
+        task = replace(block, kind="task")
+        return render_task(task, theme, width, budget_rows, expanded)
     args = block.data.get("args", {})
     if not isinstance(args, Mapping):
         args = {}
@@ -737,9 +713,6 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     calls = block.data.get("calls")
     if isinstance(calls, list) and calls:
         label = f"{label} ({len(calls)})"
-    if name == "task":
-        agents = _items_from_result(block.data.get("result", {}), "agents", "tasks")
-        detail = f"{len(agents)} agents"
     separator = theme_symbol(theme, "sep.thin", "·")
     timing = _timing_label(block, state)
     compact = f"{label}{f' {separator} {detail}' if detail else ''}{f' {separator} {timing}' if timing else ''}"
@@ -773,8 +746,6 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
         header, rows = _edit_rows(block, args, theme, width, expanded); edit = True
     elif name in _BASH:
         header = f"{_glyph(block, state, theme)} Bash"; rows, sections = _bash_rows(block, args, expanded)
-    elif name == "task":
-        header, rows = _task_rows(block.data.get("result", block.data.get("progress", {})), theme)
     elif name == "todo":
         header, rows = _todo_rows(args, block.data.get("result"), theme)
     else:

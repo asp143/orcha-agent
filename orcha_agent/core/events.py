@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 from .plugin import Handled
@@ -28,9 +28,44 @@ class AgentBuildAfter(Event):
 
 
 @dataclass(slots=True)
+class AgentSpawned(Event):
+    run_id: str
+    parent_id: str
+    name: str
+    agent_type: str
+
+
+@dataclass(slots=True)
+class AgentStatus(Event):
+    run_id: str
+    parent_id: str
+    name: str
+    agent_type: str
+    status: str
+    reason: str | None = None
+
+
+@dataclass(slots=True)
+class AgentFinished(Event):
+    run_id: str
+    parent_id: str
+    name: str
+    agent_type: str
+    result: Any
+
+
+@dataclass(slots=True)
+class AgentDelivered(Event):
+    parent_id: str
+    run_ids: tuple[str, ...]
+    jobs: tuple[dict[str, Any], ...] = field(default=(), compare=False)
+
+
+@dataclass(slots=True)
 class TurnStart(Event):
     thread_id: str
     text: str
+    source_id: str = "main"
 
 
 @dataclass(slots=True)
@@ -39,6 +74,7 @@ class ModelChunk(Event):
     role: str
     model_name: str | None = None
     source_id: str | None = None
+    request_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -54,16 +90,27 @@ class ToolCallEnd(Event):
     name: str
     id: str
     result: Any
+    source_id: str = "main"
 
 
 @dataclass(slots=True)
 class InterruptRaised(Event):
     payload: dict[str, Any]
+    source_id: str = "main"
+
+
+@dataclass(slots=True)
+class Advisory(Event):
+    note: str | None
+    severity: str
+    advisor_id: str
+    interrupt: bool
 
 
 @dataclass(slots=True)
 class TurnEnd(Event):
     thread_id: str
+    source_id: str = "main"
 
 
 @dataclass(slots=True)
@@ -158,8 +205,13 @@ class EventBus:
 
 
 __all__ = [
+    "Advisory",
     "AgentBuildAfter",
     "AgentBuildBefore",
+    "AgentDelivered",
+    "AgentFinished",
+    "AgentSpawned",
+    "AgentStatus",
     "AppExit",
     "AppStart",
     "Event",

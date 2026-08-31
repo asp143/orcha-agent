@@ -4,6 +4,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
+from .agent_types import AgentType, builtin_agent_types
+
 CommandHandler: TypeAlias = Callable[[Any, str], Awaitable[None]]
 ProviderFactory: TypeAlias = Callable[[str, Mapping[str, Any]], Any]
 BackendFactory: TypeAlias = Callable[[Any], Any]
@@ -177,6 +179,7 @@ class Registry:
         self.completers: list[CompleterRegistration] = []
         self.keybindings: dict[str, KeybindingRegistration] = {}
         self.subagents: list[SubagentRegistration] = []
+        self.agent_types: dict[str, AgentType] = builtin_agent_types()
         self.overlays: dict[str, OverlayRegistration] = {}
         self.prompt_fragments: list[PromptFragment] = []
 
@@ -195,6 +198,9 @@ class Registry:
         self._renderer_owners: dict[object, str] = {}
         self._block_renderer_owners: dict[str, str] = {}
         self._subagent_owners: dict[str, str] = {}
+        self._agent_type_owners: dict[str, str] = {
+            name: "<core>" for name in self.agent_types
+        }
         self._overlay_owners: dict[str, str] = {}
 
     @staticmethod
@@ -399,6 +405,22 @@ class Registry:
         self.block_renderers.sort(
             key=lambda entry: (entry.priority, entry.plugin, entry.kind)
         )
+
+    def _add_agent_type(
+        self,
+        plugin: str,
+        spec: AgentType,
+        *,
+        replace: bool = False,
+    ) -> None:
+        self._claim(
+            "agent type",
+            spec.name,
+            plugin,
+            self._agent_type_owners,
+            replace=replace,
+        )
+        self.agent_types[spec.name] = spec
 
     def _add_subagent(
         self,

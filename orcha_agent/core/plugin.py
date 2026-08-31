@@ -4,6 +4,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from .agent_types import AgentType
+
 if TYPE_CHECKING:
     from .auth import AuthFlow
     from .events import Event, EventBus
@@ -260,6 +262,14 @@ class PluginAPI:
     ) -> None:
         self._registry._add_backend(self.name, name, factory, replace=replace)
 
+    def add_agent_type(
+        self,
+        spec: AgentType,
+        *,
+        replace: bool = False,
+    ) -> None:
+        self._registry._add_agent_type(self.name, spec, replace=replace)
+
     def add_subagent(
         self,
         spec: Any,
@@ -274,6 +284,36 @@ class PluginAPI:
             priority=100,
             replace=replace,
         )
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str):
+            if (
+                spec["name"] in self._registry.agent_types
+                and self._registry._agent_type_owners.get(spec["name"]) == "<core>"
+            ):
+                return
+            raw_tools = spec.get("tools")
+            tools = (
+                {str(name) for name in raw_tools}
+                if isinstance(raw_tools, (list, tuple, set, frozenset))
+                else None
+            )
+            self._registry._add_agent_type(
+                self.name,
+                AgentType(
+                    name=spec["name"],
+                    description=str(spec.get("description", "")),
+                    system_prompt=str(spec.get("system_prompt", "")),
+                    tools=tools,
+                    model_role=model or "task",
+                    spawns=bool(spec.get("spawns", False)),
+                    output_schema=(
+                        dict(spec["output_schema"])
+                        if isinstance(spec.get("output_schema"), dict)
+                        else None
+                    ),
+                    blocking=bool(spec.get("blocking", False)),
+                ),
+                replace=replace,
+            )
 
     def add_mode(
         self,

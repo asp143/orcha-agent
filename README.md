@@ -96,6 +96,48 @@ fast = "anthropic:claude-haiku-4-5"
 disabled = []
 ```
 
+Agent orchestration is configured independently from the main model:
+
+```toml
+[agents]
+max_concurrency = 8
+max_live_runs = 32
+max_depth = 2
+idle_ttl_s = 420
+max_runtime_s = 0       # 0 disables the deadline
+soft_request_budget = 200
+
+[models.roles]
+task = "anthropic:claude-sonnet-4-5"
+scout = "fast"
+reviewer = "anthropic:claude-opus-5"
+advisor = "fast"
+
+[advisor]
+enabled = false
+model = "@advisor"
+tools = ["read_file", "grep", "glob"]
+immune_turns = 3
+timeout_s = 30
+```
+
+Role models fall back to the main model. The `task` role also falls back to the
+legacy `core.subagent_model` when configured. Agent concurrency limits active
+model turns, while `max_live_runs` caps all nonterminal workers across retained
+sessions; depth limits child spawning. Idle workers park after `idle_ttl_s`, and
+a positive `max_runtime_s` adds a deadline. The soft request budget asks a
+worker to yield before aborting it ten requests later. Blocking task batches and
+awaited hub sends use a positive `max_runtime_s` as their wait bound, or a
+300-second safety bound when runtime deadlines are disabled.
+
+When enabled, the advisor is one hidden, persistent worker per session.
+`model="@advisor"` uses `[models.roles].advisor`, then the main model. It
+checks completed main turns without delaying new prompts; `concern` and
+`blocker` notes may trigger a follow-up no more often than once per
+`immune_turns`, while `nit` is display-only. `timeout_s` bounds each check.
+Optional watchdog instructions are loaded from the nearest `WATCHDOG.md` or
+`~/.config/orcha-agent/WATCHDOG.md`.
+
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
 
@@ -277,6 +319,7 @@ clear_screen = "c-l"
 interrupt = "c-c"
 exit = "c-d"
 tree = "escape escape"
+agents = "escape a"
 ```
 
 Plugins extend the action map with `PluginAPI.add_keybinding(...)` before
@@ -333,6 +376,7 @@ to select, and `Esc` to cancel.
 | Ask | A plugin calls `await ctx.ui.ask(questions)` | Returns `{"kind":"submit","results":[...]}` with each answer's `id`, `selectedOptions`, and optional `customInput`. |
 | History | `Ctrl+R` | Full-text searches prompt history and returns a selection to the composer. |
 | Help | `/help` or `?` in an empty composer | Shows the effective command and keybinding reference; `Enter` or `Esc` closes it. |
+| Agent Hub | `/agents` or `Alt+A` | Shows visible workers and jobs; inspect, message, cancel, revive, copy results, or drill into a worker transcript. |
 
 The responsive welcome block shows the active model, mode, working directory,
 recent sessions, trust/provider/plugin hints, and a rotating tip. During a
@@ -344,6 +388,22 @@ With `[ui] notify=true`, turn completion and approval requests notify only
 after more than five seconds without a keypress. The TUI prefers
 `notify-send` and falls back to terminal OSC 9 notifications; failures never
 interrupt the session.
+
+### Agent orchestration
+
+Four built-in roles cover general work (`task`), read-only exploration
+(`scout`), structured code review (`reviewer`), and optional post-turn guidance
+(`advisor`). The main agent's `task` tool starts every item in a batch
+concurrently. Nonblocking work continues in the background; completed results
+are persisted and delivered through `hub`. Workers use `yield` for incremental
+findings and terminal structured results, and use `hub` to list jobs, exchange
+messages, wait for activity, inspect their inbox, or cancel work. The advisor
+uses `advise` instead and remains alive across checks.
+
+Open `/agents` or press `Alt+A` to inspect active, parked, and completed visible
+workers. In the hub, arrows or `j`/`k` move, `/` filters, `t` toggles tree order,
+`Enter` drills into a transcript, `m` messages, `x` cancels, `r` revives a
+parked worker, and `y` copies its latest result.
 
 ### Thinking display
 
@@ -381,6 +441,8 @@ remain available:
 - providers and runtime: `/providers [prefix]`, `/plugins`,
   `/login <prefix> [browser|device|paste]`, `/logout <prefix>`, `/help`,
   and `/exit`
+- orchestration: `/agents` and
+  `/review [<base-ref>|--uncommitted|<commit>] [--fix]`
 
 `/clear` resets the current session history, while `/new` starts a fresh
 session.
@@ -389,6 +451,22 @@ session.
 written to `[core] model` in `~/.config/orcha-agent/config.toml` and becomes
 the default for new sessions. `--model` and `ORCHA_MODEL` still override it
 for a single run.
+
+### Parallel code review
+
+`/review` filters the selected git diff, partitions complete hunks, and starts
+1, 2, 4, or 8 reviewers for at most 100, 500, 2,000, or more changed lines.
+Lockfiles, generated or minified files, binaries, and sensitive artifacts are
+excluded before fan-out. Findings are validated, deduplicated by file, line,
+and normalized title, sorted P0 through P3, shown in one review card, and fed
+back to the main agent as guidance.
+
+With no selector, review covers the merge base of `main` or `master` through
+HEAD plus tracked and eligible untracked working-tree changes. A non-hex
+`<base-ref>` replaces that base; `--uncommitted` covers index, worktree, and
+eligible untracked changes; a 7-40 digit hexadecimal `<commit>` reviews only
+that commit. `--fix` additionally tells the main agent to fix all P0/P1
+findings immediately; it does not apply changes before the review completes.
 
 ### Export format
 
