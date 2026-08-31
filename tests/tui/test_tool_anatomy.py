@@ -55,6 +55,15 @@ def test_read_call_result_and_group_match_omp_anatomy() -> None:
     assert "├─ src/a.py" in grouped and "└─ src/c.py" in grouped
 
 
+def test_empty_successful_read_renders_success_card() -> None:
+    output = _plain(
+        _block("read_file", args={"path": "empty.txt"}, result="")
+    )
+
+    assert "• Read empty.txt" in output
+    assert "✘ Read" not in output
+
+
 def test_tool_headers_stay_single_line_and_shorten_paths_at_common_widths() -> None:
     cwd = "/workspace/project"
     basename = "renderer_output.py"

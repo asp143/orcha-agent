@@ -389,7 +389,7 @@ def _read_display_rows(
     source_rows: list[tuple[str, str]], *, expanded: bool, theme: Any
 ) -> list[Text]:
     visible = source_rows if expanded else source_rows[:12]
-    gutter_width = max(2, *(len(marker) for marker, _ in source_rows))
+    gutter_width = max(2, max((len(marker) for marker, _ in source_rows), default=0))
     rows: list[Text] = []
     gutter_style = str(theme_value(theme, "dim", theme_value(theme, "muted")))
     for marker, source in visible:
