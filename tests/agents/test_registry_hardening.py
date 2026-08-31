@@ -444,5 +444,49 @@ def test_hydration_restores_child_mode_cwd_and_recomputes_trust(tmp_path: Path) 
         assert restored is not None
         assert restored.cfg.cwd == child_cwd
         assert restored.cwd == child_cwd
-        assert restored.cfg.mode == "ask"
+        assert restored.cfg.mode == "yolo"
         assert restored.cfg.trust_cwd is True
+
+
+@pytest.mark.asyncio
+async def test_retarget_and_revive_rebuild_child_with_current_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built_modes: list[str] = []
+    built_interrupts: list[dict[str, Any]] = []
+    rebuilt = asyncio.Event()
+
+    async def build(registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any) -> _Graph:
+        built_modes.append(cfg.mode)
+        built_interrupts.append(dict(registry.modes[cfg.mode].interrupt_on))
+        if cfg.mode == "ask":
+            rebuilt.set()
+        return _Graph()
+
+    monkeypatch.setattr("orcha_agent.core.agents.build_agent", build)
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        yolo = _config(tmp_path)
+        registry = _registry()
+        registry.modes["ask"] = ModeSpec(
+            description="ask",
+            interrupt_on={"shell": True},
+            allowed_tools=frozenset(),
+        )
+        agents = AgentRegistry(registry, yolo, store, EventBus(), parent.thread_id)
+        run = await agents.spawn("task", "work", parent="main")
+        await run.wait_status("idle")
+        assert built_modes == ["yolo"]
+        await run._set_status("parked")
+
+        agents.retarget(parent.thread_id, replace(yolo, mode="ask"))
+
+        assert run.cfg.mode == "ask"
+        assert run.agent is None
+        await agents.revive(run.session_id)
+        await agents.send(run.id, "again")
+        await asyncio.wait_for(rebuilt.wait(), 0.2)
+        await run.wait_status("idle")
+        assert built_modes == ["yolo", "ask"]
+        assert built_interrupts[-1] == {"shell": True}
+        await agents.shutdown()

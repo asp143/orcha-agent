@@ -279,6 +279,7 @@ class AgentRun:
         }
 
     async def ensure_agent(self) -> bool:
+        self.owner._refresh_run_mode(self)
         if self.agent is not None:
             return True
         try:
@@ -749,7 +750,7 @@ class AgentRegistry:
                 self.cfg,
                 model=info.model,
                 cwd=child_cwd,
-                mode=info.mode,
+                mode=self.cfg.mode,
                 trust_cwd=is_trusted_cwd(
                     child_cwd,
                     self.cfg.trusted_dirs,
@@ -854,6 +855,15 @@ class AgentRegistry:
                     run.session_id, run.id, run.depth + 1, visited_sessions
                 )
 
+    def _refresh_run_mode(self, run: AgentRun) -> None:
+        mode_changed = run.cfg.mode != self.cfg.mode
+        if mode_changed:
+            run.cfg = replace(run.cfg, mode=self.cfg.mode)
+            if not run.terminal:
+                run.agent = None
+                run.agent_ready.clear()
+            self.session.set_mode(run.session_id, self.cfg.mode)
+
     def retarget(
         self, parent_session_id: str, cfg: Config | None = None
     ) -> None:
@@ -861,6 +871,7 @@ class AgentRegistry:
         if cfg is not None:
             self.cfg = cfg
         for run in tuple(self._runs.values()):
+            self._refresh_run_mode(run)
             self._job_on_active_path(run)
         if parent_session_id == self.parent_session_id:
             return
@@ -874,6 +885,7 @@ class AgentRegistry:
         if restored is not None:
             self._runs, self._order, self._mailboxes = restored
             for run in tuple(self._runs.values()):
+                self._refresh_run_mode(run)
                 self._job_on_active_path(run)
             return
         self._runs = {}
@@ -1249,6 +1261,7 @@ class AgentRegistry:
         )
         if run is None:
             raise LookupError(f"Unknown agent session: {session_id}")
+        self._refresh_run_mode(run)
         if run.status != "parked":
             return run
         await run._set_status("idle")
