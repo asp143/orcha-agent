@@ -182,9 +182,15 @@ async def build_agent(
     main_models = resolver.resolve_chain(cfg.model, "main")
     roles = {
         "main": main_models[0],
-        "subagent": resolver.resolve(cfg.subagent_model or cfg.model, "subagent"),
-        "summarizer": resolver.resolve(cfg.summarizer_model or cfg.model, "summarizer"),
+        "summarizer": resolver.resolve(
+            cfg.summarizer_model or cfg.model, "summarizer"
+        ),
     }
+    subagent_model = (
+        None
+        if exclude_general_purpose
+        else resolver.resolve(cfg.subagent_model or cfg.model, "subagent")
+    )
     backend = registry.backends[cfg.backend].factory(cfg)
     mode = registry.modes[cfg.mode]
     allowed = set(always_allowed)
@@ -247,7 +253,7 @@ async def build_agent(
             else _subagents(
                 registry,
                 resolver,
-                roles["subagent"],
+                subagent_model,
                 filesystem,
                 _general_purpose_enabled(registry, cfg),
             )

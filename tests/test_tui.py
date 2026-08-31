@@ -734,6 +734,7 @@ async def test_ensure_agent_builds_at_most_once(
 ) -> None:
     graph = object()
     builds: list[str | list[str]] = []
+    build_options: list[object] = []
 
     async def build_once(
         _registry: Registry,
@@ -742,6 +743,7 @@ async def test_ensure_agent_builds_at_most_once(
         **_kwargs: Any,
     ) -> object:
         builds.append(cfg.model)
+        build_options.append(_kwargs.get("exclude_general_purpose"))
         return graph
 
     monkeypatch.setattr(app_module, "build_agent", build_once)
@@ -752,6 +754,7 @@ async def test_ensure_agent_builds_at_most_once(
 
     assert ctx.agent is graph
     assert builds == ["old:model"]
+    assert build_options == [True]
 
 
 @pytest.mark.asyncio
@@ -1632,8 +1635,8 @@ async def test_model_switch_retargets_unset_role_models_to_selected_provider(
 
     await ctx.switch_model("codex:x")
 
-    general_purpose = next(
-        spec for spec in captured["subagents"] if spec["name"] == "general-purpose"
+    assert all(
+        spec["name"] != "general-purpose" for spec in captured["subagents"]
     )
     summarizer = next(
         middleware
@@ -1645,15 +1648,13 @@ async def test_model_switch_retargets_unset_role_models_to_selected_provider(
     assert ctx.cfg.summarizer_model is None
     assert ctx.agent is candidate_graph
     assert isinstance(captured["model"], BaseChatModel)
-    assert isinstance(general_purpose["model"], BaseChatModel)
     assert isinstance(summarizer.model, BaseChatModel)
     assert isinstance(ctx.summarizer, BaseChatModel)
     assert captured["model"] is created[0]
-    assert general_purpose["model"] is created[1]
-    assert summarizer.model is created[2]
-    assert ctx.summarizer is created[3]
-    assert codex_availability_calls == [None, None, None, None]
-    assert codex_factory_calls == ["x", "x", "x", "x"]
+    assert summarizer.model is created[1]
+    assert ctx.summarizer is created[2]
+    assert codex_availability_calls == [None, None, None]
+    assert codex_factory_calls == ["x", "x", "x"]
     assert anthropic_availability_calls == []
     assert anthropic_factory_calls == []
 

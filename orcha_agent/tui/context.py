@@ -306,6 +306,7 @@ class AppContext:
                 self._bus,
                 always_allowed=self._always_allowed(),
                 extra_tools=agent_tools(self),
+                exclude_general_purpose=True,
             )
             candidate_summarizer = self._resolve_summarizer(self.cfg)
             if not reseed_pending:
@@ -337,6 +338,7 @@ class AppContext:
             self._bus,
             always_allowed=self._always_allowed(),
             extra_tools=agent_tools(self),
+            exclude_general_purpose=True,
         )
         candidate_summarizer = self._resolve_summarizer(self.cfg)
         self.agent = candidate_agent
@@ -507,12 +509,14 @@ class AppContext:
             state.clear()
         try:
             if old_agent is not None:
-                candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-                self.cfg,
-                self.session,
-                self._bus,
-                always_allowed=self._always_allowed(),
-                extra_tools=agent_tools(self),
+                candidate_agent = await _compat("build_agent", build_agent)(
+                    self.registry,
+                    self.cfg,
+                    self.session,
+                    self._bus,
+                    always_allowed=self._always_allowed(),
+                    extra_tools=agent_tools(self),
+                    exclude_general_purpose=True,
                 )
                 candidate_summarizer = self._resolve_summarizer(self.cfg)
             else:
@@ -670,12 +674,14 @@ class AppContext:
             if old_agent is None:
                 self.summarizer = None
             else:
-                candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-                candidate_cfg,
-                self.session,
-                self._bus,
-                always_allowed=self._always_allowed(),
-                extra_tools=agent_tools(self),
+                candidate_agent = await _compat("build_agent", build_agent)(
+                    self.registry,
+                    candidate_cfg,
+                    self.session,
+                    self._bus,
+                    always_allowed=self._always_allowed(),
+                    extra_tools=agent_tools(self),
+                    exclude_general_purpose=True,
                 )
                 candidate_summarizer = self._resolve_summarizer(candidate_cfg)
                 if not needs_reseed:
@@ -728,12 +734,14 @@ class AppContext:
         old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
         new_label = spec if isinstance(spec, str) else ",".join(spec)
         candidate_cfg = replace(self.cfg, model=spec)
-        candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-        candidate_cfg,
-        self.session,
-        self._bus,
-        always_allowed=self._always_allowed(),
-        extra_tools=agent_tools(self),
+        candidate_agent = await _compat("build_agent", build_agent)(
+            self.registry,
+            candidate_cfg,
+            self.session,
+            self._bus,
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+            exclude_general_purpose=True,
         )
         candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         provider_changed = _primary_provider_prefix(
@@ -785,12 +793,14 @@ class AppContext:
             candidate_agent = None
             candidate_summarizer = None
         else:
-            candidate_agent = await _compat("build_agent", build_agent)(self.registry,
-            candidate_cfg,
-            self.session,
-            self._bus,
-            always_allowed=self._always_allowed(),
-            extra_tools=agent_tools(self),
+            candidate_agent = await _compat("build_agent", build_agent)(
+                self.registry,
+                candidate_cfg,
+                self.session,
+                self._bus,
+                always_allowed=self._always_allowed(),
+                extra_tools=agent_tools(self),
+                exclude_general_purpose=True,
             )
             candidate_summarizer = self._resolve_summarizer(candidate_cfg)
         self.session.set_mode(self.session_id, name)
