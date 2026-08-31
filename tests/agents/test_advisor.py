@@ -388,9 +388,7 @@ async def test_delta_uses_session_root_and_advances_cursor_after_send(
     )
     requested: list[str] = []
     entries = [_entry("turn-1", HumanMessage(content="question"))]
-    ctx.ledger = SimpleNamespace(
-        path=lambda session_id: requested.append(session_id) or entries
-    )
+    ctx.ledger = SimpleNamespace(path=lambda session_id: requested.append(session_id) or entries)
 
     state = service._state("session")
     await service._look_at_delta("session", state)
@@ -415,9 +413,7 @@ async def test_cursor_does_not_advance_before_busy_run_accepts_prompt(
     service, _ctx, _agents, _run, _followups = _service(tmp_path, run=run)
     state = service._state("session")
     state.run = run
-    task = asyncio.create_task(
-        service._look("session", state, "review", cursor="turn-2")
-    )
+    task = asyncio.create_task(service._look("session", state, "review", cursor="turn-2"))
     service._look_tasks["session"] = task
     await asyncio.sleep(0)
 
@@ -437,9 +433,7 @@ async def test_missing_cursor_aborts_stale_branch_run_and_reseeds(
         {"none": True},
     )
     ctx.ledger = SimpleNamespace(
-        path=lambda _session_id: [
-            _entry("new-branch", HumanMessage(content="branched question"))
-        ]
+        path=lambda _session_id: [_entry("new-branch", HumanMessage(content="branched question"))]
     )
     state = service._state("session")
     state.cursor = "abandoned-branch"
@@ -522,9 +516,7 @@ async def test_restored_advisor_with_stale_tool_scope_is_replaced(
 ) -> None:
     service, ctx, agents, fresh, _followups = _service(tmp_path)
     restored = _Run()
-    restored.agent_type = SimpleNamespace(
-        tools={"read_file", "grep", "glob", "advise"}
-    )
+    restored.agent_type = SimpleNamespace(tools={"read_file", "grep", "glob", "advise"})
     restored.cfg = SimpleNamespace(model="cloud:old-advisor")
     agents.advisor_run = lambda _session_id: restored
 
@@ -596,9 +588,7 @@ async def test_timed_out_spawn_cannot_leak_stale_advice_to_next_look(
     spawn_started = asyncio.Event()
     release_spawn = asyncio.Event()
 
-    async def delayed_spawn(
-        _agent_type: str, prompt: str, **_kwargs: Any
-    ) -> _Run:
+    async def delayed_spawn(_agent_type: str, prompt: str, **_kwargs: Any) -> _Run:
         agents.spawn_prompts.append(prompt)
         spawn_started.set()
         await release_spawn.wait()
@@ -609,9 +599,7 @@ async def test_timed_out_spawn_cannot_leak_stale_advice_to_next_look(
     await service._look("session", state, "first prompt")
     await spawn_started.wait()
 
-    second = asyncio.create_task(
-        service._look("session", state, "second prompt")
-    )
+    second = asyncio.create_task(service._look("session", state, "second prompt"))
     await asyncio.sleep(0)
     release_spawn.set()
     await asyncio.wait_for(second, 0.2)

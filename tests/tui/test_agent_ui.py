@@ -174,6 +174,7 @@ def plain(renderable: object, width: int = 120) -> str:
     Console(file=output, width=width, force_terminal=False, color_system=None).print(renderable)
     return output.getvalue()
 
+
 async def drive_overlay(overlay: HubOverlay, keys: bytes | str) -> Any:
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -280,7 +281,13 @@ def test_delivered_result_is_a_collapsible_system_card() -> None:
 def test_registry_drives_hud_status_and_title_counts() -> None:
     registry = FakeRegistry(
         [
-            FakeRun("running", "Runner", "running", current_tool="read", current_tool_args="{'path': 'a.py'}"),
+            FakeRun(
+                "running",
+                "Runner",
+                "running",
+                current_tool="read",
+                current_tool_args="{'path': 'a.py'}",
+            ),
             FakeRun("queued", "Queued", "queued"),
             FakeRun("idle", "Idle", "idle"),
             FakeRun("parked", "Parked", "parked"),
@@ -529,9 +536,7 @@ async def test_active_task_card_does_not_block_later_transcript_commits() -> Non
             source_id="child",
         )
     )
-    await transcript.handle(
-        TurnStart("child-thread", "continue", source_id="child")
-    )
+    await transcript.handle(TurnStart("child-thread", "continue", source_id="child"))
 
     assert [block.kind for block in transcript.frame.blocks] == ["user", "task"]
     assert transcript.frame.blocks[0].source_id == "child"
@@ -580,8 +585,7 @@ async def test_runtime_drill_send_and_back_restore_main_view() -> None:
     await asyncio.sleep(0.26)
     assert runtime._drilled_frame is not None
     assert any(
-        block.data.get("text") == "live child output"
-        for block in runtime._drilled_frame.blocks
+        block.data.get("text") == "live child output" for block in runtime._drilled_frame.blocks
     )
 
     trailing = ModelChunk(

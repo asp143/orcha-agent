@@ -211,9 +211,7 @@ async def test_excluded_child_build_disables_deepagents_general_purpose_profile(
         from deepagents.graph import _harness_profile_for_model
 
         profile = _harness_profile_for_model(kwargs["model"], None)
-        captured["enabled"] = getattr(
-            profile.general_purpose_subagent, "enabled", None
-        )
+        captured["enabled"] = getattr(profile.general_purpose_subagent, "enabled", None)
         return object()
 
     monkeypatch.setattr("orcha_agent.core.agent.create_deep_agent", inspect_profile)

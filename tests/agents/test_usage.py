@@ -28,9 +28,7 @@ async def test_streamed_chunks_count_each_model_response_once() -> None:
     for request_id in ("response-a", "response-a", "response-b", "response-b"):
         await bus.emit(
             ModelChunk(
-                SimpleNamespace(
-                    id=request_id, content="delta", usage_metadata=None
-                ),
+                SimpleNamespace(id=request_id, content="delta", usage_metadata=None),
                 role="subagent",
                 source_id="worker",
                 request_id=request_id,
@@ -51,9 +49,7 @@ async def test_agent_model_usage_updates_tokens_cost_and_persistence() -> None:
         tokens_in=0,
         tokens_out=0,
         cost=0.0,
-        cfg=SimpleNamespace(
-            pricing={"custom:model": {"input": 2.0, "output": 10.0}}
-        ),
+        cfg=SimpleNamespace(pricing={"custom:model": {"input": 2.0, "output": 10.0}}),
         owner=SimpleNamespace(_persist_job=persisted.append),
     )
     bus = _RunEventBus(run, EventBus())

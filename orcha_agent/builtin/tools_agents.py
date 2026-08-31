@@ -49,6 +49,7 @@ def _agent_message(sender_name: str, role: str, message: str) -> str:
             high = middle - 1
     return framed(low, truncated=True)
 
+
 _TASK_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -96,7 +97,11 @@ _HUB_SCHEMA: dict[str, Any] = {
         "await": {"type": "boolean", "default": False},
         "ids": {"type": "array", "items": {"type": "string"}},
         "timeout_s": {"type": "number", "minimum": 0, "default": 300},
-        "reason": {"type": "string", "enum": ["cancel", "timeout", "budget", "shutdown"], "default": "cancel"},
+        "reason": {
+            "type": "string",
+            "enum": ["cancel", "timeout", "budget", "shutdown"],
+            "default": "cancel",
+        },
     },
     "required": ["op"],
     "additionalProperties": False,
@@ -127,24 +132,39 @@ def _registry(host: Any) -> Any:
 
 
 def _summary(run: Any) -> dict[str, Any]:
-    return {"id": run.id, "name": run.name, "type": run.agent_type.name, "status": run.status, "blocking": run.blocking}
+    return {
+        "id": run.id,
+        "name": run.name,
+        "type": run.agent_type.name,
+        "status": run.status,
+        "blocking": run.blocking,
+    }
 
 
 def _job(run: Any) -> dict[str, Any]:
     return {
-        "id": run.id, "name": run.name, "type": run.agent_type.name,
-        "status": run.status, "result": run.result,
+        "id": run.id,
+        "name": run.name,
+        "type": run.agent_type.name,
+        "status": run.status,
+        "result": run.result,
         "schema_overridden": run.schema_overridden,
-        "findings": list(run.partial_findings), "delivered": run.delivered,
+        "findings": list(run.partial_findings),
+        "delivered": run.delivered,
     }
 
 
 def _roster(registry: Any, run: Any, caller: str) -> dict[str, Any]:
     age = max(0.0, (datetime.now(UTC) - run.created_at).total_seconds())
     return {
-        "id": run.id, "name": run.name, "type": run.agent_type.name,
-        "status": run.status, "age_s": round(age, 3), "last_tool": run.last_tool,
-        "tokens": run.tokens_in + run.tokens_out, "cost": run.cost,
+        "id": run.id,
+        "name": run.name,
+        "type": run.agent_type.name,
+        "status": run.status,
+        "age_s": round(age, 3),
+        "last_tool": run.last_tool,
+        "tokens": run.tokens_in + run.tokens_out,
+        "cost": run.cost,
         "unread": registry.unread_count(run.id, caller=caller),
     }
 
@@ -155,18 +175,24 @@ def _timeout(registry: Any) -> float:
 
 
 def _matches(value: Any, expected: str) -> bool:
-    if expected == "null": return value is None
-    if expected == "boolean": return isinstance(value, bool)
-    if expected == "string": return isinstance(value, str)
-    if expected == "integer": return isinstance(value, int) and not isinstance(value, bool)
-    if expected == "number": return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if expected == "object": return isinstance(value, dict)
-    if expected == "array": return isinstance(value, list)
+    if expected == "null":
+        return value is None
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
     return False
 
-_SCHEMA_TYPES = frozenset(
-    {"null", "boolean", "string", "integer", "number", "object", "array"}
-)
+
+_SCHEMA_TYPES = frozenset({"null", "boolean", "string", "integer", "number", "object", "array"})
 _SCHEMA_KEYWORDS = frozenset({"type", "enum", "required", "properties", "items"})
 
 
@@ -190,15 +216,11 @@ def _validate_schema(schema: Any, path: str = "$") -> str | None:
             return f"{path}: schema enum must be a non-empty array"
     if "required" in schema:
         required = schema["required"]
-        if not isinstance(required, list) or not all(
-            isinstance(key, str) for key in required
-        ):
+        if not isinstance(required, list) or not all(isinstance(key, str) for key in required):
             return f"{path}: schema required must be an array of strings"
     if "properties" in schema:
         properties = schema["properties"]
-        if not isinstance(properties, dict) or not all(
-            isinstance(key, str) for key in properties
-        ):
+        if not isinstance(properties, dict) or not all(isinstance(key, str) for key in properties):
             return f"{path}: schema properties must be an object with string keys"
         for key, child in properties.items():
             if error := _validate_schema(child, f"{path}.properties.{key}"):
@@ -225,9 +247,7 @@ def _validate_value(value: Any, schema: dict[str, Any], path: str) -> str | None
                 return f"{path}: missing required property {key!r}"
         properties = schema.get("properties", {})
         for key, child in properties.items():
-            if key in value and (
-                error := _validate_value(value[key], child, f"{path}.{key}")
-            ):
+            if key in value and (error := _validate_value(value[key], child, f"{path}.{key}")):
                 return error
     if isinstance(value, list) and "items" in schema:
         for index, item in enumerate(value):
@@ -256,12 +276,13 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
         async def spawn(item: dict[str, Any]) -> Any:
             prompt = "\n\n".join(part for part in (shared, str(item["task"]).strip()) if part)
             output_schema = item.get("output_schema")
-            if output_schema is not None and (
-                error := _validate_schema(output_schema)
-            ):
+            if output_schema is not None and (error := _validate_schema(output_schema)):
                 raise ValueError(f"invalid output schema: {error}")
             return await registry.spawn(
-                str(item.get("agent") or "task"), prompt, name=item.get("name"), parent=caller,
+                str(item.get("agent") or "task"),
+                prompt,
+                name=item.get("name"),
+                parent=caller,
                 output_schema=output_schema,
                 schema_mode=str(item.get("schema_mode") or "permissive"),
                 blocking=bool(item.get("blocking", False)),
@@ -276,7 +297,9 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
                 runs.append(outcome)
         blocking = [run for run in runs if run.blocking]
         if blocking:
-            await registry.wait_all((run.id for run in blocking), timeout_s=_timeout(registry), caller=caller)
+            await registry.wait_all(
+                (run.id for run in blocking), timeout_s=_timeout(registry), caller=caller
+            )
         completed = [run for run in blocking if run.terminal]
         if completed:
             await registry.deliver(caller, (run.id for run in completed))
@@ -290,36 +313,52 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     async def yield_call(type: str, data: Any = None, error: str | None = None) -> dict[str, Any]:
         run = host
         if type == "findings":
-            finding = bound_payload(
-                data if error is None else {"data": data, "error": error}
-            )
+            finding = bound_payload(data if error is None else {"data": data, "error": error})
             accumulated = bound_payload([*run.partial_findings, finding])
-            run.partial_findings = (
-                accumulated if isinstance(accumulated, list) else [accumulated]
-            )
+            run.partial_findings = accumulated if isinstance(accumulated, list) else [accumulated]
             await registry.record_yield(run, {"type": type, "data": finding})
             return {"accepted": True, "terminal": False, "findings": len(run.partial_findings)}
         payload, status = bound_payload(data), "done"
         if type == "error" or error is not None:
-            payload, status = bound_payload(
-                {"error": error or data or "agent reported an error"}
-            ), "failed"
-        validation_error = _validate(payload, run.output_schema) if status == "done" and run.output_schema is not None else None
+            payload, status = (
+                bound_payload({"error": error or data or "agent reported an error"}),
+                "failed",
+            )
+        validation_error = (
+            _validate(payload, run.output_schema)
+            if status == "done" and run.output_schema is not None
+            else None
+        )
         if validation_error is not None:
             run.validation_attempts += 1
             attempt = run.validation_attempts
             message = f"output schema validation failed: {validation_error}"
             if attempt < 3:
-                await registry.record_yield(run, {"type": type, "accepted": False, "error": message})
+                await registry.record_yield(
+                    run, {"type": type, "accepted": False, "error": message}
+                )
                 return {"accepted": False, "terminal": False, "attempt": attempt, "error": message}
             if run.schema_mode == "strict":
-                await registry.record_yield(run, {"type": type, "accepted": False, "error": message})
+                await registry.record_yield(
+                    run, {"type": type, "accepted": False, "error": message}
+                )
                 await run.complete({"error": message}, status="failed")
-                return {"accepted": False, "terminal": True, "status": "failed", "attempt": attempt, "error": message}
+                return {
+                    "accepted": False,
+                    "terminal": True,
+                    "status": "failed",
+                    "attempt": attempt,
+                    "error": message,
+                }
             run.schema_overridden = True
         await registry.record_yield(run, {"type": type, "data": payload})
         await run.complete(payload, status=status)
-        return {"accepted": True, "terminal": True, "status": status, "schema_overridden": run.schema_overridden}
+        return {
+            "accepted": True,
+            "terminal": True,
+            "status": status,
+            "schema_overridden": run.schema_overridden,
+        }
 
     async def advise_call(
         note: str | None = None,
@@ -328,7 +367,12 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     ) -> dict[str, Any]:
         if none is True and note is None and severity is None:
             payload: dict[str, Any] = {"none": True}
-        elif none is None and isinstance(note, str) and note.strip() and severity in {"nit", "concern", "blocker"}:
+        elif (
+            none is None
+            and isinstance(note, str)
+            and note.strip()
+            and severity in {"nit", "concern", "blocker"}
+        ):
             payload = {"note": note.strip(), "severity": severity}
         else:
             raise ValueError("advise requires exactly note and severity, or none=true")
@@ -338,7 +382,12 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     async def hub_call(**kwargs: Any) -> dict[str, Any]:
         op = str(kwargs["op"])
         if op == "list":
-            return {"agents": [_roster(registry, run, caller) for run in registry.list(status=kwargs.get("status"), caller=caller)]}
+            return {
+                "agents": [
+                    _roster(registry, run, caller)
+                    for run in registry.list(status=kwargs.get("status"), caller=caller)
+                ]
+            }
         if op == "send":
             target, message = kwargs.get("to"), kwargs.get("message")
             if not isinstance(target, str) or not isinstance(message, str):
@@ -373,62 +422,120 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
                         )
                 except (LookupError, RuntimeError, ValueError) as exc:
                     return {"error": str(exc), "op": op}
-                response: dict[str, Any] = {"sent": {"to": target_id, "name": "main" if peer is None else peer.name, "status": "running" if peer is None else peer.status}}
+                response: dict[str, Any] = {
+                    "sent": {
+                        "to": target_id,
+                        "name": "main" if peer is None else peer.name,
+                        "status": "running" if peer is None else peer.status,
+                    }
+                }
                 if not await_reply:
                     return response
-                await registry.wait_activity(caller, timeout_s=_timeout(registry), peer=target_id, after_yield=before, reserved=True)
+                await registry.wait_activity(
+                    caller,
+                    timeout_s=_timeout(registry),
+                    peer=target_id,
+                    after_yield=before,
+                    reserved=True,
+                )
                 replies = registry.drain_messages(caller, sender=target_id, caller=caller)
-                if replies: response["event"] = {"kind": "message", "messages": replies}
-                elif peer is not None and peer.yield_count > before: response["event"] = {"kind": "yield", "from": peer.id, "payload": peer.last_yield}
-                else: response["event"] = {"kind": "timeout"}
+                if replies:
+                    response["event"] = {"kind": "message", "messages": replies}
+                elif peer is not None and peer.yield_count > before:
+                    response["event"] = {
+                        "kind": "yield",
+                        "from": peer.id,
+                        "payload": peer.last_yield,
+                    }
+                else:
+                    response["event"] = {"kind": "timeout"}
                 return response
             finally:
                 if reservation is not None:
                     registry.release_activity_waiter(reservation)
-        if op == "inbox": return {"messages": registry.drain_messages(caller, caller=caller)}
+        if op == "inbox":
+            return {"messages": registry.drain_messages(caller, caller=caller)}
         if op == "wait":
             ids, timeout_s = kwargs.get("ids"), float(kwargs.get("timeout_s", 300))
             await registry.wait_activity(caller, ids=ids, timeout_s=timeout_s)
             messages = registry.drain_messages(caller, caller=caller)
-            settled = [run for run in registry.jobs(caller, ids=ids, caller=caller) if run.terminal and not run.delivered]
-            claimed = (
-                await registry.deliver(caller, (run.id for run in settled))
-                if settled
-                else []
-            )
-            return {"messages": messages, "jobs": [_job(run) for run in claimed], "timed_out": not messages and not claimed}
+            settled = [
+                run
+                for run in registry.jobs(caller, ids=ids, caller=caller)
+                if run.terminal and not run.delivered
+            ]
+            claimed = await registry.deliver(caller, (run.id for run in settled)) if settled else []
+            return {
+                "messages": messages,
+                "jobs": [_job(run) for run in claimed],
+                "timed_out": not messages and not claimed,
+            }
         if op == "jobs":
             jobs = registry.jobs(caller, caller=caller)
             pending = [run for run in jobs if run.terminal and not run.delivered]
-            if pending: await registry.deliver(caller, (run.id for run in pending))
+            if pending:
+                await registry.deliver(caller, (run.id for run in pending))
             return {"jobs": [_job(run) for run in jobs]}
         if op == "cancel":
             ids = kwargs.get("ids")
-            if not isinstance(ids, list) or not ids: return {"error": "hub cancel requires a non-empty ids list"}
+            if not isinstance(ids, list) or not ids:
+                return {"error": "hub cancel requires a non-empty ids list"}
             cancelled, errors = [], []
             for selector in ids:
                 try:
                     run_id = registry.resolve(str(selector), caller=caller, visible_only=True)
-                    if run_id == "main": raise ValueError("main cannot be cancelled through hub")
-                    cancelled.append(_summary(await registry.cancel(run_id, reason=str(kwargs.get("reason") or "cancel"), caller=caller)))
+                    if run_id == "main":
+                        raise ValueError("main cannot be cancelled through hub")
+                    cancelled.append(
+                        _summary(
+                            await registry.cancel(
+                                run_id, reason=str(kwargs.get("reason") or "cancel"), caller=caller
+                            )
+                        )
+                    )
                 except (LookupError, RuntimeError, ValueError) as exc:
                     errors.append({"id": str(selector), "error": str(exc)})
             return {"cancelled": cancelled, "errors": errors}
         return {"error": f"unknown hub operation: {op}", "op": op}
 
-    task_tool = StructuredTool.from_function(coroutine=task_call, name="task", description="Spawn one concurrent batch. Give each self-contained task Target, Change, and Acceptance sections. Results arrive asynchronously through hub unless blocking; blocking is runtime-bounded.", args_schema=_TASK_SCHEMA)
-    yield_tool = StructuredTool.from_function(coroutine=yield_call, name="yield", description="Submit incremental findings or a terminal schema-validated result. Validation retries up to three times; permissive overrides and strict failures then settle.", args_schema=_YIELD_SCHEMA)
-    hub_tool = StructuredTool.from_function(coroutine=hub_call, name="hub", description="List, message, wait for, cancel, and collect serializable snapshots of registered agents.", args_schema=_HUB_SCHEMA)
-    advise_tool = StructuredTool.from_function(coroutine=advise_call, name="advise", description="Submit one nonterminal advisor assessment: either a note with nit, concern, or blocker severity, or none=true.", args_schema=_ADVISE_SCHEMA)
+    task_tool = StructuredTool.from_function(
+        coroutine=task_call,
+        name="task",
+        description="Spawn one concurrent batch. Give each self-contained task Target, Change, and Acceptance sections. Results arrive asynchronously through hub unless blocking; blocking is runtime-bounded.",
+        args_schema=_TASK_SCHEMA,
+    )
+    yield_tool = StructuredTool.from_function(
+        coroutine=yield_call,
+        name="yield",
+        description="Submit incremental findings or a terminal schema-validated result. Validation retries up to three times; permissive overrides and strict failures then settle.",
+        args_schema=_YIELD_SCHEMA,
+    )
+    hub_tool = StructuredTool.from_function(
+        coroutine=hub_call,
+        name="hub",
+        description="List, message, wait for, cancel, and collect serializable snapshots of registered agents.",
+        args_schema=_HUB_SCHEMA,
+    )
+    advise_tool = StructuredTool.from_function(
+        coroutine=advise_call,
+        name="advise",
+        description="Submit one nonterminal advisor assessment: either a note with nit, concern, or blocker severity, or none=true.",
+        args_schema=_ADVISE_SCHEMA,
+    )
     agent_type = getattr(host, "agent_type", None)
     is_advisor = not is_main and str(getattr(agent_type, "name", "")) == "advisor"
-    may_spawn = is_main or (bool(getattr(agent_type, "spawns", False)) and int(getattr(host, "depth", 0)) < int(registry.cfg.agents.max_depth))
-    return tuple([
-        *([task_tool] if may_spawn else []),
-        *([yield_tool] if not is_main else []),
-        hub_tool,
-        *([advise_tool] if is_advisor else []),
-    ])
+    may_spawn = is_main or (
+        bool(getattr(agent_type, "spawns", False))
+        and int(getattr(host, "depth", 0)) < int(registry.cfg.agents.max_depth)
+    )
+    return tuple(
+        [
+            *([task_tool] if may_spawn else []),
+            *([yield_tool] if not is_main else []),
+            hub_tool,
+            *([advise_tool] if is_advisor else []),
+        ]
+    )
 
 
 def register(api: PluginAPI) -> None:

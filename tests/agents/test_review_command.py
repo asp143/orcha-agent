@@ -94,9 +94,7 @@ def test_select_diff_uses_fixed_argv_for_each_mode(
 
     assert commands_review.select_diff(tmp_path, selector) == "selected diff\n"
     content_calls = [
-        argv
-        for argv in calls
-        if argv[1] == tracked_command and "--name-status" not in argv
+        argv for argv in calls if argv[1] == tracked_command and "--name-status" not in argv
     ]
     assert len(content_calls) == 1
     assert content_calls[0][-1] == ":(literal)src/app.py"
@@ -115,10 +113,7 @@ def test_select_diff_adds_safe_untracked_files_without_reading_excluded_paths(
     (tmp_path / "alpha.txt").write_text("alpha\n", encoding="utf-8")
     (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
     calls: list[list[str]] = []
-    safe_diffs = {
-        path: _diff(path, 1, label="untracked")
-        for path in ("alpha.txt", "notes.txt")
-    }
+    safe_diffs = {path: _diff(path, 1, label="untracked") for path in ("alpha.txt", "notes.txt")}
 
     def fake_run(argv: list[str], **_kwargs: Any) -> SimpleNamespace:
         calls.append(argv)
@@ -224,9 +219,10 @@ def test_select_diff_preserves_eligible_pure_rename_with_both_endpoints(
 
     assert commands_review.select_diff(tmp_path, "--uncommitted") == rename_diff
     assert commands_review.changed_line_count(rename_diff) == 0
-    assert commands_review._eligible_changed_paths(
-        "C100\0src/old.py\0src/new.py\0"
-    ) == ["src/new.py", "src/old.py"]
+    assert commands_review._eligible_changed_paths("C100\0src/old.py\0src/new.py\0") == [
+        "src/new.py",
+        "src/old.py",
+    ]
 
 
 def test_select_diff_omits_rename_when_old_endpoint_is_excluded(
@@ -252,15 +248,10 @@ def test_select_diff_omits_rename_when_old_endpoint_is_excluded(
     monkeypatch.setattr(commands_review.subprocess, "run", fake_run)
 
     assert commands_review.select_diff(tmp_path, "--uncommitted") == ""
-    assert not [
-        argv
-        for argv in calls
-        if argv[1] == "diff" and "--name-status" not in argv
-    ]
+    assert not [argv for argv in calls if argv[1] == "diff" and "--name-status" not in argv]
 
 
-def test_explicit_artifact_rules_preserve_security_source_and_custom_lock_files(
-) -> None:
+def test_explicit_artifact_rules_preserve_security_source_and_custom_lock_files() -> None:
     source_paths = [
         "src/secrets.py",
         "security/credentials.go",
@@ -320,9 +311,7 @@ def test_filter_excludes_nonreviewable_files_before_line_counting() -> None:
     ("changed_lines", "expected_reviewers"),
     [(100, 1), (101, 2), (500, 2), (501, 4), (2000, 4), (2001, 8)],
 )
-def test_reviewer_count_thresholds(
-    changed_lines: int, expected_reviewers: int
-) -> None:
+def test_reviewer_count_thresholds(changed_lines: int, expected_reviewers: int) -> None:
     assert commands_review.reviewer_count(changed_lines) == expected_reviewers
 
 
@@ -371,8 +360,7 @@ def test_review_prompt_xml_escapes_untrusted_diff_payload() -> None:
     assert prompt.count("</review-diff>") == 1
 
 
-def test_merge_reviews_deduplicates_by_location_and_normalized_title_then_sorts(
-) -> None:
+def test_merge_reviews_deduplicates_by_location_and_normalized_title_then_sorts() -> None:
     first = {
         "overall": "correct",
         "explanation": "First review",
@@ -411,10 +399,7 @@ def test_merge_reviews_deduplicates_by_location_and_normalized_title_then_sorts(
         "P1",
         "P3",
     ]
-    assert [
-        (finding["file"], finding["line_start"])
-        for finding in merged["findings"]
-    ] == [
+    assert [(finding["file"], finding["line_start"]) for finding in merged["findings"]] == [
         ("src/z.py", 10),
         ("src/app.py", 10),
         ("src/b.py", 10),
@@ -423,8 +408,7 @@ def test_merge_reviews_deduplicates_by_location_and_normalized_title_then_sorts(
     assert merged["findings"][1]["body"] == "Higher-priority duplicate"
 
 
-def test_merge_reviews_marks_partial_invalid_and_failed_results_incorrect(
-) -> None:
+def test_merge_reviews_marks_partial_invalid_and_failed_results_incorrect() -> None:
     partially_invalid = {
         "overall": "correct",
         "explanation": "One finding was usable",
@@ -463,9 +447,7 @@ class _ConcurrentAgents:
         self.active = 0
         self.max_active = 0
 
-    async def spawn(
-        self, agent_type: str, prompt: str, **kwargs: Any
-    ) -> _Run:
+    async def spawn(self, agent_type: str, prompt: str, **kwargs: Any) -> _Run:
         index = len(self.spawn_calls)
         self.spawn_calls.append((agent_type, prompt, kwargs))
         self.active += 1
@@ -616,10 +598,7 @@ async def test_review_cancels_waits_for_and_delivers_a_timed_out_reviewer(
         "deliver:main:review-timeout",
     ]
     assert transcript.reviews[0]["overall"] == "incorrect"
-    assert (
-        transcript.reviews[0]["explanation"]
-        == "1 reviewer failed or returned invalid output."
-    )
+    assert transcript.reviews[0]["explanation"] == "1 reviewer failed or returned invalid output."
 
 
 def test_runtime_dynamically_registers_review_command() -> None:

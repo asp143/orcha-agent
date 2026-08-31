@@ -106,7 +106,7 @@ def _shorten_path(value: object, *, max_length: int = 30) -> str:
 
     left = max(1, (max_length - 1) // 2)
     right = max(1, max_length - left - 1)
-    return f"{display[:left].rstrip('/') }…{display[-right:].lstrip('/')}"
+    return f"{display[:left].rstrip('/')}…{display[-right:].lstrip('/')}"
 
 
 class SessionOverlay(SelectList[Any]):

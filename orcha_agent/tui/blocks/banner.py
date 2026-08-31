@@ -30,9 +30,7 @@ def render(
     message = str(block.data.get("message", block.data.get("text", "")))
     content_limit = max(1, min(_MAX_CONTENT_ROWS, budget_rows - 2))
     content_width = max(1, width - _PANEL_HORIZONTAL_CHROME)
-    lines = list(
-        Text(message).wrap(_WRAP_CONSOLE, content_width, overflow="fold")
-    )
+    lines = list(Text(message).wrap(_WRAP_CONSOLE, content_width, overflow="fold"))
     if len(lines) > content_limit:
         lines = [*lines[: content_limit - 1], Text("…")]
     titles = {"error": "Error", "warning": "Warning", "info": "Info"}

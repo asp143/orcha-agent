@@ -57,17 +57,14 @@ async def test_child_turns_do_not_change_main_status_accounting(
     await bus.emit(TurnStart("main-thread", "main prompt", source_id="main"))
     await bus.emit(
         ModelChunk(
-            chunk=SimpleNamespace(
-                usage_metadata={"input_tokens": 100, "output_tokens": 25}
-            ),
+            chunk=SimpleNamespace(usage_metadata={"input_tokens": 100, "output_tokens": 25}),
             role="main",
             source_id="main",
         )
     )
     main_started = state["_turn_started"]
     main_gauges = {
-        key: state[key]
-        for key in ("input_tokens", "output_tokens", "last_input_tokens")
+        key: state[key] for key in ("input_tokens", "output_tokens", "last_input_tokens")
     }
     ctx = SimpleNamespace(
         cfg=SimpleNamespace(
@@ -81,9 +78,7 @@ async def test_child_turns_do_not_change_main_status_accounting(
     await bus.emit(TurnStart("child-thread", "child prompt", source_id="child-1"))
     await bus.emit(
         ModelChunk(
-            chunk=SimpleNamespace(
-                usage_metadata={"input_tokens": 9_000, "output_tokens": 8_000}
-            ),
+            chunk=SimpleNamespace(usage_metadata={"input_tokens": 9_000, "output_tokens": 8_000}),
             role="main",
             source_id="child-1",
         )
@@ -92,8 +87,7 @@ async def test_child_turns_do_not_change_main_status_accounting(
 
     assert state["_turn_started"] == main_started
     assert {
-        key: state[key]
-        for key in ("input_tokens", "output_tokens", "last_input_tokens")
+        key: state[key] for key in ("input_tokens", "output_tokens", "last_input_tokens")
     } == main_gauges
     assert cost_segment(ctx) == main_cost
     assert len(child_chunks) == 1

@@ -143,9 +143,7 @@ def _one_line(value: Any) -> str:
 
 def _clip(value: Any, maximum: int = 40) -> str:
     text = _one_line(
-        json.dumps(value, ensure_ascii=False, default=str)
-        if isinstance(value, Mapping)
-        else value
+        json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, Mapping) else value
     )
     return text if len(text) <= maximum else f"{text[: maximum - 1]}…"
 
@@ -265,10 +263,7 @@ def _agent_rows(
 def _footer(agents: Sequence[Mapping[str, Any]], block: Block) -> str:
     succeeded = sum(_status(agent) in _SUCCESS for agent in agents)
     failed = sum(_status(agent) in _FAILURE for agent in agents)
-    requests = sum(
-        int(agent.get("requests", agent.get("req", 0)) or 0)
-        for agent in agents
-    )
+    requests = sum(int(agent.get("requests", agent.get("req", 0)) or 0) for agent in agents)
     elapsed = _seconds(block.data.get("elapsed"))
     result = block.data.get("result")
     if elapsed is None and isinstance(result, Mapping):
@@ -295,11 +290,7 @@ def render(
     if compact:
         running = int(block.data.get("running", sum(_status(item) == "running" for item in agents)))
         idle = int(block.data.get("idle", sum(_status(item) == "idle" for item in agents)))
-        queued = int(
-            block.data.get(
-                "queued", sum(_status(item) == "queued" for item in agents)
-            )
-        )
+        queued = int(block.data.get("queued", sum(_status(item) == "queued" for item in agents)))
         header = f"Subagents {separator} {running} running {separator} {idle} idle"
         if queued:
             header += f" {separator} {queued} queued"
@@ -349,7 +340,9 @@ def render_delivery(
         return None
     job = block.data.get("job")
     snapshot = dict(job) if isinstance(job, Mapping) else dict(block.data)
-    name = _one_line(snapshot.get("name") or snapshot.get("run_id") or snapshot.get("id") or "Agent")
+    name = _one_line(
+        snapshot.get("name") or snapshot.get("run_id") or snapshot.get("id") or "Agent"
+    )
     status = _status(snapshot)
     result = snapshot.get("result", block.data.get("result"))
     if result is None:
@@ -357,7 +350,11 @@ def render_delivery(
     lines = _result_text(result).splitlines() or ["No result was returned."]
     if not expanded and len(lines) > 4:
         lines = [*lines[:4], f"… {len(lines) - 4} more lines {EXPAND_HINT}"]
-    border = "error" if status in {"error", "failed"} else ("warning" if status in _FAILURE else "borderMuted")
+    border = (
+        "error"
+        if status in {"error", "failed"}
+        else ("warning" if status in _FAILURE else "borderMuted")
+    )
     return _frame(
         f"↩ {name} finished",
         lines,
@@ -365,11 +362,7 @@ def render_delivery(
         budget_rows=budget_rows,
         theme=theme,
         border_token=border,
-        state=(
-            "error"
-            if status in {"error", "failed"} or status in _FAILURE
-            else "success"
-        ),
+        state=("error" if status in {"error", "failed"} or status in _FAILURE else "success"),
     )
 
 

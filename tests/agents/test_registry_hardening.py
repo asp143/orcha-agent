@@ -33,9 +33,7 @@ class _Graph:
         self.started = asyncio.Event()
         self.model = FakeListChatModel(responses=["ok"] * 16)
 
-    async def astream(
-        self, value: Any, **_kwargs: Any
-    ) -> AsyncIterator[tuple[str, Any]]:
+    async def astream(self, value: Any, **_kwargs: Any) -> AsyncIterator[tuple[str, Any]]:
         self.started.set()
         if self.gate is not None:
             await self.gate.wait()
@@ -76,12 +74,8 @@ def _config(tmp_path: Path, **overrides: Any) -> Config:
 
 def _registry() -> Registry:
     registry = Registry()
-    registry.modes["yolo"] = ModeSpec(
-        description="all", interrupt_on={}, allowed_tools=None
-    )
-    registry.modes["ask"] = ModeSpec(
-        description="ask", interrupt_on={}, allowed_tools=frozenset()
-    )
+    registry.modes["yolo"] = ModeSpec(description="all", interrupt_on={}, allowed_tools=None)
+    registry.modes["ask"] = ModeSpec(description="ask", interrupt_on={}, allowed_tools=frozenset())
     return registry
 
 
@@ -114,9 +108,7 @@ async def test_terminal_status_wakes_wait_and_wait_all(
     )
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         child_info = store.get(run.session_id)
         assert child_info is not None
@@ -156,9 +148,7 @@ async def test_inactive_view_keeps_events_children_messages_jobs_and_delivery_sc
     with SessionStore(tmp_path / "sessions.db") as store:
         first = store.create(tmp_path, "fake:main", thread_id="first")
         second = store.create(tmp_path, "fake:main", thread_id="second")
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, bus, first.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, bus, first.thread_id)
         old = await agents.spawn("task", "old", parent="main")
         await old.agent_ready.wait()
         await old.agent.started.wait()
@@ -168,9 +158,7 @@ async def test_inactive_view_keeps_events_children_messages_jobs_and_delivery_sc
         child = await agents.spawn("task", "child", parent=old.id)
         await child.wait_status("idle")
         await child.complete({"view": "old"})
-        assert await agents.wait_all([child.id], caller=old.id, timeout_s=0.2) == [
-            child
-        ]
+        assert await agents.wait_all([child.id], caller=old.id, timeout_s=0.2) == [child]
         assert await agents.wait([child.id], caller=old.id, timeout_s=0.2) == [child]
         assert [run.id for run in agents.list(caller=old.id)] == [old.id, child.id]
         assert agents.list() == []
@@ -188,9 +176,7 @@ async def test_inactive_view_keeps_events_children_messages_jobs_and_delivery_sc
         await old.wait_status("idle")
         assert events == []
         agents.retarget(first.thread_id)
-        assert [item["message"] for item in agents.drain_messages("main")] == [
-            "old view"
-        ]
+        assert [item["message"] for item in agents.drain_messages("main")] == ["old view"]
         await agents.shutdown()
 
 
@@ -205,14 +191,10 @@ async def test_post_message_reports_synchronous_waiter(
     )
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         await run.wait_status("idle")
-        waiting = asyncio.create_task(
-            agents.wait_activity(run.id, timeout_s=1, peer="main")
-        )
+        waiting = asyncio.create_task(agents.wait_activity(run.id, timeout_s=1, peer="main"))
         await asyncio.sleep(0)
 
         assert await agents.post_message("main", run.id, "first") is True
@@ -247,9 +229,7 @@ async def test_hidden_run_requires_internal_lookup(
     )
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         advisor = await agents.spawn(
             "advisor", "advise", name="Advisor", parent="main", visible=False
         )
@@ -279,11 +259,7 @@ async def test_cancel_aborts_every_descendant(
     with SessionStore(tmp_path / "sessions.db") as store:
         parent_session = store.create(tmp_path, "fake:main", thread_id="main")
         agents = AgentRegistry(
-            _registry(),
-            _config(tmp_path, max_depth=3),
-            store,
-            EventBus(),
-            parent_session.thread_id
+            _registry(), _config(tmp_path, max_depth=3), store, EventBus(), parent_session.thread_id
         )
         parent = await agents.spawn("task", "parent", parent="main")
         child = await agents.spawn("task", "child", parent=parent.id)
@@ -318,11 +294,7 @@ async def test_direct_parent_abort_cascades_budget_reason_to_descendants(
     with SessionStore(tmp_path / "sessions.db") as store:
         root = store.create(tmp_path, "fake:main", thread_id="main")
         agents = AgentRegistry(
-            _registry(),
-            _config(tmp_path, max_depth=3),
-            store,
-            EventBus(),
-            root.thread_id
+            _registry(), _config(tmp_path, max_depth=3), store, EventBus(), root.thread_id
         )
         parent = await agents.spawn("task", "parent", parent="main")
         child = await agents.spawn("task", "child", parent=parent.id)
@@ -340,9 +312,7 @@ async def test_direct_parent_abort_cascades_budget_reason_to_descendants(
             grandchild.wait_status("aborted"),
         )
 
-        assert {
-            run.abort_reason for run in (parent, child, grandchild)
-        } == {"budget"}
+        assert {run.abort_reason for run in (parent, child, grandchild)} == {"budget"}
         await agents.shutdown()
 
 
@@ -363,9 +333,7 @@ async def test_fork_rejects_live_foreign_child_but_restores_terminal_snapshot(
         live_fork = store.create(tmp_path, "fake:main", thread_id="live-fork")
         ledger.fork(source.thread_id, live_fork.thread_id)
 
-        live = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), live_fork.thread_id
-        )
+        live = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), live_fork.thread_id)
         assert live.list() == []
 
         ledger.append(source.thread_id, _job("done-run", child, status="done"))
@@ -398,9 +366,7 @@ async def test_agent_inboxes_and_mailboxes_drop_oldest_with_warning(
     )
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "hold", parent="main")
         await graph.started.wait()
 
@@ -409,9 +375,7 @@ async def test_agent_inboxes_and_mailboxes_drop_oldest_with_warning(
         assert run.inbox.maxsize == 128
         assert run.inbox.qsize() == 128
         queued = list(run.inbox._queue)
-        assert any(
-            isinstance(item, str) and "[dropped oldest" in item for item in queued
-        )
+        assert any(isinstance(item, str) and "[dropped oldest" in item for item in queued)
         assert "inbox 129" in queued
 
         for index in range(130):
@@ -419,9 +383,7 @@ async def test_agent_inboxes_and_mailboxes_drop_oldest_with_warning(
         messages = agents.drain_messages(run.id)
         assert len(messages) == 128
         assert any(
-            item.get("warning") is True
-            and "dropped oldest" in item["message"]
-            for item in messages
+            item.get("warning") is True and "dropped oldest" in item["message"] for item in messages
         )
         assert any(item["message"] == "mailbox 129" for item in messages)
 
@@ -446,9 +408,7 @@ async def test_active_run_detaches_when_parent_branches_away(
             parent.thread_id,
             CustomEntry(custom_type="root", data={"active": True}),
         )
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         await graph.started.wait()
         ledger.branch(parent.thread_id, root.id)
@@ -459,9 +419,7 @@ async def test_active_run_detaches_when_parent_branches_away(
         await run.wait_status("aborted")
 
         assert run.abort_reason == "cancel"
-        assert run.id not in ledger.latest_custom(
-            parent.thread_id, "agent_job", key="run_id"
-        )
+        assert run.id not in ledger.latest_custom(parent.thread_id, "agent_job", key="run_id")
         assert await agents.deliver("main", [run.id]) == []
         await agents.shutdown()
 
@@ -483,9 +441,7 @@ async def test_detach_abort_task_is_retained_and_awaited_by_shutdown(
             parent.thread_id,
             CustomEntry(custom_type="root", data={"active": True}),
         )
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         await graph.started.wait()
         original_abort = run.request_abort
@@ -525,9 +481,7 @@ async def test_direct_run_task_cancellation_settles_one_aborted_exit(
     monkeypatch.setattr("orcha_agent.core.agents.build_agent", build)
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
-        agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), _config(tmp_path), store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         await graph.started.wait()
         assert run.task is not None
@@ -538,14 +492,11 @@ async def test_direct_run_task_cancellation_settles_one_aborted_exit(
         exits = [
             entry
             for entry in Ledger(store).path(run.session_id)
-            if isinstance(entry, CustomEntry)
-            and entry.custom_type == "session_exit"
+            if isinstance(entry, CustomEntry) and entry.custom_type == "session_exit"
         ]
         assert run.status == "aborted"
         assert run.abort_reason == "shutdown"
-        assert [entry.data for entry in exits] == [
-            {"kind": "aborted", "reason": "shutdown"}
-        ]
+        assert [entry.data for entry in exits] == [{"kind": "aborted", "reason": "shutdown"}]
         await agents.shutdown()
 
 
@@ -571,9 +522,7 @@ def test_hydration_restores_child_mode_cwd_and_recomputes_trust(tmp_path: Path) 
             trusted_dirs=(trusted.resolve(),),
         )
 
-        agents = AgentRegistry(
-            _registry(), cfg, store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), cfg, store, EventBus(), parent.thread_id)
         restored = agents.get("restored")
 
         assert restored is not None
@@ -593,9 +542,7 @@ async def test_mode_refresh_discards_graph_built_for_stale_mode(
     release_build = asyncio.Event()
     built_modes: list[str] = []
 
-    async def build(
-        _registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any
-    ) -> _Graph:
+    async def build(_registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any) -> _Graph:
         built_modes.append(cfg.mode)
         if len(built_modes) == 1:
             build_started.set()
@@ -607,9 +554,7 @@ async def test_mode_refresh_discards_graph_built_for_stale_mode(
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
         yolo = _config(tmp_path)
-        agents = AgentRegistry(
-            _registry(), yolo, store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), yolo, store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         await build_started.wait()
 
@@ -634,9 +579,7 @@ async def test_mode_refresh_defers_graph_rebuild_until_active_turn_finishes(
     graphs = deque((first, second))
     built_modes: list[str] = []
 
-    async def build(
-        _registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any
-    ) -> _Graph:
+    async def build(_registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any) -> _Graph:
         built_modes.append(cfg.mode)
         return graphs.popleft()
 
@@ -644,9 +587,7 @@ async def test_mode_refresh_defers_graph_rebuild_until_active_turn_finishes(
     with SessionStore(tmp_path / "sessions.db") as store:
         parent = store.create(tmp_path, "fake:main", thread_id="main")
         yolo = _config(tmp_path)
-        agents = AgentRegistry(
-            _registry(), yolo, store, EventBus(), parent.thread_id
-        )
+        agents = AgentRegistry(_registry(), yolo, store, EventBus(), parent.thread_id)
         run = await agents.spawn("task", "work", parent="main")
         await first.started.wait()
 

@@ -125,9 +125,7 @@ def test_at_completion_highlights_each_fuzzy_matched_character() -> None:
     composer.buffer.complete_state.complete_index = 0
 
     fragments = composer.completion_fragments(80)
-    matched = "".join(
-        text for style, text in fragments if style == "class:completion.match"
-    )
+    matched = "".join(text for style, text in fragments if style == "class:completion.match")
 
     assert matched == "ap"
 

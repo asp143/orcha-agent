@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from orcha_agent.builtin import advisor
 from tests.agents.test_advisor import _Run, _service
 
 
@@ -18,9 +17,7 @@ async def test_cancelled_accepted_look_restores_previous_cursor(
     state = service._state("session")
     state.run = run
     state.cursor = "turn-1"
-    task = asyncio.create_task(
-        service._look("session", state, "review", cursor="turn-2")
-    )
+    task = asyncio.create_task(service._look("session", state, "review", cursor="turn-2"))
     service._look_tasks["session"] = task
 
     await agents.sent_event.wait()

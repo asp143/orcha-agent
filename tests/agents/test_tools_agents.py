@@ -36,9 +36,7 @@ class _Graph:
         self.started = asyncio.Event()
         self.inputs: list[str] = []
 
-    async def astream(
-        self, value: Any, **_kwargs: Any
-    ) -> AsyncIterator[tuple[str, Any]]:
+    async def astream(self, value: Any, **_kwargs: Any) -> AsyncIterator[tuple[str, Any]]:
         text = value["messages"][0]["content"]
         self.inputs.append(text)
         if self.active is not None:
@@ -93,9 +91,7 @@ def _config(tmp_path: Path, **agent_overrides: Any) -> Config:
 
 def _plugin_registry() -> Registry:
     registry = Registry()
-    registry.modes["yolo"] = ModeSpec(
-        description="all", interrupt_on={}, allowed_tools=None
-    )
+    registry.modes["yolo"] = ModeSpec(description="all", interrupt_on={}, allowed_tools=None)
     return registry
 
 
@@ -114,9 +110,7 @@ async def test_task_spawns_all_items_concurrently_with_shared_context(
 ) -> None:
     gate = asyncio.Event()
     active = [0, 0]
-    graphs = deque(
-        [_Graph(gate=gate, active=active), _Graph(gate=gate, active=active)]
-    )
+    graphs = deque([_Graph(gate=gate, active=active), _Graph(gate=gate, active=active)])
 
     async def fake_build(*_args: Any, **_kwargs: Any) -> _Graph:
         return graphs.popleft()
@@ -150,8 +144,7 @@ async def test_task_spawns_all_items_concurrently_with_shared_context(
         assert set(_tool_map(runs[1])) == {"yield", "hub"}
         assert active[1] == 2
         assert all(
-            "Shared constraints apply to every worker." in run.agent.inputs[0]
-            for run in runs
+            "Shared constraints apply to every worker." in run.agent.inputs[0] for run in runs
         )
         assert "Inspect the API." in runs[0].agent.inputs[0]
         assert "Inspect tests." in runs[1].agent.inputs[0]
@@ -199,9 +192,7 @@ async def test_yield_accumulates_findings_then_terminal_result_settles_run(
 
         assert set(tools) == {"task", "yield", "hub"}
         finding = {"title": "First finding", "priority": "P1"}
-        response = await tools["yield"].ainvoke(
-            {"type": "findings", "data": finding}
-        )
+        response = await tools["yield"].ainvoke({"type": "findings", "data": finding})
 
         assert response == {"accepted": True, "terminal": False, "findings": 1}
         assert run.status == "idle"
@@ -284,12 +275,12 @@ async def test_payloads_are_bounded_and_event_snapshots_omit_growing_data(
             if isinstance(entry, CustomEntry) and entry.custom_type == "agent_result"
         ]
         assert "[truncated" in child_results[-1]["result"]
-        assert len(
-            json.dumps(child_results[-1]["result"], ensure_ascii=False).encode()
-        ) <= 256 * 1024
-        terminal = Ledger(store).latest_custom(
-            parent.thread_id, "agent_job", key="run_id"
-        )[run.id].data
+        assert (
+            len(json.dumps(child_results[-1]["result"], ensure_ascii=False).encode()) <= 256 * 1024
+        )
+        terminal = (
+            Ledger(store).latest_custom(parent.thread_id, "agent_job", key="run_id")[run.id].data
+        )
         assert "partial_findings" in terminal
         assert "last_yield" in terminal
         assert "result" in terminal
@@ -305,9 +296,7 @@ _SCHEMA = {
             "items": {
                 "type": "object",
                 "required": ["priority"],
-                "properties": {
-                    "priority": {"type": "string", "enum": ["P0", "P1"]}
-                },
+                "properties": {"priority": {"type": "string", "enum": ["P0", "P1"]}},
             },
         }
     },
@@ -407,9 +396,7 @@ async def test_hub_lists_sends_and_drains_messages(
         assert roster["agents"][0]["name"] == "Worker"
         assert roster["agents"][0]["status"] == "idle"
 
-        sent = await child_hub.ainvoke(
-            {"op": "send", "to": "main", "message": "progress report"}
-        )
+        sent = await child_hub.ainvoke({"op": "send", "to": "main", "message": "progress report"})
         inbox = await main_hub.ainvoke({"op": "inbox"})
         drained = await main_hub.ainvoke({"op": "inbox"})
         assert sent["sent"]["to"] == "main"
@@ -423,11 +410,13 @@ async def test_hub_lists_sends_and_drains_messages(
         )
         assert sent["sent"]["to"] == run.id
         await _eventually(
-            lambda: graph.inputs
-            == [
-                "first",
-                '<agent-message from="main" role="parent">second</agent-message>',
-            ]
+            lambda: (
+                graph.inputs
+                == [
+                    "first",
+                    '<agent-message from="main" role="parent">second</agent-message>',
+                ]
+            )
         )
         await run.wait_status("idle")
         await agents.shutdown()
@@ -463,14 +452,13 @@ async def test_interrupt_send_steers_running_agent_without_aborting(
             }
         )
         await _eventually(
-            lambda: graph.inputs
-            == [
-                "first",
-                (
-                    '<agent-message from="main" role="parent">'
-                    "steer now</agent-message>"
-                ),
-            ]
+            lambda: (
+                graph.inputs
+                == [
+                    "first",
+                    ('<agent-message from="main" role="parent">steer now</agent-message>'),
+                ]
+            )
         )
         gate.set()
         await run.wait_status("idle")
@@ -548,9 +536,7 @@ async def test_hub_jobs_wait_and_cancel_report_observable_statuses(
 
         job_run = await agents.spawn("task", "job", name="Job", parent="main")
         await job_run.wait_status("idle")
-        await _tool_map(job_run)["yield"].ainvoke(
-            {"type": "result", "data": {"value": 1}}
-        )
+        await _tool_map(job_run)["yield"].ainvoke({"type": "result", "data": {"value": 1}})
         await job_run.wait_status("done")
 
         jobs = await main_hub.ainvoke({"op": "jobs"})
@@ -575,9 +561,7 @@ async def test_hub_jobs_wait_and_cancel_report_observable_statuses(
             main_hub.ainvoke({"op": "wait", "ids": [wait_run.id], "timeout_s": 1})
         )
         await asyncio.sleep(0)
-        await _tool_map(wait_run)["yield"].ainvoke(
-            {"type": "result", "data": {"value": 2}}
-        )
+        await _tool_map(wait_run)["yield"].ainvoke({"type": "result", "data": {"value": 2}})
         waited = await waiter
         assert waited["messages"] == []
         assert waited["timed_out"] is False

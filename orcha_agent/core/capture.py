@@ -28,15 +28,13 @@ def capture_graph_values(
     if thread is None or thread.session_id != session_id:
         raise LookupError(f"Unknown graph thread: {thread_id}")
     messages = list(values.get("messages", ()))
-    current_message_ids = tuple(
-        message.id for message in messages if isinstance(message.id, str)
-    )
+    current_message_ids = tuple(message.id for message in messages if isinstance(message.id, str))
     previous_message_ids = thread.captured_message_ids
     previous_id_set = set(previous_message_ids)
     current_id_set = set(current_message_ids)
-    shrunk = (
-        bool(previous_message_ids) and not previous_id_set.issubset(current_id_set)
-    ) or (not previous_message_ids and len(messages) < thread.captured)
+    shrunk = (bool(previous_message_ids) and not previous_id_set.issubset(current_id_set)) or (
+        not previous_message_ids and len(messages) < thread.captured
+    )
     entries: list[CompactionEntry | MessageEntry | CustomEntry] = []
     candidates = messages
     summary_index: int | None = None
@@ -62,8 +60,7 @@ def capture_graph_values(
                 (
                     message.id
                     for message in candidates
-                    if isinstance(message.id, str)
-                    and message.id in previous_id_set
+                    if isinstance(message.id, str) and message.id in previous_id_set
                 ),
                 None,
             )
@@ -75,8 +72,7 @@ def capture_graph_values(
                         index
                         for index, entry in enumerate(path)
                         if isinstance(entry, MessageEntry)
-                        and messages_from_dict([entry.message])[0].id
-                        == first_retained_id
+                        and messages_from_dict([entry.message])[0].id == first_retained_id
                     ),
                     None,
                 )
@@ -95,16 +91,12 @@ def capture_graph_values(
             if isinstance(message_id, str):
                 unseen = message_id not in previous_id_set
             else:
-                absolute_index = (
-                    index if summary_index is None else summary_index + 1 + index
-                )
+                absolute_index = index if summary_index is None else summary_index + 1 + index
                 unseen = absolute_index >= thread.captured
             if unseen:
                 entries.append(MessageEntry(message=message_to_dict(message)))
     elif summary_index is not None:
-        entries.extend(
-            MessageEntry(message=message_to_dict(message)) for message in candidates
-        )
+        entries.extend(MessageEntry(message=message_to_dict(message)) for message in candidates)
     else:
         entries.extend(
             MessageEntry(message=message_to_dict(message))

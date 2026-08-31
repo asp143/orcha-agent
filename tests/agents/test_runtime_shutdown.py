@@ -34,6 +34,7 @@ async def test_startup_failure_still_shuts_down_agents() -> None:
 
     assert shutdown is True
 
+
 @pytest.mark.asyncio
 async def test_failed_shutdown_is_retried_in_finally() -> None:
     order: list[str] = []

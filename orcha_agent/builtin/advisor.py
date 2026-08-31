@@ -64,8 +64,7 @@ def _watchdog_path(
             containing_roots = [
                 trusted
                 for configured in trusted_dirs
-                if root == (trusted := Path(configured).resolve())
-                or root.is_relative_to(trusted)
+                if root == (trusted := Path(configured).resolve()) or root.is_relative_to(trusted)
             ]
             boundary = max(
                 containing_roots,
@@ -83,9 +82,7 @@ def _watchdog_path(
 
 def _is_private_block(value: Any) -> bool:
     name = str(value).casefold()
-    return name in _PRIVATE_BLOCK_TYPES or name.startswith(
-        ("reasoning_", "thinking_", "thought_")
-    )
+    return name in _PRIVATE_BLOCK_TYPES or name.startswith(("reasoning_", "thinking_", "thought_"))
 
 
 def _without_private_blocks(value: Any) -> Any:
@@ -114,11 +111,7 @@ def _content(value: Any) -> Any:
 
 
 def _transcript_delta(entries: list[Any]) -> list[dict[str, Any]]:
-    serialized = [
-        entry.message
-        for entry in entries
-        if isinstance(entry, MessageEntry)
-    ]
+    serialized = [entry.message for entry in entries if isinstance(entry, MessageEntry)]
     if not serialized:
         return []
     messages = filter_foreign_blocks(
@@ -216,11 +209,7 @@ class AdvisorService:
         return state.watchdog
 
     async def on_main_turn_end(self, event: TurnEnd) -> None:
-        if (
-            self._closed
-            or event.source_id != "main"
-            or not self.ctx.cfg.advisor.enabled
-        ):
+        if self._closed or event.source_id != "main" or not self.ctx.cfg.advisor.enabled:
             return
         session_id = str(self.ctx.session_id)
         state = self._state(session_id)
@@ -234,13 +223,9 @@ class AdvisorService:
             name=f"advisor-look:{session_id}",
         )
         self._look_tasks[session_id] = task
-        task.add_done_callback(
-            lambda completed, sid=session_id: self._forget_task(sid, completed)
-        )
+        task.add_done_callback(lambda completed, sid=session_id: self._forget_task(sid, completed))
 
-    async def _look_at_delta(
-        self, session_id: str, state: _SessionState
-    ) -> None:
+    async def _look_at_delta(self, session_id: str, state: _SessionState) -> None:
         run = state.run
         if run is not None and (run.terminal or not self._matches_config(run)):
             if run.terminal:
@@ -252,11 +237,7 @@ class AdvisorService:
         start = 0
         if state.cursor is not None:
             matched = next(
-                (
-                    index
-                    for index, entry in enumerate(path)
-                    if entry.id == state.cursor
-                ),
+                (index for index, entry in enumerate(path) if entry.id == state.cursor),
                 None,
             )
             if matched is None:
@@ -287,7 +268,6 @@ class AdvisorService:
             task.exception()
         if self._look_tasks.get(session_id) is task:
             self._look_tasks.pop(session_id, None)
-
 
     def _matches_config(self, run: AgentRun) -> bool:
         expected_tools = {*self.ctx.cfg.advisor.tools, "advise"}
@@ -335,9 +315,7 @@ class AdvisorService:
                 )
                 state.spawn_task = spawn_task
                 spawn_task.add_done_callback(
-                    lambda completed, target=state: self._remember_run(
-                        target, completed
-                    )
+                    lambda completed, target=state: self._remember_run(target, completed)
                 )
             run = await asyncio.shield(spawn_task)
             state.run = run
@@ -376,9 +354,7 @@ class AdvisorService:
                 await asyncio.gather(advice, return_exceptions=True)
 
     @staticmethod
-    def _remember_run(
-        state: _SessionState, task: asyncio.Task[AgentRun]
-    ) -> None:
+    def _remember_run(state: _SessionState, task: asyncio.Task[AgentRun]) -> None:
         if task.cancelled():
             state.spawn_task = None
             return
@@ -432,10 +408,7 @@ class AdvisorService:
         interrupt = False
         if note is not None and severity in {"concern", "blocker"}:
             last = state.last_interrupt_turn
-            if (
-                last is None
-                or state.turns - last >= self.ctx.cfg.advisor.immune_turns
-            ):
+            if last is None or state.turns - last >= self.ctx.cfg.advisor.immune_turns:
                 interrupt = True
                 state.last_interrupt_turn = state.turns
 
@@ -487,11 +460,7 @@ class AdvisorService:
             task.cancel()
         if spawn_tasks:
             await asyncio.gather(*spawn_tasks, return_exceptions=True)
-        runs = [
-            run
-            for state in self._states.values()
-            if (run := state.run) is not None
-        ]
+        runs = [run for state in self._states.values() if (run := state.run) is not None]
         for run in runs:
             if not run.terminal:
                 await run.request_abort("shutdown")

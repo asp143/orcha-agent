@@ -374,9 +374,7 @@ def is_excluded_section(section: DiffSection) -> bool:
 def filter_diff(diff: str) -> str:
     """Remove review-ineligible file sections from a unified diff."""
 
-    return "".join(
-        section.text for section in split_diff(diff) if not is_excluded_section(section)
-    )
+    return "".join(section.text for section in split_diff(diff) if not is_excluded_section(section))
 
 
 def changed_line_count(diff: str) -> int:
@@ -549,9 +547,11 @@ def merge_reviews(
             failure_count += 1
             continue
         findings = candidate.get("findings")
-        if candidate.get("overall") not in {"correct", "incorrect"} or not isinstance(
-            candidate.get("explanation"), str
-        ) or not isinstance(findings, list):
+        if (
+            candidate.get("overall") not in {"correct", "incorrect"}
+            or not isinstance(candidate.get("explanation"), str)
+            or not isinstance(findings, list)
+        ):
             failure_count += 1
             continue
         reviews.append(candidate)
@@ -571,7 +571,9 @@ def merge_reviews(
             )
             previous = deduplicated.get(key)
             if previous is None or (
-                _PRIORITY[finding["priority"]], -finding["confidence"], finding["body"]
+                _PRIORITY[finding["priority"]],
+                -finding["confidence"],
+                finding["body"],
             ) < (
                 _PRIORITY[previous["priority"]],
                 -previous["confidence"],
@@ -603,7 +605,9 @@ def merge_reviews(
         "findings": findings,
         "overall": (
             "incorrect"
-            if failure_count or not reviews or any(result["overall"] == "incorrect" for result in reviews)
+            if failure_count
+            or not reviews
+            or any(result["overall"] == "incorrect" for result in reviews)
             else "correct"
         ),
         "explanation": "\n\n".join(explanations),
@@ -984,20 +988,14 @@ async def review(ctx: Any, args: str) -> None:
                 pass
             await _cancel_unsettled_reviewers(agents, runs, reason="timeout")
             terminal = await _deliver_terminal_reviewers(agents, runs)
-            results = [
-                run.result
-                for run in terminal
-                if getattr(run, "status", None) == "done"
-            ]
+            results = [run.result for run in terminal if getattr(run, "status", None) == "done"]
             failures += len(runs) - len(results)
         else:
             results = []
 
         merged = merge_reviews(results, failures=failures)
     except BaseException:
-        await _finish_cleanup_without_masking(
-            _cleanup_aborted_review(agents, spawn_batch, spawned)
-        )
+        await _finish_cleanup_without_masking(_cleanup_aborted_review(agents, spawn_batch, spawned))
         raise
 
     ctx.transcript.append_review(merged)

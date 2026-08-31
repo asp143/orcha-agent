@@ -43,9 +43,7 @@ def _findings(value: Any) -> list[Mapping[str, Any]]:
         key=lambda item: (
             _PRIORITY_ORDER[_priority(item)],
             str(item.get("file", "")).casefold(),
-            item.get("line_start", 0)
-            if type(item.get("line_start")) is int
-            else 0,
+            item.get("line_start", 0) if type(item.get("line_start")) is int else 0,
             _one_line(item.get("title")).casefold(),
         ),
     )

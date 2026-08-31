@@ -97,9 +97,7 @@ async def test_run_turn_accepts_a_non_app_turn_host_and_tags_boundary_events() -
     await run_turn(host, "inspect the worker")
 
     assert isinstance(host, TurnHost)
-    assert host.agent.inputs == [
-        {"messages": [{"role": "user", "content": "inspect the worker"}]}
-    ]
+    assert host.agent.inputs == [{"messages": [{"role": "user", "content": "inspect the worker"}]}]
     assert host.captured == 1
     assert host.session.title == "inspect the worker"
     assert [type(event) for event in host.bus.events] == [TurnStart, TurnEnd]

@@ -41,11 +41,7 @@ def test_user_bubble_paints_three_full_width_terminal_rows() -> None:
 
     raw = stream.getvalue()
     parsed = Text.from_ansi(raw)
-    assert parsed.plain == (
-        f"{' ' * WIDTH}\n"
-        f" Use bold and code{' ' * 22}\n"
-        f"{' ' * WIDTH}\n"
-    )
+    assert parsed.plain == (f"{' ' * WIDTH}\n Use bold and code{' ' * 22}\n{' ' * WIDTH}\n")
     assert [len(row) for row in parsed.plain.splitlines()] == [WIDTH, WIDTH, WIDTH]
 
     background = Color.from_ansi(236)

@@ -15,7 +15,6 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Literal
 
-from langchain_core.messages import BaseMessage, message_to_dict
 
 from orcha_agent.tui.turn import run_turn
 
@@ -39,9 +38,7 @@ from .registry import Registry
 from .session import SessionStore
 from .usage import usage_cost
 
-AgentStatusName = Literal[
-    "queued", "running", "idle", "parked", "done", "failed", "aborted"
-]
+AgentStatusName = Literal["queued", "running", "idle", "parked", "done", "failed", "aborted"]
 AbortReason = Literal["cancel", "timeout", "budget", "shutdown"]
 _TERMINAL = frozenset({"done", "failed", "aborted"})
 _WRAP_UP = "Wrap up and yield now."
@@ -64,9 +61,7 @@ _QUEUE_WARNING = f"dropped oldest messages at limit {_MESSAGE_QUEUE_LIMIT}"
 
 
 def _json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def bound_text(value: str) -> str:
@@ -95,16 +90,11 @@ def bound_payload(value: Any) -> Any:
     return {
         "truncated": True,
         "original_bytes": len(encoded),
-        "preview": (
-            encoded.decode("utf-8", errors="ignore")[:4096]
-            + f"\n{_TRUNCATION_MARKER}"
-        ),
+        "preview": (encoded.decode("utf-8", errors="ignore")[:4096] + f"\n{_TRUNCATION_MARKER}"),
     }
 
 
-def _put_bounded_queue(
-    queue: asyncio.Queue[Any], item: Any, *, warning: Any = None
-) -> None:
+def _put_bounded_queue(queue: asyncio.Queue[Any], item: Any, *, warning: Any = None) -> None:
     if queue.full():
         queue.get_nowait()
         if warning is not None:
@@ -116,9 +106,7 @@ def _put_bounded_queue(
     queue.put_nowait(item)
 
 
-def _append_mailbox(
-    mailbox: deque[dict[str, Any]], envelope: dict[str, Any], target: str
-) -> None:
+def _append_mailbox(mailbox: deque[dict[str, Any]], envelope: dict[str, Any], target: str) -> None:
     if len(mailbox) >= _MESSAGE_QUEUE_LIMIT:
         retained = [item for item in mailbox if item.get("warning") is not True]
         mailbox.clear()
@@ -188,10 +176,14 @@ class _RunEventBus:
         elif isinstance(event, ToolCallEnd) and event.source_id == self._run.id:
             active = self._run._active_tool_calls
             removed = active.pop(event.id, None)
-            if removed is not None and (
-                self._run.current_tool,
-                self._run.current_tool_args,
-            ) == removed:
+            if (
+                removed is not None
+                and (
+                    self._run.current_tool,
+                    self._run.current_tool_args,
+                )
+                == removed
+            ):
                 if active:
                     self._run.current_tool, self._run.current_tool_args = next(
                         reversed(active.values())
@@ -284,9 +276,7 @@ class AgentRun:
         self.record_cancelled_turn_exit = False
         self.agent: Any = None
         self.task: asyncio.Task[None] | None = None
-        self.inbox: asyncio.Queue[str | object | None] = asyncio.Queue(
-            maxsize=_MESSAGE_QUEUE_LIMIT
-        )
+        self.inbox: asyncio.Queue[str | object | None] = asyncio.Queue(maxsize=_MESSAGE_QUEUE_LIMIT)
         self.advice_outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
             maxsize=_MESSAGE_QUEUE_LIMIT
         )
@@ -334,7 +324,6 @@ class AgentRun:
     def terminal(self) -> bool:
         return self.status in _TERMINAL
 
-
     def snapshot(
         self, *, delivered: bool | None = None, include_payload: bool = True
     ) -> dict[str, Any]:
@@ -343,11 +332,7 @@ class AgentRun:
             "run_id": self.id,
             "name": self.name,
             "agent_type": self.agent_type.name,
-            "tools": (
-                sorted(self.agent_type.tools)
-                if self.agent_type.tools is not None
-                else None
-            ),
+            "tools": (sorted(self.agent_type.tools) if self.agent_type.tools is not None else None),
             "description": self.description,
             "model_label": self.model_label,
             "parent_id": self.parent_id,
@@ -414,9 +399,7 @@ class AgentRun:
 
     def _tool_scope(self, extras: Iterable[Any]) -> set[str] | None:
         scope = None if self.agent_type.tools is None else set(self.agent_type.tools)
-        extra_names = {
-            str(getattr(tool, "name", "")) for tool in extras
-        }
+        extra_names = {str(getattr(tool, "name", "")) for tool in extras}
         may_spawn = self.agent_type.spawns and self.depth < self.cfg.agents.max_depth
         if scope is not None:
             if self.agent_type.name != "advisor":
@@ -458,9 +441,7 @@ class AgentRun:
             ),
         )
 
-    async def wait_status(
-        self, status: AgentStatusName, timeout_s: float = 2.0
-    ) -> None:
+    async def wait_status(self, status: AgentStatusName, timeout_s: float = 2.0) -> None:
         async with asyncio.timeout(timeout_s):
             async with self._status_changed:
                 await self._status_changed.wait_for(lambda: self.status == status)
@@ -498,9 +479,7 @@ class AgentRun:
         if self.status == "parked" or self.task is None or self.task.done():
             await self._settle_abort(abort_reason)
 
-    async def _set_status(
-        self, status: AgentStatusName, reason: str | None = None
-    ) -> None:
+    async def _set_status(self, status: AgentStatusName, reason: str | None = None) -> None:
         if status != "running":
             self.current_tool = None
             self.current_tool_args = None
@@ -580,9 +559,7 @@ class AgentRun:
                 if self.agent_type.name != "advisor":
                     budget = self.cfg.agents.soft_request_budget
                     if self.requests >= budget + 10:
-                        abort_descendants = getattr(
-                            self.owner, "_request_abort_descendants", None
-                        )
+                        abort_descendants = getattr(self.owner, "_request_abort_descendants", None)
                         if callable(abort_descendants):
                             await abort_descendants(self, "budget")
                         await self._settle_abort("budget")
@@ -685,9 +662,7 @@ class AgentRegistry:
         ] = {}
         self._changed = asyncio.Condition()
         self._activity_waiters: dict[tuple[str, str], int] = {}
-        self._activity_reservations: dict[
-            tuple[str, str, str], tuple[str, str]
-        ] = {}
+        self._activity_reservations: dict[tuple[str, str, str], tuple[str, str]] = {}
         self._delivery_lock = asyncio.Lock()
         self._detach_tasks: set[asyncio.Task[None]] = set()
         self._hydrate_parent(parent_session_id, "main", 1, set())
@@ -712,8 +687,7 @@ class AgentRegistry:
         if run._job_entry_id is None:
             return True
         if any(
-            entry.id == run._job_entry_id
-            for entry in Ledger(self.session).path(run.parent_session)
+            entry.id == run._job_entry_id for entry in Ledger(self.session).path(run.parent_session)
         ):
             return True
         self._detach_job(run)
@@ -732,9 +706,7 @@ class AgentRegistry:
             run.parent_session,
             CustomEntry(
                 custom_type="agent_job",
-                data=run.snapshot(
-                    delivered=delivered, include_payload=include_payload
-                ),
+                data=run.snapshot(delivered=delivered, include_payload=include_payload),
             ),
         )
         run._job_entry_id = entry.id
@@ -750,9 +722,7 @@ class AgentRegistry:
             None,
         )
 
-    async def _request_abort_descendants(
-        self, run: AgentRun, reason: AbortReason
-    ) -> None:
+    async def _request_abort_descendants(self, run: AgentRun, reason: AbortReason) -> None:
         runs = self._runs_for(run)
         if runs is None:
             return
@@ -761,25 +731,19 @@ class AgentRegistry:
         while parents:
             parent_id = parents.pop()
             children = [
-                candidate
-                for candidate in runs.values()
-                if candidate.parent_id == parent_id
+                candidate for candidate in runs.values() if candidate.parent_id == parent_id
             ]
             descendants.extend(children)
             parents.extend(child.id for child in children)
         for descendant in reversed(descendants):
             await descendant._request_abort_self(reason)
 
-    async def _request_abort_tree(
-        self, run: AgentRun, reason: AbortReason
-    ) -> None:
+    async def _request_abort_tree(self, run: AgentRun, reason: AbortReason) -> None:
         reason = run._abort_requested or reason
         await self._request_abort_descendants(run, reason)
         await run._request_abort_self(reason)
 
-    def _session_for_job(
-        self, parent_session: str, run_id: str, data: Mapping[str, Any]
-    ) -> Any:
+    def _session_for_job(self, parent_session: str, run_id: str, data: Mapping[str, Any]) -> Any:
         terminal = data.get("status") in _TERMINAL
         session_id = data.get("session_id")
         if isinstance(session_id, str):
@@ -830,9 +794,7 @@ class AgentRegistry:
         if parent_session in visited_sessions:
             return
         visited_sessions.add(parent_session)
-        jobs = Ledger(self.session).latest_custom(
-            parent_session, "agent_job", key="run_id"
-        )
+        jobs = Ledger(self.session).latest_custom(parent_session, "agent_job", key="run_id")
         for run_id, entry in jobs.items():
             if run_id in self._runs or not isinstance(entry.data, Mapping):
                 continue
@@ -866,9 +828,7 @@ class AgentRegistry:
                 output_schema = dict(output_schema)
             elif output_schema is not None:
                 output_schema = None
-            schema_mode = (
-                "strict" if data.get("schema_mode") == "strict" else "permissive"
-            )
+            schema_mode = "strict" if data.get("schema_mode") == "strict" else "permissive"
             description = data.get("description")
             if not isinstance(description, str):
                 description = name
@@ -922,9 +882,7 @@ class AgentRegistry:
                 if child_status in _TERMINAL:
                     run.status = child_status
                     run.result = child_result.data.get("result")
-                    run.schema_overridden = bool(
-                        child_result.data.get("schema_overridden", False)
-                    )
+                    run.schema_overridden = bool(child_result.data.get("schema_overridden", False))
             elif run.status not in _TERMINAL:
                 for child_entry in reversed(Ledger(self.session).path(run.session_id)):
                     if (
@@ -972,18 +930,14 @@ class AgentRegistry:
                 self._timestamp(entry.ts, run.created_at),
             )
             if run._runtime_deadline is not None:
-                elapsed = max(
-                    0.0, (datetime.now(UTC) - run.created_at).total_seconds()
-                )
+                elapsed = max(0.0, (datetime.now(UTC) - run.created_at).total_seconds())
                 run._runtime_deadline = monotonic() + max(
                     0.0, run.cfg.agents.max_runtime_s - elapsed
                 )
             self._runs[run.id] = run
             self._order.append(run.id)
             if not foreign_snapshot:
-                self._hydrate_parent(
-                    run.session_id, run.id, run.depth + 1, visited_sessions
-                )
+                self._hydrate_parent(run.session_id, run.id, run.depth + 1, visited_sessions)
 
     def _refresh_run_mode(self, run: AgentRun) -> None:
         mode_changed = run.cfg.mode != self.cfg.mode
@@ -997,9 +951,7 @@ class AgentRegistry:
                     run._invalidate_agent()
             self.session.set_mode(run.session_id, self.cfg.mode)
 
-    def retarget(
-        self, parent_session_id: str, cfg: Config | None = None
-    ) -> None:
+    def retarget(self, parent_session_id: str, cfg: Config | None = None) -> None:
         """Point the registry at one active parent ledger and hydrate its runs."""
         if cfg is not None:
             self.cfg = cfg
@@ -1045,9 +997,7 @@ class AgentRegistry:
             order,
             mailboxes,
         )
-        for view_id, (runs, order, mailboxes) in getattr(
-            self, "_views", {}
-        ).items():
+        for view_id, (runs, order, mailboxes) in getattr(self, "_views", {}).items():
             yield view_id, runs, order, mailboxes
 
     def _view_for_caller(
@@ -1096,9 +1046,7 @@ class AgentRegistry:
     def get(self, run_id: str, *, caller: str | None = None) -> AgentRun | None:
         return self._view_for_caller(caller)[1].get(run_id)
 
-    def list(
-        self, status: str | None = None, *, caller: str | None = None
-    ) -> list[AgentRun]:
+    def list(self, status: str | None = None, *, caller: str | None = None) -> list[AgentRun]:
         _view_id, runs, order, _mailboxes = self._view_for_caller(caller)
         return [
             runs[run_id]
@@ -1186,12 +1134,12 @@ class AgentRegistry:
         runs: Mapping[str, AgentRun],
     ) -> str:
         raw = requested or " ".join(re.findall(r"[A-Za-z0-9]+", prompt)[:3]) or "Agent"
-        base = "".join(part[:1].upper() + part[1:] for part in re.findall(r"[A-Za-z0-9]+", raw))[:32]
+        base = "".join(part[:1].upper() + part[1:] for part in re.findall(r"[A-Za-z0-9]+", raw))[
+            :32
+        ]
         if not base:
             base = "Agent"
-        sibling_names = {
-            run.name for run in runs.values() if run.parent_id == parent_id
-        }
+        sibling_names = {run.name for run in runs.values() if run.parent_id == parent_id}
         candidate = base
         suffix = 2
         while candidate in sibling_names:
@@ -1257,9 +1205,7 @@ class AgentRegistry:
             if run._attached and not run.terminal
         }
         if len(live_runs) >= self.cfg.agents.max_live_runs:
-            raise RuntimeError(
-                f"live agent limit {self.cfg.agents.max_live_runs} reached"
-            )
+            raise RuntimeError(f"live agent limit {self.cfg.agents.max_live_runs} reached")
         run_name = self._name(prompt, name, parent_id, runs)
         model = self._model(spec, base_cfg) if model is None else model
         info = self.session.create(
@@ -1283,9 +1229,7 @@ class AgentRegistry:
             thread_id=info.current_thread,
             cfg=replace(base_cfg, model=model),
             depth=depth,
-            output_schema=(
-                spec.output_schema if output_schema is None else output_schema
-            ),
+            output_schema=(spec.output_schema if output_schema is None else output_schema),
             schema_mode=schema_mode,
             blocking=blocking or spec.blocking,
             visible=visible,
@@ -1316,9 +1260,7 @@ class AgentRegistry:
         interrupt: bool = False,
         caller: str | None = None,
     ) -> AgentRun:
-        _view_id, runs, _order, _mailboxes = self._view_for_ids(
-            (run_id,), caller
-        )
+        _view_id, runs, _order, _mailboxes = self._view_for_ids((run_id,), caller)
         run = runs.get(run_id)
         if run is None:
             raise LookupError(f"Unknown agent: {run_id}")
@@ -1331,10 +1273,7 @@ class AgentRegistry:
         _put_bounded_queue(
             run.inbox,
             bound_text(text),
-            warning=(
-                f"[dropped oldest agent inbox messages at limit "
-                f"{_MESSAGE_QUEUE_LIMIT}]"
-            ),
+            warning=(f"[dropped oldest agent inbox messages at limit {_MESSAGE_QUEUE_LIMIT}]"),
         )
         return run
 
@@ -1345,9 +1284,7 @@ class AgentRegistry:
         *,
         caller: str | None = None,
     ) -> AgentRun:
-        _view_id, runs, _order, _mailboxes = self._view_for_ids(
-            (run_id,), caller
-        )
+        _view_id, runs, _order, _mailboxes = self._view_for_ids((run_id,), caller)
         run = runs.get(run_id)
         if run is None:
             raise LookupError(f"Unknown agent: {run_id}")
@@ -1392,14 +1329,8 @@ class AgentRegistry:
             return []
         return settled()
 
-    async def revive(
-        self, session_id: str, *, caller: str | None = None
-    ) -> AgentRun:
-        views = (
-            (self._view_for_caller(caller),)
-            if caller is not None
-            else tuple(self._all_views())
-        )
+    async def revive(self, session_id: str, *, caller: str | None = None) -> AgentRun:
+        views = (self._view_for_caller(caller),) if caller is not None else tuple(self._all_views())
         run = next(
             (
                 candidate
@@ -1447,15 +1378,12 @@ class AgentRegistry:
         if selector == "main":
             return selector
         exact = runs.get(selector)
-        if exact is not None and (
-            not visible_only or (exact._attached and exact.visible)
-        ):
+        if exact is not None and (not visible_only or (exact._attached and exact.visible)):
             return selector
         matches = [
             run.id
             for run in runs.values()
-            if run.name == selector
-            and (not visible_only or (run._attached and run.visible))
+            if run.name == selector and (not visible_only or (run._attached and run.visible))
         ]
         if not matches:
             raise LookupError(f"Unknown agent: {selector}")
@@ -1482,9 +1410,7 @@ class AgentRegistry:
                 "message": bound_text(message),
                 "created_at": datetime.now(UTC).isoformat(),
             }
-            _append_mailbox(
-                mailboxes.setdefault(target, deque()), envelope, target
-            )
+            _append_mailbox(mailboxes.setdefault(target, deque()), envelope, target)
         await self._notify()
         return waiting
 
@@ -1496,9 +1422,7 @@ class AgentRegistry:
         caller: str | None = None,
     ) -> list[dict[str, Any]]:
         """Drain all addressed messages, optionally from one sender."""
-        actor = caller if caller is not None else (
-            recipient if recipient != "main" else None
-        )
+        actor = caller if caller is not None else (recipient if recipient != "main" else None)
         _view_id, _runs, _order, mailboxes = self._view_for_caller(actor)
         mailbox = mailboxes.get(recipient)
         if not mailbox:
@@ -1515,12 +1439,8 @@ class AgentRegistry:
         mailboxes[recipient] = retained
         return messages
 
-    def unread_count(
-        self, recipient: str, *, caller: str | None = None
-    ) -> int:
-        actor = caller if caller is not None else (
-            recipient if recipient != "main" else None
-        )
+    def unread_count(self, recipient: str, *, caller: str | None = None) -> int:
+        actor = caller if caller is not None else (recipient if recipient != "main" else None)
         _view_id, runs, _order, mailboxes = self._view_for_caller(actor)
         return len(mailboxes.get(recipient, ())) + sum(
             1
@@ -1539,9 +1459,7 @@ class AgentRegistry:
         *,
         caller: str | None = None,
     ) -> list[AgentRun]:
-        actor = caller if caller is not None else (
-            parent if parent != "main" else None
-        )
+        actor = caller if caller is not None else (parent if parent != "main" else None)
         _view_id, runs, order, _mailboxes = self._view_for_caller(actor)
         selected = None if ids is None else set(ids)
         return [
@@ -1559,9 +1477,7 @@ class AgentRegistry:
         self._persist_job(run)
         await self._notify()
 
-    async def record_advice(
-        self, run: AgentRun, payload: dict[str, Any]
-    ) -> None:
+    async def record_advice(self, run: AgentRun, payload: dict[str, Any]) -> None:
         if run.owner is not self or run.agent_type.name != "advisor":
             raise ValueError("advice can only be recorded by a registered advisor run")
         _put_bounded_queue(
@@ -1581,17 +1497,13 @@ class AgentRegistry:
         *,
         caller: str | None = None,
     ) -> list[AgentRun]:
-        actor = caller if caller is not None else (
-            parent if parent != "main" else None
-        )
+        actor = caller if caller is not None else (parent if parent != "main" else None)
         view_id, _runs, _order, _mailboxes = self._view_for_caller(actor)
         async with self._delivery_lock:
             delivered = [
                 run
                 for run in self.jobs(parent, ids, caller=actor)
-                if run.terminal
-                and not run.delivered
-                and self._job_on_active_path(run)
+                if run.terminal and not run.delivered and self._job_on_active_path(run)
             ]
             if not delivered:
                 return []
@@ -1635,8 +1547,7 @@ class AgentRegistry:
 
         def complete() -> bool:
             return all(
-                (run := runs.get(run_id)) is not None
-                and (run.terminal or not run._attached)
+                (run := runs.get(run_id)) is not None and (run.terminal or not run._attached)
                 for run_id in selected
             )
 
@@ -1650,9 +1561,7 @@ class AgentRegistry:
         return [
             runs[run_id]
             for run_id in order
-            if run_id in selected
-            and runs[run_id]._attached
-            and runs[run_id].terminal
+            if run_id in selected and runs[run_id]._attached and runs[run_id].terminal
         ]
 
     def reserve_activity_waiter(self, caller: str) -> tuple[str, str, str]:
@@ -1694,8 +1603,10 @@ class AgentRegistry:
                 if peer == "main":
                     return False
                 run = runs.get(peer)
-                return run is not None and run._attached and (
-                    run.yield_count > (after_yield or 0) or run.terminal
+                return (
+                    run is not None
+                    and run._attached
+                    and (run.yield_count > (after_yield or 0) or run.terminal)
                 )
             if mailbox:
                 return True
@@ -1732,4 +1643,11 @@ class AgentRegistry:
         return True
 
 
-__all__ = ["AgentRegistry", "AgentRun", "AgentStatusName", "AbortReason", "bound_payload", "bound_text"]
+__all__ = [
+    "AgentRegistry",
+    "AgentRun",
+    "AgentStatusName",
+    "AbortReason",
+    "bound_payload",
+    "bound_text",
+]

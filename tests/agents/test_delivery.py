@@ -40,9 +40,7 @@ class _Graph:
         self.started = asyncio.Event()
         self.inputs: list[str] = []
 
-    async def astream(
-        self, value: Any, **_kwargs: Any
-    ) -> AsyncIterator[tuple[str, Any]]:
+    async def astream(self, value: Any, **_kwargs: Any) -> AsyncIterator[tuple[str, Any]]:
         text = value["messages"][0]["content"]
         self.inputs.append(text)
         if self.active is not None:
@@ -93,9 +91,7 @@ def _config(tmp_path: Path, **agent_overrides: Any) -> Config:
 
 def _plugin_registry() -> Registry:
     registry = Registry()
-    registry.modes["yolo"] = ModeSpec(
-        description="all", interrupt_on={}, allowed_tools=None
-    )
+    registry.modes["yolo"] = ModeSpec(description="all", interrupt_on={}, allowed_tools=None)
     return registry
 
 
@@ -172,9 +168,7 @@ async def test_settlement_mirrors_terminal_job_to_parent_before_finished_event(
             finished_seen.set()
 
         bus.on(AgentFinished, observe_finished, plugin="test")
-        agents = AgentRegistry(
-            _plugin_registry(), _config(tmp_path), store, bus, parent.thread_id
-        )
+        agents = AgentRegistry(_plugin_registry(), _config(tmp_path), store, bus, parent.thread_id)
         run = await agents.spawn("task", "work", name="Worker", parent="main")
 
         if terminal_status == "done":
@@ -221,9 +215,7 @@ async def test_jobs_wait_and_automatic_claim_compete_for_one_delivery(
             delivery_events.append(event)
 
         bus.on(AgentDelivered, observe_delivery, plugin="test")
-        agents = AgentRegistry(
-            _plugin_registry(), _config(tmp_path), store, bus, parent.thread_id
-        )
+        agents = AgentRegistry(_plugin_registry(), _config(tmp_path), store, bus, parent.thread_id)
         run = await _spawn_done(agents, {"value": 1})
         hub = _main_hub(agents)
         original_deliver = agents.deliver
@@ -254,9 +246,7 @@ async def test_jobs_wait_and_automatic_claim_compete_for_one_delivery(
             )
 
         assert arrivals == 3
-        assert delivery_events == [
-            AgentDelivered(parent_id="main", run_ids=(run.id,))
-        ]
+        assert delivery_events == [AgentDelivered(parent_id="main", run_ids=(run.id,))]
         assert jobs_result["jobs"][0]["id"] == run.id
         assert jobs_result["jobs"][0]["delivered"] is True
         fresh_wait = wait_result["jobs"]
@@ -338,9 +328,7 @@ async def test_delivered_job_survives_store_reopen_without_redelivery(
         )
         run = await _spawn_done(agents, {"persisted": True})
         run_id = run.id
-        assert [claimed.id for claimed in await agents.deliver("main", [run_id])] == [
-            run_id
-        ]
+        assert [claimed.id for claimed in await agents.deliver("main", [run_id])] == [run_id]
         assert _agent_jobs(store, parent.thread_id)[-1].data["delivered"] is True
         await agents.shutdown()
 
@@ -534,7 +522,7 @@ async def test_retargeted_sessions_share_application_concurrency_limit(
             EventBus(),
             first.thread_id,
         )
-        old_run = await agents.spawn("task", "old", parent="main")
+        await agents.spawn("task", "old", parent="main")
         await old_graph.started.wait()
         assert active[0] == 1
 
@@ -576,9 +564,7 @@ async def test_same_session_retarget_preserves_unread_mailbox(
 
         agents.retarget(parent.thread_id)
 
-        assert [item["message"] for item in agents.drain_messages("main")] == [
-            "saved message"
-        ]
+        assert [item["message"] for item in agents.drain_messages("main")] == ["saved message"]
         await agents.shutdown()
 
 

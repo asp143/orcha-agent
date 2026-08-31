@@ -121,8 +121,6 @@ class ScrollableContent:
         return fragments
 
 
-
-
 class Overlay(Float):
     """A rounded floating container with awaitable result/cancel semantics."""
 
@@ -270,6 +268,8 @@ class Overlay(Float):
 
     def __await__(self):
         return self.wait().__await__()
+
+
 class ScrollableOverlay(ScrollableContent, Overlay):
     """Scrollable static content using the same navigation grammar as pickers."""
 

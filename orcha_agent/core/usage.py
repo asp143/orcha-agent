@@ -38,9 +38,7 @@ def usage_cost(
     details = usage.get("input_token_details", {})
     if not isinstance(details, Mapping):
         details = {}
-    reads = float(
-        details.get("cache_read", details.get("cache_read_input_tokens", 0)) or 0
-    )
+    reads = float(details.get("cache_read", details.get("cache_read_input_tokens", 0)) or 0)
     writes = float(
         details.get(
             "cache_creation",

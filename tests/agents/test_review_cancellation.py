@@ -131,9 +131,7 @@ async def test_cancellation_during_partial_spawn_claims_settled_and_late_reviewe
             self.waited: list[tuple[str, ...]] = []
             self.delivered: list[tuple[str, tuple[str, ...]]] = []
 
-        async def spawn(
-            self, _agent_type: str, _prompt: str, **kwargs: Any
-        ) -> _Run:
+        async def spawn(self, _agent_type: str, _prompt: str, **kwargs: Any) -> _Run:
             if kwargs["name"] == "Reviewer 1":
                 return settled
             late_registered.set()
@@ -163,10 +161,7 @@ async def test_cancellation_during_partial_spawn_claims_settled_and_late_reviewe
     monkeypatch.setattr(
         commands_review,
         "select_diff",
-        lambda *_args: (
-            _diff(51)
-            + _diff(50).replace("src/app.py", "src/other.py")
-        ),
+        lambda *_args: _diff(51) + _diff(50).replace("src/app.py", "src/other.py"),
     )
 
     async def fake_run_turn(_ctx: Any, notification: str) -> None:

@@ -101,9 +101,7 @@ def _config(tmp_path: Path, **agent_overrides: Any) -> Config:
 
 def _plugin_registry() -> Registry:
     registry = Registry()
-    registry.modes["yolo"] = ModeSpec(
-        description="all", interrupt_on={}, allowed_tools=None
-    )
+    registry.modes["yolo"] = ModeSpec(description="all", interrupt_on={}, allowed_tools=None)
     return registry
 
 
@@ -115,7 +113,9 @@ async def test_registry_spawn_send_complete_and_tree_use_independent_sessions(
     graph = _Graph("first", "second")
     builds: list[tuple[Config, dict[str, Any]]] = []
 
-    async def fake_build(_registry: Registry, cfg: Config, _store: SessionStore, _bus: Any, **kwargs: Any) -> _Graph:
+    async def fake_build(
+        _registry: Registry, cfg: Config, _store: SessionStore, _bus: Any, **kwargs: Any
+    ) -> _Graph:
         builds.append((cfg, kwargs))
         return graph
 
@@ -379,8 +379,7 @@ async def test_agent_capture_records_summarization_compaction_and_new_messages(
         path = Ledger(store).path(run.session_id)
         assert any(isinstance(entry, CompactionEntry) for entry in path)
         assert any(
-            isinstance(entry, MessageEntry)
-            and entry.message["data"].get("id") == "new-answer"
+            isinstance(entry, MessageEntry) and entry.message["data"].get("id") == "new-answer"
             for entry in path
         )
         await agents.shutdown()

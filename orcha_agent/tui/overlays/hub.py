@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import time
@@ -606,7 +605,9 @@ class HubOverlay(Overlay):
             tool = getattr(run, "current_tool", None) or getattr(run, "last_tool", None)
             args = getattr(run, "current_tool_args", None) or getattr(run, "last_tool_args", None)
             tool_text = f" {tool}·{_one_line(args, 40)}" if tool else ""
-            tokens = int(getattr(run, "tokens_in", 0) or 0) + int(getattr(run, "tokens_out", 0) or 0)
+            tokens = int(getattr(run, "tokens_in", 0) or 0) + int(
+                getattr(run, "tokens_out", 0) or 0
+            )
             cost = float(getattr(run, "cost", 0.0) or 0.0)
             unread_count = getattr(self.agents, "unread_count", None)
             unread = int(unread_count(_run_id(run))) if callable(unread_count) else 0
@@ -634,7 +635,9 @@ class HubOverlay(Overlay):
         requests = int(getattr(run, "requests", 0) or 0)
         cfg = getattr(run, "cfg", None)
         budget = getattr(getattr(cfg, "agents", None), "soft_request_budget", None)
-        budget_text = f"{requests}/{budget} requests" if isinstance(budget, int) else f"{requests} requests"
+        budget_text = (
+            f"{requests}/{budget} requests" if isinstance(budget, int) else f"{requests} requests"
+        )
         tokens = int(getattr(run, "tokens_in", 0) or 0) + int(getattr(run, "tokens_out", 0) or 0)
         lines = [
             f"{_STATUS_GLYPHS.get(status, '?')} {_run_label(run)}  ⟦{status}⟧",
@@ -660,7 +663,11 @@ class HubOverlay(Overlay):
         lines = self._inspector_lines()
         fragments: StyleAndTextTuples = []
         for offset, line in enumerate(lines):
-            style = "class:accent" if offset == 0 or line in {"Result", "Partial findings", "Transcript"} else "class:text"
+            style = (
+                "class:accent"
+                if offset == 0 or line in {"Result", "Partial findings", "Transcript"}
+                else "class:text"
+            )
             fragments.append((style, f" {line}\n"))
         return fragments
 
@@ -669,12 +676,23 @@ class HubOverlay(Overlay):
 
     def _footer_fragments(self) -> StyleAndTextTuples:
         if self.notice:
-            style = "class:error" if ":" in self.notice and self.notice.split(":", 1)[0].endswith("Error") else "class:accent"
+            style = (
+                "class:error"
+                if ":" in self.notice and self.notice.split(":", 1)[0].endswith("Error")
+                else "class:accent"
+            )
             return [(style, self.notice)]
-        return [("class:muted", "j/k move · / filter · t tree · Enter open · m message · x cancel · r revive · y copy · Esc close")]
+        return [
+            (
+                "class:muted",
+                "j/k move · / filter · t tree · Enter open · m message · x cancel · r revive · y copy · Esc close",
+            )
+        ]
 
     def render_text(self) -> str:
-        return f"{self._aggregate_text()}\n{self.render_roster_text()}\n{self.render_inspector_text()}"
+        return (
+            f"{self._aggregate_text()}\n{self.render_roster_text()}\n{self.render_inspector_text()}"
+        )
 
 
 __all__ = [
