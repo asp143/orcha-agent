@@ -1,8 +1,10 @@
+import errno
 import json
 import os
 import re
 import sqlite3
 import stat
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -128,7 +130,11 @@ def _index_columns(
         for index in indexes
     }
 
-def test_session_database_directory_is_owner_only(tmp_path: Path) -> None:
+def test_session_database_directory_is_owner_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     database_directory = tmp_path / "session-data"
     database_directory.mkdir(mode=0o777)
     database_directory.chmod(0o777)
@@ -141,6 +147,7 @@ def test_session_store_secures_parent_before_inspecting_database_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     database_directory = tmp_path / "session-data"
     database_directory.mkdir(mode=0o777)
     database_directory.chmod(0o777)
@@ -163,6 +170,71 @@ def test_session_store_secures_parent_before_inspecting_database_files(
         pass
 
     assert inspections > 0
+
+
+def test_session_store_skips_chmod_for_preexisting_parent_outside_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    database_directory = tmp_path / "read-only-parent"
+    database_directory.mkdir()
+    original_chmod = Path.chmod
+    parent_chmod_attempted = False
+
+    def reject_parent_chmod(
+        path: Path,
+        mode: int,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        nonlocal parent_chmod_attempted
+        if path == database_directory:
+            parent_chmod_attempted = True
+            raise PermissionError(errno.EPERM, "shared directory", path)
+        original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(Path, "chmod", reject_parent_chmod)
+
+    with SessionStore(database_directory / "sessions.db"):
+        pass
+
+    assert not parent_chmod_attempted
+
+
+def test_session_store_warns_once_when_home_parent_rejects_chmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_directory = tmp_path / "read-only-parent"
+    database_directory.mkdir()
+    original_chmod = Path.chmod
+
+    def reject_parent_chmod(
+        path: Path,
+        mode: int,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if path == database_directory:
+            raise PermissionError(errno.EPERM, "read-only directory", path)
+        original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    getattr(SessionStore, "_warned_parent_chmods", set()).clear()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(Path, "chmod", reject_parent_chmod)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with SessionStore(database_directory / "first.db"):
+            pass
+        with SessionStore(database_directory / "second.db"):
+            pass
+
+    assert len(caught) == 1
+    assert "could not secure session database directory" in str(caught[0].message).lower()
 
 
 def test_session_database_and_wal_files_are_owner_only(tmp_path: Path) -> None:
