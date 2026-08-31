@@ -471,9 +471,11 @@ class ApplicationRuntime:
         root = FloatContainer(
             content=HSplit(
                 [
+                    Window(height=Dimension(weight=1)),
                     Window(
                         FormattedTextControl(self._viewport_text),
                         height=Dimension(min=0),
+                        dont_extend_height=True,
                     ),
                     Window(
                         FormattedTextControl(self._hud_text),
@@ -486,7 +488,8 @@ class ApplicationRuntime:
                         FormattedTextControl(self._status),
                         height=1,
                     ),
-                ]
+                ],
+                height=self._root_height,
             ),
             floats=[],
         )
@@ -1537,6 +1540,9 @@ class ApplicationRuntime:
         return self._apply_theme(selected)
 
 
+    def _root_height(self) -> int:
+        return max(1, self.application.output.get_size().rows - 1)
+
     def _render_block(self, block: Block, width: int, rows: int) -> Any:
         return self._block_dispatcher.render(
             block,
@@ -1605,8 +1611,12 @@ class ApplicationRuntime:
         size = self.application.output.get_size()
         width = max(1, size.columns)
         budget = Frame.row_budget(
-            terminal_rows=size.rows,
-            composer_rows=self.composer.height_for_width(width) + self._hud_height(),
+            terminal_rows=self._root_height(),
+            composer_rows=(
+                self.composer.height_for_width(width)
+                + self._hud_height()
+                + self.composer.completion_row_count()
+            ),
             status_rows=1,
         )
         frame = self._drilled_frame if self._drilled_run_id is not None else self.frame
