@@ -8,6 +8,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from orcha_agent.core.agents import bound_payload
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
 PLUGIN = PluginSpec(name="tools-agents", version="1.0.0")
@@ -260,14 +261,21 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     async def yield_call(type: str, data: Any = None, error: str | None = None) -> dict[str, Any]:
         run = host
         if type == "findings":
-            finding = data if error is None else {"data": data, "error": error}
-            run.partial_findings.append(finding)
+            finding = bound_payload(
+                data if error is None else {"data": data, "error": error}
+            )
+            accumulated = bound_payload([*run.partial_findings, finding])
+            run.partial_findings = (
+                accumulated if isinstance(accumulated, list) else [accumulated]
+            )
             await registry.record_yield(run, {"type": type, "data": finding})
             return {"accepted": True, "terminal": False, "findings": len(run.partial_findings)}
-        payload, status = data, "done"
+        payload, status = bound_payload(data), "done"
         if type == "error" or error is not None:
-            payload, status = {"error": error or data or "agent reported an error"}, "failed"
-        validation_error = _validate(data, run.output_schema) if status == "done" and run.output_schema is not None else None
+            payload, status = bound_payload(
+                {"error": error or data or "agent reported an error"}
+            ), "failed"
+        validation_error = _validate(payload, run.output_schema) if status == "done" and run.output_schema is not None else None
         if validation_error is not None:
             run.validation_attempts += 1
             attempt = run.validation_attempts

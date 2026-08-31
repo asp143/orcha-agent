@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import reprlib
 import secrets
@@ -55,6 +56,47 @@ _TOOL_ARGS_REPR.maxfrozenset = 16
 _TOOL_ARGS_REPR.maxdeque = 16
 _TOOL_ARGS_REPR.maxstring = 1024
 _TOOL_ARGS_REPR.maxother = 1024
+_MAX_PAYLOAD_BYTES = 256 * 1024
+_TRUNCATION_MARKER = f"...[truncated at {_MAX_PAYLOAD_BYTES} bytes]"
+
+
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def bound_text(value: str) -> str:
+    if len(_json_bytes(value)) <= _MAX_PAYLOAD_BYTES:
+        return value
+    suffix = f"\n{_TRUNCATION_MARKER}"
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(_json_bytes(value[:middle] + suffix)) <= _MAX_PAYLOAD_BYTES:
+            low = middle
+        else:
+            high = middle - 1
+    return value[:low] + suffix
+
+
+def bound_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return bound_text(value)
+    try:
+        encoded = _json_bytes(value)
+    except (TypeError, ValueError):
+        return bound_text(str(value))
+    if len(encoded) <= _MAX_PAYLOAD_BYTES:
+        return value
+    return {
+        "truncated": True,
+        "original_bytes": len(encoded),
+        "preview": (
+            encoded.decode("utf-8", errors="ignore")[:4096]
+            + f"\n{_TRUNCATION_MARKER}"
+        ),
+    }
 
 
 def _model_label(value: str | list[str]) -> str:
@@ -234,9 +276,11 @@ class AgentRun:
         return self.status in _TERMINAL
 
 
-    def snapshot(self, *, delivered: bool | None = None) -> dict[str, Any]:
+    def snapshot(
+        self, *, delivered: bool | None = None, include_payload: bool = True
+    ) -> dict[str, Any]:
         """Return this run's durable, JSON-serializable presentation state."""
-        return {
+        data = {
             "run_id": self.id,
             "name": self.name,
             "agent_type": self.agent_type.name,
@@ -265,18 +309,22 @@ class AgentRun:
             "last_tool_args": self.last_tool_args,
             "current_tool": self.current_tool,
             "current_tool_args": self.current_tool_args,
-            "partial_findings": self.partial_findings,
             "validation_attempts": self.validation_attempts,
             "yield_count": self.yield_count,
-            "last_yield": self.last_yield,
             "status": self.status,
             "abort_reason": self.abort_reason,
-            "result": self.result,
             "schema_overridden": self.schema_overridden,
             "delivered": self.delivered if delivered is None else delivered,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+        if include_payload:
+            data.update(
+                partial_findings=bound_payload(self.partial_findings),
+                last_yield=bound_payload(self.last_yield),
+                result=bound_payload(self.result),
+            )
+        return data
 
     async def ensure_agent(self) -> bool:
         self.owner._refresh_run_mode(self)
@@ -356,7 +404,7 @@ class AgentRun:
     ) -> None:
         if self.terminal:
             return
-        self._completion = (status, result)
+        self._completion = (status, bound_payload(result))
         await self.inbox.put(_WAKE)
 
     async def request_abort(self, reason: AbortReason) -> None:
@@ -390,7 +438,7 @@ class AgentRun:
             self._active_tool_calls.clear()
         self.status = status
         self.updated_at = datetime.now(UTC)
-        self.owner._persist_job(self)
+        self.owner._persist_job(self, include_payload=status in _TERMINAL)
         await self.owner._notify()
         async with self._status_changed:
             self._status_changed.notify_all()
@@ -503,6 +551,7 @@ class AgentRun:
     async def _settle(self, status: AgentStatusName, result: Any) -> None:
         if self.terminal:
             return
+        result = bound_payload(result)
         self.result = result
         Ledger(self.session).append(
             self.session_id,
@@ -596,7 +645,11 @@ class AgentRegistry:
         return False
 
     def _persist_job(
-        self, run: AgentRun, *, delivered: bool | None = None
+        self,
+        run: AgentRun,
+        *,
+        delivered: bool | None = None,
+        include_payload: bool = False,
     ) -> bool:
         if not self._job_on_active_path(run):
             return False
@@ -604,7 +657,9 @@ class AgentRegistry:
             run.parent_session,
             CustomEntry(
                 custom_type="agent_job",
-                data=run.snapshot(delivered=delivered),
+                data=run.snapshot(
+                    delivered=delivered, include_payload=include_payload
+                ),
             ),
         )
         run._job_entry_id = entry.id
@@ -1195,7 +1250,7 @@ class AgentRegistry:
             await self.revive(run.session_id, caller=run.id)
         if interrupt and run._turn_task is not None:
             run._turn_task.cancel()
-        await run.inbox.put(text)
+        await run.inbox.put(bound_text(text))
         return run
 
     async def cancel(
@@ -1328,7 +1383,7 @@ class AgentRegistry:
         envelope = {
             "from": sender,
             "to": target,
-            "message": message,
+            "message": bound_text(message),
             "created_at": datetime.now(UTC).isoformat(),
         }
         mailboxes.setdefault(target, deque()).append(envelope)
@@ -1403,7 +1458,8 @@ class AgentRegistry:
 
     async def record_yield(self, run: AgentRun, payload: Any) -> None:
         run.yield_count += 1
-        run.last_yield = payload
+        run.last_yield = bound_payload(payload)
+        self._persist_job(run)
         await self._notify()
 
     async def record_advice(
@@ -1571,4 +1627,4 @@ class AgentRegistry:
         return True
 
 
-__all__ = ["AgentRegistry", "AgentRun", "AgentStatusName", "AbortReason"]
+__all__ = ["AgentRegistry", "AgentRun", "AgentStatusName", "AbortReason", "bound_payload", "bound_text"]

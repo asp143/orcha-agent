@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -19,6 +20,7 @@ from orcha_agent.core.events import EventBus
 from orcha_agent.core.plugin import ModeSpec
 from orcha_agent.core.registry import Registry
 from orcha_agent.core.session import SessionStore
+from orcha_agent.core.ledger import CustomEntry, Ledger
 
 
 class _Graph:
@@ -217,6 +219,80 @@ async def test_yield_accumulates_findings_then_terminal_result_settles_run(
         }
         assert run.result == result
         assert run.partial_findings == [finding]
+        await agents.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_payloads_are_bounded_and_event_snapshots_omit_growing_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "orcha_agent.core.agents.build_agent",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=_Graph()),
+    )
+    oversized = "x" * (300 * 1024)
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main-session")
+        agents = AgentRegistry(
+            _plugin_registry(), _config(tmp_path), store, EventBus(), parent.thread_id
+        )
+        run = await agents.spawn("task", "Bound payloads", parent="main")
+        await run.wait_status("idle")
+        yield_tool = _tool_map(run)["yield"]
+
+        await yield_tool.ainvoke({"type": "findings", "data": oversized})
+        finding = run.partial_findings[0]
+        finding_json = json.dumps(finding, ensure_ascii=False)
+        assert "[truncated" in finding_json
+        assert len(finding_json.encode()) <= 256 * 1024
+
+        await agents.post_message("main", run.id, oversized)
+        message = agents.drain_messages(run.id)[0]["message"]
+        assert "[truncated" in message
+        assert len(message.encode()) <= 256 * 1024
+
+        before = len(
+            [
+                entry
+                for entry in Ledger(store).path(parent.thread_id)
+                if isinstance(entry, CustomEntry)
+                and entry.custom_type == "agent_job"
+                and entry.data.get("run_id") == run.id
+            ]
+        )
+        for count in range(3):
+            run.tool_calls = count + 1
+            agents._persist_job(run)
+        snapshots = [
+            entry.data
+            for entry in Ledger(store).path(parent.thread_id)
+            if isinstance(entry, CustomEntry)
+            and entry.custom_type == "agent_job"
+            and entry.data.get("run_id") == run.id
+        ]
+        assert len(snapshots) == before + 3
+        for snapshot in snapshots[-3:]:
+            assert "partial_findings" not in snapshot
+            assert "last_yield" not in snapshot
+            assert "result" not in snapshot
+
+        await yield_tool.ainvoke({"type": "result", "data": oversized})
+        await run.wait_status("done")
+        child_results = [
+            entry.data
+            for entry in Ledger(store).path(run.session_id)
+            if isinstance(entry, CustomEntry) and entry.custom_type == "agent_result"
+        ]
+        assert "[truncated" in child_results[-1]["result"]
+        assert len(
+            json.dumps(child_results[-1]["result"], ensure_ascii=False).encode()
+        ) <= 256 * 1024
+        terminal = Ledger(store).latest_custom(
+            parent.thread_id, "agent_job", key="run_id"
+        )[run.id].data
+        assert "partial_findings" in terminal
+        assert "last_yield" in terminal
+        assert "result" in terminal
         await agents.shutdown()
 
 
