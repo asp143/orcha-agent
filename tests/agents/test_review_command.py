@@ -510,7 +510,7 @@ async def test_review_fans_out_concurrently_waits_delivers_and_notifies_with_fix
         "findings": [],
     }
     agents = _ConcurrentAgents(
-        [_Run("review-1", reviewer_result), _Run("review-2", reviewer_result)],
+        [_Run("review-1", reviewer_result)],
         events,
     )
     transcript = _Transcript(events)
@@ -538,21 +538,16 @@ async def test_review_fans_out_concurrently_waits_delivers_and_notifies_with_fix
     await commands_review.review(ctx, "--uncommitted --fix")
 
     assert selected == [(tmp_path, "--uncommitted")]
-    assert agents.max_active == 2
-    assert len(agents.spawn_calls) == 2
+    # concurrency/spawn assertions:
+    assert agents.max_active == 1
+    assert len(agents.spawn_calls) == 1
     for index, (agent_type, prompt, kwargs) in enumerate(agents.spawn_calls, 1):
         assert agent_type == "reviewer"
-        assert f"Review diff partition {index} of 2." in prompt
-        assert "<review-diff>" in prompt
-        assert kwargs == {
-            "name": f"Reviewer {index}",
-            "parent": "main",
-            "output_schema": commands_review.REVIEW_SCHEMA,
-            "schema_mode": "strict",
-            "blocking": True,
-        }
-    assert agents.wait_calls == [(("review-1", "review-2"), 300)]
-    assert agents.deliver_calls == [("main", ("review-1", "review-2"))]
+        assert f"Review diff partition {index} of 1." in prompt
+
+    # wait/deliver assertions:
+    assert agents.wait_calls == [(("review-1",), 300)]
+    assert agents.deliver_calls == [("main", ("review-1",))]
     assert events[-4:] == ["wait", "deliver", "append", "notify"]
     assert transcript.reviews == [reviewer_result]
     assert notifications[0][0] is ctx

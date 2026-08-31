@@ -13,7 +13,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import HumanMessage
 
-from orcha_agent.builtin.tools_agents import agent_tools
+from orcha_agent.builtin.tools_agents import _timeout, agent_tools
 from orcha_agent.core.agents import AgentRegistry
 from orcha_agent.core.config import AgentsConfig, Config
 from orcha_agent.core.events import EventBus
@@ -596,3 +596,14 @@ async def test_hub_jobs_wait_and_cancel_report_observable_statuses(
         assert [item["id"] for item in cancelled["cancelled"]] == [cancel_run.id]
         assert cancel_run.abort_reason == "cancel"
         await agents.shutdown()
+
+
+def test_blocking_wait_timeout_uses_runtime_or_safety_bound() -> None:
+    agents = SimpleNamespace(max_runtime_s=17.5)
+    registry = SimpleNamespace(cfg=SimpleNamespace(agents=agents))
+
+    assert _timeout(registry) == 17.5
+    agents.max_runtime_s = 0
+    assert _timeout(registry) == 300.0
+    agents.max_runtime_s = -1
+    assert _timeout(registry) == 300.0

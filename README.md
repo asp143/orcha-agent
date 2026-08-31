@@ -111,7 +111,9 @@ legacy `core.subagent_model` when configured. Agent concurrency limits active
 model turns, while `max_live_runs` caps all nonterminal workers across retained
 sessions; depth limits child spawning. Idle workers park after `idle_ttl_s`, and
 a positive `max_runtime_s` adds a deadline. The soft request budget asks a
-worker to yield before aborting it ten requests later.
+worker to yield before aborting it ten requests later. Blocking task batches and
+awaited hub sends use a positive `max_runtime_s` as their wait bound, or a
+300-second safety bound when runtime deadlines are disabled.
 
 When enabled, the advisor is one hidden, persistent worker per session.
 `model="@advisor"` uses `[models.roles].advisor`, then the main model. It

@@ -948,8 +948,6 @@ async def review(ctx: Any, args: str) -> None:
 
     fanout = reviewer_count(changed_line_count(diff))
     chunks = partition_diff(diff, fanout)
-    if len(chunks) < fanout:
-        chunks = [chunks[index % len(chunks)] for index in range(fanout)]
     agents = getattr(ctx, "agents", None)
     if agents is None:
         ctx.console.error("Code review agents are unavailable.")

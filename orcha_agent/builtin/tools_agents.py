@@ -272,7 +272,6 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
                 errors.append({"index": index, "error": f"{type(outcome).__name__}: {outcome}"})
             else:
                 runs.append(outcome)
-        runs = [run for _index, run in enumerate(runs)]
         blocking = [run for run in runs if run.blocking]
         if blocking:
             await registry.wait_all((run.id for run in blocking), timeout_s=_timeout(registry), caller=caller)
