@@ -69,13 +69,15 @@ def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_welcome_is_the_first_immediately_committed_block(tmp_path: Path) -> None:
+async def test_welcome_is_the_first_block_and_stays_visible(tmp_path: Path) -> None:
     ctx = _context(tmp_path)
 
     await _start(ctx)
 
     assert [block.kind for block in ctx.transcript.frame.blocks] == ["welcome"]
-    assert ctx.transcript.frame.blocks[0].state.value == "committed"
+    # Settled, not committed: it must stay in the bottom-anchored viewport on
+    # first load and retire with the first real commit.
+    assert ctx.transcript.frame.blocks[0].state.value == "settled"
     assert len(ctx.transcript.frame.blocks[0].data["sessions"]) == 4
     assert len(ctx.transcript.frame.blocks[0].data["hints"]) == 4
 
@@ -139,3 +141,20 @@ async def test_no_color_produces_ascii_safe_welcome_data(
     block = ctx.transcript.frame.blocks[0]
     assert block.data["ascii"] is True
     assert "".join(block.data["logo"]).isascii()
+
+
+@pytest.mark.asyncio
+async def test_welcome_stays_in_viewport_until_first_real_commit(tmp_path) -> None:
+    from orcha_agent.tui.frame import BlockState
+    from orcha_agent.tui.transcript import Transcript
+
+    transcript = Transcript()
+    block = transcript.append_welcome({"logo": ["X"], "model": "m"})
+    # Visible on first load: settled in the frame, NOT committed to scrollback.
+    assert block.state is BlockState.SETTLED
+    assert [b.kind for b in transcript.frame.blocks] == ["welcome"]
+
+    # The first real commit retires the welcome ahead of the new content.
+    transcript.print("hello")
+    ready_states = {b.kind: b.state for b in transcript.frame.blocks}
+    assert ready_states["welcome"] is BlockState.COMMITTED

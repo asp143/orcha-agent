@@ -261,8 +261,16 @@ class Transcript:
         *,
         immediate: bool = True,
     ) -> Block:
+        del immediate  # kept for call compatibility
         block = self.frame.add("welcome", data)
-        self._commit(block, immediate=immediate)
+        # Settle without committing: the welcome box stays visible in the
+        # bottom-anchored viewport on first load and retires into scrollback
+        # with the first real commit (matching the omp behavior in the spec).
+        # An immediate commit here would print it above the full-height
+        # reservation, scrolling it out of view at startup.
+        self._settle(block)
+        if self.scheduler is not None:
+            self.scheduler.request_invalidate()
         return block
 
     def append_review(
