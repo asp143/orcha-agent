@@ -160,7 +160,14 @@ async def test_cancellation_during_partial_spawn_claims_settled_and_late_reviewe
     agents = Agents()
     ctx = _context(tmp_path, agents)
     notifications: list[str] = []
-    monkeypatch.setattr(commands_review, "select_diff", lambda *_args: _diff(101))
+    monkeypatch.setattr(
+        commands_review,
+        "select_diff",
+        lambda *_args: (
+            _diff(51)
+            + _diff(50).replace("src/app.py", "src/other.py")
+        ),
+    )
 
     async def fake_run_turn(_ctx: Any, notification: str) -> None:
         notifications.append(notification)
