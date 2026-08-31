@@ -180,16 +180,14 @@ async def build_agent(
 
     resolver = ModelResolver(registry, cfg)
     main_models = resolver.resolve_chain(cfg.model, "main")
-    roles = {
-        "main": main_models[0],
-        "summarizer": resolver.resolve(
-            cfg.summarizer_model or cfg.model, "summarizer"
-        ),
-    }
+    roles = {"main": main_models[0]}
     subagent_model = (
         None
         if exclude_general_purpose
         else resolver.resolve(cfg.subagent_model or cfg.model, "subagent")
+    )
+    roles["summarizer"] = resolver.resolve(
+        cfg.summarizer_model or cfg.model, "summarizer"
     )
     backend = registry.backends[cfg.backend].factory(cfg)
     mode = registry.modes[cfg.mode]
