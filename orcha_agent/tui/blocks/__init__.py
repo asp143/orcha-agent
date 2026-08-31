@@ -93,6 +93,7 @@ class BlockRendererDispatcher:
         else:
             self._renderers = {entry.kind: entry.render for entry in renderers}
         self._renderers.setdefault("advisory", render_advisory)
+        self._renderers.setdefault("review", render_review)
         self._cache: dict[
             tuple[str, str, int],
             dict[tuple[int, int, bool, str], Any],
@@ -161,6 +162,7 @@ from .banner import render as render_banner
 from .diff import render as render_diff
 from .hud import render_queue, render_subagents, render_todo
 from .marker import render as render_marker
+from .review import render as render_review
 from .task import render_delivery, render_task
 from .thinking import render as render_thinking
 from .tool import render as render_tool
@@ -171,6 +173,7 @@ DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
     "user": render_user,
     "assistant": render_assistant,
     "advisory": render_advisory,
+    "review": render_review,
     "thinking": render_thinking,
     "tool": render_tool,
     "diff": render_diff,
@@ -188,6 +191,7 @@ __all__ = [
     "DEFAULT_RENDERERS",
     "DEFAULT_THEME",
     "render_advisory",
+    "render_review",
     "render_delivery",
     "render_task",
     "theme_id",

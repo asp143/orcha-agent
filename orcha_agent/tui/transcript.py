@@ -152,6 +152,16 @@ class Transcript:
         self._commit(block, immediate=immediate)
         return block
 
+    def append_review(
+        self,
+        data: Mapping[str, Any],
+        *,
+        immediate: bool = True,
+    ) -> Block:
+        block = self.frame.add("review", data)
+        self._commit(block, immediate=immediate)
+        return block
+
     def _legacy(self, event: object) -> bool:
         if self.registry is None:
             return False

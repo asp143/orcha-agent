@@ -93,6 +93,67 @@ GALLERY_FIXTURES: dict[
             advisor_id="advisor",
         ),
     },
+    "review": {
+        "streaming": _active(
+            findings=[
+                {
+                    "title": "Clarify the fallback",
+                    "body": "The fallback behavior is not documented by the changed code.",
+                    "priority": "P3",
+                    "confidence": 0.72,
+                    "file": "orcha_agent/tui/gallery.py",
+                    "line_start": 47,
+                    "line_end": 47,
+                }
+            ],
+            overall="correct",
+            explanation="No correctness issue found in the rendered path.",
+        ),
+        "progress": _active(
+            findings=[
+                {
+                    "title": "Preserve the row budget",
+                    "body": "This content can render beyond the rows assigned by the viewport.",
+                    "priority": "P2",
+                    "confidence": 0.88,
+                    "file": "orcha_agent/tui/blocks/review.py",
+                    "line_start": 118,
+                    "line_end": 126,
+                }
+            ],
+            overall="incorrect",
+            explanation="The review is still collecting findings.",
+        ),
+        "success": _settled(
+            findings=[],
+            overall="correct",
+            explanation="No findings; the change preserves existing behavior.",
+        ),
+        "error": _settled(
+            findings=[
+                {
+                    "title": "Card can hide the verdict",
+                    "body": "A cropped card must retain the overall review result.",
+                    "priority": "P1",
+                    "confidence": 0.97,
+                    "file": "orcha_agent/tui/blocks/review.py",
+                    "line_start": 142,
+                    "line_end": 151,
+                },
+                {
+                    "title": "Unbounded finding output",
+                    "body": "Large reviews must respect the viewport budget.",
+                    "priority": "P0",
+                    "confidence": 0.99,
+                    "file": "orcha_agent/tui/blocks/review.py",
+                    "line_start": 132,
+                    "line_end": 151,
+                },
+            ],
+            overall="incorrect",
+            explanation="Blocking findings remain in the review renderer.",
+        ),
+    },
     "thinking": {
         "streaming": _active(
             text="Inspecting renderer state",

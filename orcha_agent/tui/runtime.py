@@ -32,6 +32,7 @@ from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from orcha_agent.builtin.advisor import AdvisorService
+from orcha_agent.builtin.commands_review import review
 
 from orcha_agent.core.config import Config, is_trusted_cwd
 from orcha_agent.core.events import (
@@ -294,6 +295,7 @@ class ApplicationRuntime:
         self.registry = registry
         if registry is not None:
             _ensure_agent_command(registry)
+            _ensure_review_command(registry)
         completion_registry = registry or Registry()
         self.frame = Frame()
         self.theme: Any = theme
@@ -1871,5 +1873,16 @@ def _ensure_agent_command(registry: Registry) -> None:
             plugin="commands_core",
             handler=_show_agents,
             help="Open the agent hub",
+        ),
+    )
+
+
+def _ensure_review_command(registry: Registry) -> None:
+    registry.commands.setdefault(
+        "review",
+        CommandRegistration(
+            plugin="commands_review",
+            handler=review,
+            help="Review code changes with parallel agents",
         ),
     )
