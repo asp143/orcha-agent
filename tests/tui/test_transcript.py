@@ -151,6 +151,20 @@ async def test_retry_indicator_uses_warning_countdown_on_shared_ticker() -> None
 
 
 @pytest.mark.asyncio
+async def test_retry_event_without_attempt_defaults_to_first_attempt() -> None:
+    class RetryScheduled:
+        delay_seconds = 2
+        max_attempts = 3
+
+    frame = Frame()
+    transcript = Transcript(frame)
+
+    await transcript.handle(RetryScheduled())
+
+    assert frame.blocks[-1].data["message"] == "Retrying (1/3) in 2s…"
+
+
+@pytest.mark.asyncio
 async def test_provider_error_is_pinned_capped_and_dismissed_by_next_turn() -> None:
     frame = Frame()
     transcript = Transcript(frame)

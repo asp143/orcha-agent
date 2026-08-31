@@ -113,6 +113,9 @@ active transcript blocks, HUD, composer, and status line are redrawn. The
 composer grows to eight wrapped rows and has three shapes: `box` (closed
 frame), `claude` (open prompt rail), and `borderless` (text only).
 
+Provider fallback retries currently run inside LangChain middleware without
+scheduling events, so the TUI cannot show a retry countdown for them.
+
 ### UI configuration
 
 These are all supported UI keys and their defaults:

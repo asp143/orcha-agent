@@ -297,7 +297,7 @@ class Transcript:
                 )
             )
             self.show_retry(
-                attempt=int(getattr(event, "attempt")),
+                attempt=int(getattr(event, "attempt", 1)),
                 max_attempts=int(
                     getattr(event, "max_attempts", getattr(event, "max_attempt", 1))
                 ),
