@@ -7,7 +7,13 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
-from orcha_agent.core.events import ToolCallEnd, ToolCallStart, TurnEnd, TurnStart
+from orcha_agent.core.events import (
+    ModelChunk,
+    ToolCallEnd,
+    ToolCallStart,
+    TurnEnd,
+    TurnStart,
+)
 from orcha_agent.tui.turn import TurnHost, run_turn
 
 
@@ -113,6 +119,7 @@ async def test_run_turn_keeps_nested_tool_events_on_the_same_worker_source() -> 
                     (
                         AIMessageChunk(
                             content="working",
+                            id="response-1",
                             tool_call_chunks=[
                                 {
                                     "name": "read_file",
@@ -133,8 +140,11 @@ async def test_run_turn_keeps_nested_tool_events_on_the_same_worker_source() -> 
 
     await run_turn(host, "inspect")
 
+    chunks = [event for event in host.bus.events if isinstance(event, ModelChunk)]
     starts = [event for event in host.bus.events if isinstance(event, ToolCallStart)]
     ends = [event for event in host.bus.events if isinstance(event, ToolCallEnd)]
+    assert [event.request_id for event in chunks] == ["response-1"]
+    assert [event.source_id for event in chunks] == ["worker-a1b2/nested:1"]
     assert [event.source_id for event in starts] == ["worker-a1b2/nested:1"]
     assert [event.source_id for event in ends] == ["worker-a1b2/nested:1"]
 

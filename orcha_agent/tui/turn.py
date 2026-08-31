@@ -321,6 +321,24 @@ class _ToolCallBuffer:
         return completed
 
 
+def _model_request_id(message: BaseMessage, metadata: Any) -> str | None:
+    identifier = getattr(message, "id", None)
+    if isinstance(identifier, str) and identifier:
+        return identifier
+    if not isinstance(metadata, Mapping):
+        return None
+    parts = [
+        f"{key}={metadata[key]}"
+        for key in (
+            "langgraph_checkpoint_ns",
+            "langgraph_step",
+            "langgraph_node",
+        )
+        if metadata.get(key) is not None
+    ]
+    return "|".join(parts) or None
+
+
 async def _message_event(
     ctx: TurnHost,
     data: Any,
@@ -352,7 +370,11 @@ async def _message_event(
         or "subagent" in str(node)
         else "main"
     )
-    if getattr(message, "content", None) or getattr(message, "usage_metadata", None):
+    if (
+        isinstance(message, AIMessage)
+        or getattr(message, "content", None)
+        or getattr(message, "usage_metadata", None)
+    ):
         await _render(
             ctx,
             ModelChunk(
@@ -360,6 +382,7 @@ async def _message_event(
                 role=role,
                 model_name=model_labels.take(message, metadata),
                 source_id=source_id,
+                request_id=_model_request_id(message, metadata),
             ),
         )
     return file_diffs

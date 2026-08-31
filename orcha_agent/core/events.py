@@ -74,6 +74,7 @@ class ModelChunk(Event):
     role: str
     model_name: str | None = None
     source_id: str | None = None
+    request_id: str | None = None
 
 
 @dataclass(slots=True)

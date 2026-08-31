@@ -32,6 +32,7 @@ from .events import (
     ModelChunk,
     ToolCallEnd,
     ToolCallStart,
+    TurnStart,
 )
 from .ledger import CustomEntry, Ledger
 from .registry import Registry
@@ -165,9 +166,14 @@ class _RunEventBus:
     def __init__(self, run: AgentRun, target: EventBus) -> None:
         self._run = run
         self._target = target
+        self._request_ids: set[str] = set()
+        self._anonymous_request_seen = False
 
     async def emit(self, event: Any) -> Any:
         persist = False
+        if isinstance(event, TurnStart) and event.source_id == self._run.id:
+            self._request_ids.clear()
+            self._anonymous_request_seen = False
         if isinstance(event, ToolCallStart) and event.source_id == self._run.id:
             self._run.tool_calls += 1
             self._run.last_tool = event.name
@@ -195,6 +201,16 @@ class _RunEventBus:
                     self._run.current_tool_args = None
                 persist = True
         elif isinstance(event, ModelChunk) and event.source_id == self._run.id:
+            request_id = event.request_id or getattr(event.chunk, "id", None)
+            if isinstance(request_id, str) and request_id:
+                if request_id not in self._request_ids:
+                    self._request_ids.add(request_id)
+                    self._run.requests += 1
+                    persist = True
+            elif not self._anonymous_request_seen:
+                self._anonymous_request_seen = True
+                self._run.requests += 1
+                persist = True
             if event.model_name and event.model_name != self._run.model_label:
                 self._run.model_label = event.model_name
                 persist = True
@@ -535,7 +551,6 @@ class AgentRun:
                     if self._abort_requested is not None:
                         await self._settle_abort(self._abort_requested)
                         return
-                    self.requests += 1
                     self._turn_task = asyncio.create_task(run_turn(self, message))
                     try:
                         await self._turn_task
