@@ -475,7 +475,10 @@ class Transcript:
 
     def _task_for_agent(self, parent_id: str, run_id: str, name: str) -> Block:
         known = self._agent_tasks.get(run_id)
-        if known is not None and known.state is BlockState.ACTIVE:
+        if known is not None:
+            # run_ids are unique, so late events for an already-settled card
+            # (e.g. delivered-flag refreshes) update it in place instead of
+            # spawning a duplicate aggregate block.
             return known
 
         candidates = [
