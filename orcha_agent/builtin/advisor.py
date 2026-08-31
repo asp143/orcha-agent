@@ -319,6 +319,7 @@ class AdvisorService:
                         state.run = run
         if run is None or run.terminal:
             spawn_task = state.spawn_task
+            owns_spawn_prompt = spawn_task is None
             if spawn_task is None:
                 spawn_task = asyncio.create_task(
                     self.ctx.agents.spawn(
@@ -340,7 +341,8 @@ class AdvisorService:
                 )
             run = await asyncio.shield(spawn_task)
             state.run = run
-            return run
+            if owns_spawn_prompt:
+                return run
 
         if run.status == "running":
             await run.wait_status(

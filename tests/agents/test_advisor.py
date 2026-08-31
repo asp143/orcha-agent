@@ -495,6 +495,7 @@ async def test_internal_advisor_run_is_hidden_from_events_and_roster() -> None:
     run = SimpleNamespace(
         id="advisor",
         visible=False,
+        requests=0,
         model_label="fake:advisor",
         tokens_in=0,
         tokens_out=0,
@@ -579,3 +580,42 @@ async def test_live_advisor_is_rebuilt_after_mode_change(tmp_path: Path) -> None
     assert len(agents.spawn_prompts) == 1
     assert "first question" in agents.spawn_prompts[0]
     assert "second question" in agents.spawn_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_timed_out_spawn_cannot_leak_stale_advice_to_next_look(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, ctx, agents, run, _followups = _service(
+        tmp_path,
+        {"note": "stale first", "severity": "nit"},
+        {"note": "fresh second", "severity": "nit"},
+        timeout_s=0.01,
+    )
+    state = service._state("session")
+    spawn_started = asyncio.Event()
+    release_spawn = asyncio.Event()
+
+    async def delayed_spawn(
+        _agent_type: str, prompt: str, **_kwargs: Any
+    ) -> _Run:
+        agents.spawn_prompts.append(prompt)
+        spawn_started.set()
+        await release_spawn.wait()
+        agents._respond()
+        return run
+
+    monkeypatch.setattr(agents, "spawn", delayed_spawn)
+    await service._look("session", state, "first prompt")
+    await spawn_started.wait()
+
+    second = asyncio.create_task(
+        service._look("session", state, "second prompt")
+    )
+    await asyncio.sleep(0)
+    release_spawn.set()
+    await asyncio.wait_for(second, 0.2)
+
+    assert agents.spawn_prompts == ["first prompt"]
+    assert agents.sent == [(run.id, "second prompt")]
+    assert [event.note for event in ctx.bus.events] == ["fresh second"]
