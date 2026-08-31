@@ -390,19 +390,24 @@ class AgentRun:
         if self.agent is not None:
             return True
         try:
-            extras = tuple(self.owner.extra_tools(self))
-            scope = self._tool_scope(extras)
-            self.agent = await build_agent(
-                self.registry,
-                self.cfg,
-                self.session,
-                self.bus,
-                always_allowed=self.owner.always_allowed,
-                extra_tools=extras,
-                system_prompt=self.agent_type.system_prompt,
-                exclude_general_purpose=True,
-                tool_scope=scope,
-            )
+            while self.agent is None:
+                build_cfg = self.cfg
+                extras = tuple(self.owner.extra_tools(self))
+                scope = self._tool_scope(extras)
+                candidate = await build_agent(
+                    self.registry,
+                    build_cfg,
+                    self.session,
+                    self.bus,
+                    always_allowed=self.owner.always_allowed,
+                    extra_tools=extras,
+                    system_prompt=self.agent_type.system_prompt,
+                    exclude_general_purpose=True,
+                    tool_scope=scope,
+                )
+                if self.cfg.mode != build_cfg.mode:
+                    continue
+                self.agent = candidate
         finally:
             self.agent_ready.set()
         return True

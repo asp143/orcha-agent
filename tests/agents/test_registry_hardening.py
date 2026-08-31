@@ -584,6 +584,47 @@ def test_hydration_restores_child_mode_cwd_and_recomputes_trust(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_mode_refresh_discards_graph_built_for_stale_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _Graph()
+    second = _Graph()
+    build_started = asyncio.Event()
+    release_build = asyncio.Event()
+    built_modes: list[str] = []
+
+    async def build(
+        _registry: Registry, cfg: Config, *_args: Any, **_kwargs: Any
+    ) -> _Graph:
+        built_modes.append(cfg.mode)
+        if len(built_modes) == 1:
+            build_started.set()
+            await release_build.wait()
+            return first
+        return second
+
+    monkeypatch.setattr("orcha_agent.core.agents.build_agent", build)
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        yolo = _config(tmp_path)
+        agents = AgentRegistry(
+            _registry(), yolo, store, EventBus(), parent.thread_id
+        )
+        run = await agents.spawn("task", "work", parent="main")
+        await build_started.wait()
+
+        agents.retarget(parent.thread_id, replace(yolo, mode="ask"))
+        release_build.set()
+
+        await asyncio.wait_for(second.started.wait(), 0.2)
+        await run.wait_status("idle")
+        assert built_modes == ["yolo", "ask"]
+        assert not first.started.is_set()
+        assert run.agent is second
+        await agents.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_mode_refresh_defers_graph_rebuild_until_active_turn_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
