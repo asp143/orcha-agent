@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application.current import set_app
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
 from prompt_toolkit.filters import Condition
@@ -1678,12 +1679,22 @@ class ApplicationRuntime:
                 viewport=False,
             )
 
+    async def _run_in_app_terminal(self, func: Callable[[], Any]) -> Any:
+        """Run a terminal callback bound to this prompt-toolkit application."""
+        if not self.application.is_running:
+            return func()
+        with set_app(self.application):
+            return await run_in_terminal(func)
+
     def _commit_blocks(self, blocks: list[Block]) -> None:
-        async def write_and_release() -> None:
-            await run_in_terminal(lambda: self._write_blocks(blocks))
+        def write_and_prune() -> None:
+            self._write_blocks(blocks)
             self.transcript.release_committed(blocks)
             self.frame.prune_committed(blocks)
             self._block_dispatcher.evict(blocks)
+
+        async def write_and_release() -> None:
+            await self._run_in_app_terminal(write_and_prune)
             self.application.invalidate()
 
         self._track(write_and_release(), terminal=True)
@@ -1692,7 +1703,7 @@ class ApplicationRuntime:
         self.scheduler.commit_now()
         await self._drain(self._terminal_pending)
         await self._track(
-            run_in_terminal(self._scrollback.clear),
+            self._run_in_app_terminal(self._scrollback.clear),
             terminal=True,
         )
         self.transcript.clear()

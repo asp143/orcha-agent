@@ -416,10 +416,15 @@ async def test_tool_viewport_reserves_spacer_before_selecting_card_shape(
 
 
 @pytest.mark.asyncio
-async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
+async def test_commit_uses_runtime_app_context_and_prunes_after_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    active_apps: list[object] = []
+
     async def immediate(callback: object) -> None:
+        from prompt_toolkit.application.current import get_app
+
+        active_apps.append(get_app())
         callback()
 
     monkeypatch.setattr("orcha_agent.tui.runtime.run_in_terminal", immediate)
@@ -429,6 +434,7 @@ async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
             input=pipe,
             output=DummyOutput(),
         )
+        runtime.application._is_running = True
         block = runtime.frame.add("assistant", {"text": "done"})
         runtime._render_block(block, 80, 3)
         runtime.frame.settle(block)
@@ -437,8 +443,10 @@ async def test_successful_scrollback_write_prunes_frame_and_renderer_cache(
         runtime._commit_blocks(ready)
         await runtime._drain_pending()
 
+        assert active_apps == [runtime.application]
         assert runtime.frame.blocks == []
         assert not runtime._block_dispatcher._cache
+        runtime.application._is_running = False
         await runtime.scheduler.aclose()
 
 
