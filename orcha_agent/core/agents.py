@@ -58,6 +58,8 @@ _TOOL_ARGS_REPR.maxstring = 1024
 _TOOL_ARGS_REPR.maxother = 1024
 _MAX_PAYLOAD_BYTES = 256 * 1024
 _TRUNCATION_MARKER = f"...[truncated at {_MAX_PAYLOAD_BYTES} bytes]"
+_MESSAGE_QUEUE_LIMIT = 128
+_QUEUE_WARNING = f"dropped oldest messages at limit {_MESSAGE_QUEUE_LIMIT}"
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -97,6 +99,41 @@ def bound_payload(value: Any) -> Any:
             + f"\n{_TRUNCATION_MARKER}"
         ),
     }
+
+
+def _put_bounded_queue(
+    queue: asyncio.Queue[Any], item: Any, *, warning: Any = None
+) -> None:
+    if queue.full():
+        queue.get_nowait()
+        if warning is not None:
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(warning)
+    if queue.full():
+        queue.get_nowait()
+    queue.put_nowait(item)
+
+
+def _append_mailbox(
+    mailbox: deque[dict[str, Any]], envelope: dict[str, Any], target: str
+) -> None:
+    if len(mailbox) >= _MESSAGE_QUEUE_LIMIT:
+        retained = [item for item in mailbox if item.get("warning") is not True]
+        mailbox.clear()
+        mailbox.extend(retained)
+        while len(mailbox) > _MESSAGE_QUEUE_LIMIT - 2:
+            mailbox.popleft()
+        mailbox.append(
+            {
+                "from": "system",
+                "to": target,
+                "message": _QUEUE_WARNING,
+                "warning": True,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    mailbox.append(envelope)
 
 
 def _model_label(value: str | list[str]) -> str:
@@ -230,8 +267,12 @@ class AgentRun:
         self.raise_turn_errors = True
         self.agent: Any = None
         self.task: asyncio.Task[None] | None = None
-        self.inbox: asyncio.Queue[str | object | None] = asyncio.Queue()
-        self.advice_outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.inbox: asyncio.Queue[str | object | None] = asyncio.Queue(
+            maxsize=_MESSAGE_QUEUE_LIMIT
+        )
+        self.advice_outbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=_MESSAGE_QUEUE_LIMIT
+        )
         self.status: AgentStatusName = "running"
         self.abort_reason: AbortReason | None = None
         self.requests = 0
@@ -405,7 +446,7 @@ class AgentRun:
         if self.terminal:
             return
         self._completion = (status, bound_payload(result))
-        await self.inbox.put(_WAKE)
+        _put_bounded_queue(self.inbox, _WAKE)
 
     async def request_abort(self, reason: AbortReason) -> None:
         cascade = getattr(self.owner, "_request_abort_tree", None)
@@ -425,7 +466,7 @@ class AgentRun:
             current.cancel()
         elif self.task is not None and not self.task.done():
             self.task.cancel()
-        await self.inbox.put(_WAKE)
+        _put_bounded_queue(self.inbox, _WAKE)
         if self.status == "parked" or self.task is None or self.task.done():
             await self._settle_abort(abort_reason)
 
@@ -617,6 +658,7 @@ class AgentRegistry:
             tuple[str, str, str], tuple[str, str]
         ] = {}
         self._delivery_lock = asyncio.Lock()
+        self._detach_tasks: set[asyncio.Task[None]] = set()
         self._hydrate_parent(parent_session_id, "main", 0, set())
 
     def _detach_job(self, run: AgentRun) -> None:
@@ -626,10 +668,12 @@ class AgentRegistry:
         if run.terminal or run._abort_requested is not None:
             return
         run._abort_requested = "cancel"
-        asyncio.create_task(
+        task = asyncio.create_task(
             run.request_abort("cancel"),
             name=f"detach-agent:{run.id}",
         )
+        self._detach_tasks.add(task)
+        task.add_done_callback(self._detach_tasks.discard)
 
     def _job_on_active_path(self, run: AgentRun) -> bool:
         if not run._attached:
@@ -1250,7 +1294,14 @@ class AgentRegistry:
             await self.revive(run.session_id, caller=run.id)
         if interrupt and run._turn_task is not None:
             run._turn_task.cancel()
-        await run.inbox.put(bound_text(text))
+        _put_bounded_queue(
+            run.inbox,
+            bound_text(text),
+            warning=(
+                f"[dropped oldest agent inbox messages at limit "
+                f"{_MESSAGE_QUEUE_LIMIT}]"
+            ),
+        )
         return run
 
     async def cancel(
@@ -1345,6 +1396,10 @@ class AgentRegistry:
         pending = [run.task for run in unique_runs if run.task is not None]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        detach_tasks = tuple(self._detach_tasks)
+        if detach_tasks:
+            await asyncio.gather(*detach_tasks, return_exceptions=True)
+            self._detach_tasks.difference_update(detach_tasks)
 
     def resolve(
         self,
@@ -1393,7 +1448,9 @@ class AgentRegistry:
                 "message": bound_text(message),
                 "created_at": datetime.now(UTC).isoformat(),
             }
-            mailboxes.setdefault(target, deque()).append(envelope)
+            _append_mailbox(
+                mailboxes.setdefault(target, deque()), envelope, target
+            )
         await self._notify()
         return waiting
 
@@ -1473,7 +1530,15 @@ class AgentRegistry:
     ) -> None:
         if run.owner is not self or run.agent_type.name != "advisor":
             raise ValueError("advice can only be recorded by a registered advisor run")
-        await run.advice_outbox.put(payload)
+        _put_bounded_queue(
+            run.advice_outbox,
+            payload,
+            warning={
+                "note": _QUEUE_WARNING,
+                "severity": "nit",
+                "warning": True,
+            },
+        )
 
     async def deliver(
         self,

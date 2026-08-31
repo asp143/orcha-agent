@@ -378,6 +378,49 @@ async def test_fork_rejects_live_foreign_child_but_restores_terminal_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_agent_inboxes_and_mailboxes_drop_oldest_with_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = asyncio.Event()
+    graph = _Graph(gate)
+    monkeypatch.setattr(
+        "orcha_agent.core.agents.build_agent",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+    )
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        agents = AgentRegistry(
+            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
+        )
+        run = await agents.spawn("task", "hold", parent="main")
+        await graph.started.wait()
+
+        for index in range(130):
+            await agents.send(run.id, f"inbox {index}")
+        assert run.inbox.maxsize == 128
+        assert run.inbox.qsize() == 128
+        queued = list(run.inbox._queue)
+        assert any(
+            isinstance(item, str) and "[dropped oldest" in item for item in queued
+        )
+        assert "inbox 129" in queued
+
+        for index in range(130):
+            await agents.post_message("main", run.id, f"mailbox {index}")
+        messages = agents.drain_messages(run.id)
+        assert len(messages) == 128
+        assert any(
+            item.get("warning") is True
+            and "dropped oldest" in item["message"]
+            for item in messages
+        )
+        assert any(item["message"] == "mailbox 129" for item in messages)
+
+        gate.set()
+        await agents.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_run_detaches_when_parent_branches_away(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -412,6 +455,52 @@ async def test_active_run_detaches_when_parent_branches_away(
         )
         assert await agents.deliver("main", [run.id]) == []
         await agents.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_detach_abort_task_is_retained_and_awaited_by_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph_gate = asyncio.Event()
+    graph = _Graph(graph_gate)
+    monkeypatch.setattr(
+        "orcha_agent.core.agents.build_agent",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=graph),
+    )
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        ledger = Ledger(store)
+        root = ledger.append(
+            parent.thread_id,
+            CustomEntry(custom_type="root", data={"active": True}),
+        )
+        agents = AgentRegistry(
+            _registry(), _config(tmp_path), store, EventBus(), parent.thread_id
+        )
+        run = await agents.spawn("task", "work", parent="main")
+        await graph.started.wait()
+        original_abort = run.request_abort
+        abort_started = asyncio.Event()
+        release_abort = asyncio.Event()
+
+        async def blocked_abort(reason: Any) -> None:
+            abort_started.set()
+            await release_abort.wait()
+            await original_abort(reason)
+
+        run.request_abort = blocked_abort
+        ledger.branch(parent.thread_id, root.id)
+        agents.retarget(parent.thread_id)
+        await asyncio.wait_for(abort_started.wait(), 0.2)
+
+        assert len(agents._detach_tasks) == 1
+        shutdown = asyncio.create_task(agents.shutdown())
+        await asyncio.sleep(0)
+        assert not shutdown.done()
+        release_abort.set()
+        graph_gate.set()
+        await asyncio.wait_for(shutdown, 0.5)
+        assert agents._detach_tasks == set()
 
 
 def test_hydration_restores_child_mode_cwd_and_recomputes_trust(tmp_path: Path) -> None:
