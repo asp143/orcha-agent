@@ -227,8 +227,15 @@ def _refresh_git(
 ) -> None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--branch", "--untracked-files=all"],
-            cwd=cwd,
+            [
+                "git",
+                "-C",
+                str(cwd),
+                "status",
+                "--porcelain=v1",
+                "--branch",
+                "--untracked-files=all",
+            ],
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,

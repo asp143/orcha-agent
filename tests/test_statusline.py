@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import subprocess
 import threading
 import time
 import weakref
@@ -327,6 +328,46 @@ def test_git_parser_counts_staged_unstaged_and_untracked_exactly() -> None:
     assert _parse_git("fatal: not a repository\n") is None
 
 
+def test_git_segment_uses_session_cwd_when_process_cwd_differs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_cwd = tmp_path / "process-repo"
+    session_cwd = tmp_path / "session-repo"
+    subprocess.run(
+        ["git", "init", "-q", "-b", "process-branch", str(process_cwd)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "init", "-q", "-b", "session-branch", str(session_cwd)],
+        check=True,
+    )
+    monkeypatch.chdir(process_cwd)
+    real_run = subprocess.run
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def recorded_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr("orcha_agent.tui.statusline.subprocess.run", recorded_run)
+    state: dict[str, Any] = {}
+    ctx = _ctx(session_cwd, state=state, cfg=_cfg(session_cwd))
+
+    assert git_segment(ctx) is None
+    deadline = time.time() + 1
+    while "_git_text" not in state and time.time() < deadline:
+        time.sleep(0.005)
+
+    assert git_segment(ctx).text == "session-branch"
+    command, kwargs = calls[0]
+    assert command[:3] == ["git", "-C", str(session_cwd.resolve())]
+    assert "cwd" not in kwargs
+
+
 def test_git_refresh_is_nonblocking_cached_and_no_more_frequent_than_two_seconds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -377,7 +418,8 @@ def test_git_worker_discards_old_session_and_counts_all_untracked_files(
     release_old = threading.Event()
     calls: list[tuple[list[str], Path]] = []
 
-    def run(command: list[str], *, cwd: Path, **_kwargs: object) -> SimpleNamespace:
+    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        cwd = Path(command[2])
         calls.append((command, cwd))
         if cwd == old_cwd:
             old_started.set()
