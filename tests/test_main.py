@@ -185,13 +185,10 @@ def test_sync_command_reports_close_failure_without_raising(
         lambda: SimpleNamespace(error=errors.append, print=lambda *_args: None),
     )
 
-    status = entrypoint._run_sync(
-        SimpleNamespace(command="sync", cwd=tmp_path, trust_cwd=False)
-    )
+    status = entrypoint._run_sync(SimpleNamespace(command="sync", cwd=tmp_path, trust_cwd=False))
 
     assert status == 1
     assert errors == ["sanitized close failure"]
-
 
 
 def test_main_login_reports_auth_failure_without_starting_repl(

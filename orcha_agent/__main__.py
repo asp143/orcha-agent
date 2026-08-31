@@ -28,9 +28,7 @@ def _run_sync(cfg: object) -> int:
         )
         with store:
             if not bool(getattr(store, "supports_sync", False)):
-                console.error(
-                    "Sync is only available with the Turso persistence backend."
-                )
+                console.error("Sync is only available with the Turso persistence backend.")
                 return 1
     except Exception as exc:
         console.error(str(exc))
