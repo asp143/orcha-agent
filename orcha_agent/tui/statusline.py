@@ -794,7 +794,7 @@ def _gauge(
     transparent: bool,
     ascii_mode: bool,
 ) -> list[tuple[str, str]]:
-    if width <= 0:
+    if width < _gauge_width(segment):
         return []
     percent = _context_percent(segment)
     label = _context_label(segment)
@@ -850,13 +850,9 @@ def render_statusline(
     if not left_items and not right_items and context is None:
         return []
 
-    show_gauge = context is not None and not transparent
-    if show_gauge:
-        minimum_gap = _gauge_width(context)
-    elif context is not None and left_items and right_items:
-        minimum_gap = 1
-    else:
-        minimum_gap = 0
+    gauge_width = _gauge_width(context) if context is not None else 0
+    show_gauge = context is not None and target_width >= gauge_width
+    minimum_gap = gauge_width if show_gauge else 0
     while True:
         left = _join(
             left_items,
@@ -892,10 +888,9 @@ def render_statusline(
 
     gap = max(0, target_width - left_width - right_width)
     if show_gauge and context is not None:
-        gauge_width = min(gap, _gauge_width(context))
         leading = (gap - gauge_width) // 2
         trailing = gap - gauge_width - leading
-        gap_style = _style(theme, "statusLineBg", transparent=False)
+        gap_style = "" if transparent else _style(theme, "statusLineBg", transparent=False)
         middle = []
         if leading:
             middle.append((gap_style, " " * leading))
@@ -904,7 +899,7 @@ def render_statusline(
                 context,
                 gauge_width,
                 theme,
-                transparent=False,
+                transparent=transparent,
                 ascii_mode=ascii_mode,
             )
         )

@@ -116,7 +116,7 @@ def test_default_statusline_matches_omp_order_separator_and_colors(tmp_path: Pat
         assert any(label in text and f"class:{token}" in style for style, text in fragments)
 
 
-def test_transparent_box_uses_a_plain_gap(tmp_path: Path) -> None:
+def test_transparent_box_keeps_fixed_plain_context_gauge(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, transparent=True)
     ctx.cfg.statusline.left = ("model",)
     ctx.cfg.statusline.right = ("context", "session")
@@ -125,12 +125,41 @@ def test_transparent_box_uses_a_plain_gap(tmp_path: Path) -> None:
     plain = _plain(fragments)
 
     assert _cell_width(fragments) == 80
-    assert plain.index("MODEL") < plain.index("SESSION")
-    assert "50%" not in plain
-    assert "━" not in plain
-    assert "─" not in plain
-    assert " " * 40 in plain
+    assert plain.index("MODEL") < plain.index("50%") < plain.index("SESSION")
+    assert plain.count("━") == 10
+    assert plain.count("─") == 10
     assert all("bg:" not in style for style, _text in fragments)
+
+
+@pytest.mark.parametrize(
+    ("width", "gauge_visible"),
+    [
+        (23, False),
+        (24, True),
+    ],
+)
+def test_context_gauge_is_hidden_atomically_below_its_minimum_width(
+    width: int,
+    gauge_visible: bool,
+    tmp_path: Path,
+) -> None:
+    ctx = _ctx(tmp_path, transparent=True)
+    ctx.cfg.statusline.separator = "none"
+    ctx.cfg.statusline.left = ("model",)
+    ctx.cfg.statusline.right = ("context", "session")
+
+    fragments = render_statusline(ctx, _Theme(), width=width, composer_shape="box")
+    plain = _plain(fragments)
+
+    assert _cell_width(fragments) == width
+    if gauge_visible:
+        assert plain == "━━━━━━━━━━────────── 50%"
+    else:
+        assert "MODEL" in plain
+        assert "SESSION" in plain
+        assert "50%" not in plain
+        assert "━" not in plain
+        assert "─" not in plain
 
 
 @pytest.mark.parametrize(
@@ -181,11 +210,14 @@ def test_presets_keep_fixed_gauge_without_overflow(
     assert "50%" in plain
 
 
+@pytest.mark.parametrize("transparent", (False, True))
 def test_pressure_removes_provider_before_truncating_model_and_keeps_gauge(
     tmp_path: Path,
+    transparent: bool,
 ) -> None:
     ctx = _ctx(
         tmp_path,
+        transparent=transparent,
         model_text="provider-name:extremely-long-model-name",
     )
     ctx.cfg.statusline.separator = "none"
