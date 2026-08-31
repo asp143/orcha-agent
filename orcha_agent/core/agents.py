@@ -674,7 +674,7 @@ class AgentRegistry:
         ] = {}
         self._delivery_lock = asyncio.Lock()
         self._detach_tasks: set[asyncio.Task[None]] = set()
-        self._hydrate_parent(parent_session_id, "main", 0, set())
+        self._hydrate_parent(parent_session_id, "main", 1, set())
 
     def _detach_job(self, run: AgentRun) -> None:
         if not run._attached:
@@ -1005,7 +1005,7 @@ class AgentRegistry:
         self._runs = {}
         self._order = []
         self._mailboxes = {}
-        self._hydrate_parent(parent_session_id, "main", 0, set())
+        self._hydrate_parent(parent_session_id, "main", 1, set())
 
     def _all_views(
         self,
@@ -1143,7 +1143,7 @@ class AgentRegistry:
                 if caller is not None and caller != "main" and caller in runs
                 else self.cfg
             )
-            return "main", view_id, 0, view_id, runs, order, base_cfg
+            return "main", view_id, 1, view_id, runs, order, base_cfg
         run = runs.get(parent)
         if run is None:
             raise LookupError(f"Unknown parent agent: {parent}")

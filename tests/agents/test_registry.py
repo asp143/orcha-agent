@@ -430,7 +430,7 @@ async def test_depth_cap_removes_task_tool_from_descendant_scope(
         parent_session = store.create(tmp_path, "fake:main", thread_id="main-session")
         agents = AgentRegistry(
             _plugin_registry(),
-            _config(tmp_path, max_depth=1),
+            _config(tmp_path, max_depth=2),
             store,
             EventBus(),
             parent_session.thread_id,
@@ -440,8 +440,8 @@ async def test_depth_cap_removes_task_tool_from_descendant_scope(
         child = await agents.spawn("task", "child", name="Child", parent=parent.id)
         await child.wait_status("idle")
 
-        assert parent.depth == 0
-        assert child.depth == 1
+        assert parent.depth == 1
+        assert child.depth == 2
         assert "task" not in builds[1]["tool_scope"]
         assert store.get(child.session_id).parent_session == parent.session_id
         assert agents.tree() == [parent, child]

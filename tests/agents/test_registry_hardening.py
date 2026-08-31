@@ -278,7 +278,11 @@ async def test_cancel_aborts_every_descendant(
     with SessionStore(tmp_path / "sessions.db") as store:
         parent_session = store.create(tmp_path, "fake:main", thread_id="main")
         agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), parent_session.thread_id
+            _registry(),
+            _config(tmp_path, max_depth=3),
+            store,
+            EventBus(),
+            parent_session.thread_id
         )
         parent = await agents.spawn("task", "parent", parent="main")
         child = await agents.spawn("task", "child", parent=parent.id)
@@ -313,7 +317,11 @@ async def test_direct_parent_abort_cascades_budget_reason_to_descendants(
     with SessionStore(tmp_path / "sessions.db") as store:
         root = store.create(tmp_path, "fake:main", thread_id="main")
         agents = AgentRegistry(
-            _registry(), _config(tmp_path), store, EventBus(), root.thread_id
+            _registry(),
+            _config(tmp_path, max_depth=3),
+            store,
+            EventBus(),
+            root.thread_id
         )
         parent = await agents.spawn("task", "parent", parent="main")
         child = await agents.spawn("task", "child", parent=parent.id)
