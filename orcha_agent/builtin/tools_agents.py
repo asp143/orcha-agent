@@ -107,13 +107,13 @@ def _job(run: Any) -> dict[str, Any]:
     }
 
 
-def _roster(registry: Any, run: Any) -> dict[str, Any]:
+def _roster(registry: Any, run: Any, caller: str) -> dict[str, Any]:
     age = max(0.0, (datetime.now(UTC) - run.created_at).total_seconds())
     return {
         "id": run.id, "name": run.name, "type": run.agent_type.name,
         "status": run.status, "age_s": round(age, 3), "last_tool": run.last_tool,
         "tokens": run.tokens_in + run.tokens_out, "cost": run.cost,
-        "unread": registry.unread_count(run.id),
+        "unread": registry.unread_count(run.id, caller=caller),
     }
 
 
@@ -132,15 +132,55 @@ def _matches(value: Any, expected: str) -> bool:
     if expected == "array": return isinstance(value, list)
     return False
 
+_SCHEMA_TYPES = frozenset(
+    {"null", "boolean", "string", "integer", "number", "object", "array"}
+)
+_SCHEMA_KEYWORDS = frozenset({"type", "enum", "required", "properties", "items"})
 
-def _validate(value: Any, schema: Any, path: str = "$") -> str | None:
+
+def _validate_schema(schema: Any, path: str = "$") -> str | None:
     if not isinstance(schema, dict):
         return f"{path}: schema must be an object"
-    expected = schema.get("type")
-    if expected is not None:
+    for keyword in schema:
+        if keyword not in _SCHEMA_KEYWORDS:
+            return f"{path}: unsupported output schema keyword {keyword!r}"
+    if "type" in schema:
+        expected = schema["type"]
         choices = expected if isinstance(expected, list) else [expected]
         if not choices or not all(isinstance(item, str) for item in choices):
             return f"{path}: schema type must be a string or list of strings"
+        unsupported = [item for item in choices if item not in _SCHEMA_TYPES]
+        if unsupported:
+            return f"{path}: unsupported schema type {unsupported[0]!r}"
+    if "enum" in schema:
+        enum = schema["enum"]
+        if not isinstance(enum, list) or not enum:
+            return f"{path}: schema enum must be a non-empty array"
+    if "required" in schema:
+        required = schema["required"]
+        if not isinstance(required, list) or not all(
+            isinstance(key, str) for key in required
+        ):
+            return f"{path}: schema required must be an array of strings"
+    if "properties" in schema:
+        properties = schema["properties"]
+        if not isinstance(properties, dict) or not all(
+            isinstance(key, str) for key in properties
+        ):
+            return f"{path}: schema properties must be an object with string keys"
+        for key, child in properties.items():
+            if error := _validate_schema(child, f"{path}.properties.{key}"):
+                return error
+    if "items" in schema:
+        if error := _validate_schema(schema["items"], f"{path}.items"):
+            return error
+    return None
+
+
+def _validate_value(value: Any, schema: dict[str, Any], path: str) -> str | None:
+    expected = schema.get("type")
+    if expected is not None:
+        choices = expected if isinstance(expected, list) else [expected]
         if not any(_matches(value, item) for item in choices):
             return f"{path}: expected {' or '.join(choices)}"
     enum = schema.get("enum")
@@ -148,19 +188,26 @@ def _validate(value: Any, schema: Any, path: str = "$") -> str | None:
         return f"{path}: value is not one of {enum!r}"
     if isinstance(value, dict):
         required = schema.get("required", [])
-        if not isinstance(required, list): return f"{path}: schema required must be an array"
         for key in required:
-            if key not in value: return f"{path}: missing required property {key!r}"
+            if key not in value:
+                return f"{path}: missing required property {key!r}"
         properties = schema.get("properties", {})
-        if not isinstance(properties, dict): return f"{path}: schema properties must be an object"
         for key, child in properties.items():
-            if key in value and (error := _validate(value[key], child, f"{path}.{key}")):
+            if key in value and (
+                error := _validate_value(value[key], child, f"{path}.{key}")
+            ):
                 return error
     if isinstance(value, list) and "items" in schema:
         for index, item in enumerate(value):
-            if error := _validate(item, schema["items"], f"{path}[{index}]"):
+            if error := _validate_value(item, schema["items"], f"{path}[{index}]"):
                 return error
     return None
+
+
+def _validate(value: Any, schema: Any, path: str = "$") -> str | None:
+    if error := _validate_schema(schema):
+        return f"invalid output schema: {error}"
+    return _validate_value(value, schema, path)
 
 
 def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
@@ -174,9 +221,14 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
 
         async def spawn(item: dict[str, Any]) -> Any:
             prompt = "\n\n".join(part for part in (shared, str(item["task"]).strip()) if part)
+            output_schema = item.get("output_schema")
+            if output_schema is not None and (
+                error := _validate_schema(output_schema)
+            ):
+                raise ValueError(f"invalid output schema: {error}")
             return await registry.spawn(
                 str(item.get("agent") or "task"), prompt, name=item.get("name"), parent=caller,
-                output_schema=item.get("output_schema"),
+                output_schema=output_schema,
                 schema_mode=str(item.get("schema_mode") or "permissive"),
                 blocking=bool(item.get("blocking", False)),
             )
@@ -191,7 +243,7 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
         runs = [run for _index, run in enumerate(runs)]
         blocking = [run for run in runs if run.blocking]
         if blocking:
-            await registry.wait_all((run.id for run in blocking), timeout_s=_timeout(registry))
+            await registry.wait_all((run.id for run in blocking), timeout_s=_timeout(registry), caller=caller)
         completed = [run for run in blocking if run.terminal]
         if completed:
             await registry.deliver(caller, (run.id for run in completed))
@@ -246,34 +298,43 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     async def hub_call(**kwargs: Any) -> dict[str, Any]:
         op = str(kwargs["op"])
         if op == "list":
-            return {"agents": [_roster(registry, run) for run in registry.list(status=kwargs.get("status"))]}
+            return {"agents": [_roster(registry, run, caller) for run in registry.list(status=kwargs.get("status"), caller=caller)]}
         if op == "send":
             target, message = kwargs.get("to"), kwargs.get("message")
             if not isinstance(target, str) or not isinstance(message, str):
                 return {"error": "hub send requires string to and message"}
+            await_reply = bool(kwargs.get("await", False))
+            reservation = None
             try:
-                target_id = registry.resolve(target)
-                peer = registry.get(target_id) if target_id != "main" else None
-                before = 0 if peer is None else peer.yield_count
-                await registry.post_message(caller, target_id, message)
-                if peer is not None:
-                    await registry.send(peer.id, message, interrupt=bool(kwargs.get("interrupt", False)))
-            except (LookupError, RuntimeError, ValueError) as exc:
-                return {"error": str(exc), "op": op}
-            response: dict[str, Any] = {"sent": {"to": target_id, "name": "main" if peer is None else peer.name, "status": "running" if peer is None else peer.status}}
-            if not bool(kwargs.get("await", False)): return response
-            await registry.wait_activity(caller, timeout_s=_timeout(registry), peer=target_id, after_yield=before)
-            replies = registry.drain_messages(caller, sender=target_id)
-            if replies: response["event"] = {"kind": "message", "messages": replies}
-            elif peer is not None and peer.yield_count > before: response["event"] = {"kind": "yield", "from": peer.id, "payload": peer.last_yield}
-            else: response["event"] = {"kind": "timeout"}
-            return response
-        if op == "inbox": return {"messages": registry.drain_messages(caller)}
+                try:
+                    target_id = registry.resolve(target, caller=caller, visible_only=True)
+                    peer = registry.get(target_id, caller=caller) if target_id != "main" else None
+                    before = 0 if peer is None else peer.yield_count
+                    if await_reply:
+                        reservation = registry.reserve_activity_waiter(caller)
+                    has_waiter = await registry.post_message(caller, target_id, message)
+                    if peer is not None and not has_waiter:
+                        await registry.send(peer.id, message, interrupt=bool(kwargs.get("interrupt", False)), caller=caller)
+                except (LookupError, RuntimeError, ValueError) as exc:
+                    return {"error": str(exc), "op": op}
+                response: dict[str, Any] = {"sent": {"to": target_id, "name": "main" if peer is None else peer.name, "status": "running" if peer is None else peer.status}}
+                if not await_reply:
+                    return response
+                await registry.wait_activity(caller, timeout_s=_timeout(registry), peer=target_id, after_yield=before, reserved=True)
+                replies = registry.drain_messages(caller, sender=target_id, caller=caller)
+                if replies: response["event"] = {"kind": "message", "messages": replies}
+                elif peer is not None and peer.yield_count > before: response["event"] = {"kind": "yield", "from": peer.id, "payload": peer.last_yield}
+                else: response["event"] = {"kind": "timeout"}
+                return response
+            finally:
+                if reservation is not None:
+                    registry.release_activity_waiter(reservation)
+        if op == "inbox": return {"messages": registry.drain_messages(caller, caller=caller)}
         if op == "wait":
             ids, timeout_s = kwargs.get("ids"), float(kwargs.get("timeout_s", 300))
             await registry.wait_activity(caller, ids=ids, timeout_s=timeout_s)
-            messages = registry.drain_messages(caller)
-            settled = [run for run in registry.jobs(caller, ids=ids) if run.terminal and not run.delivered]
+            messages = registry.drain_messages(caller, caller=caller)
+            settled = [run for run in registry.jobs(caller, ids=ids, caller=caller) if run.terminal and not run.delivered]
             claimed = (
                 await registry.deliver(caller, (run.id for run in settled))
                 if settled
@@ -281,7 +342,7 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
             )
             return {"messages": messages, "jobs": [_job(run) for run in claimed], "timed_out": not messages and not claimed}
         if op == "jobs":
-            jobs = registry.jobs(caller)
+            jobs = registry.jobs(caller, caller=caller)
             pending = [run for run in jobs if run.terminal and not run.delivered]
             if pending: await registry.deliver(caller, (run.id for run in pending))
             return {"jobs": [_job(run) for run in jobs]}
@@ -291,9 +352,9 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
             cancelled, errors = [], []
             for selector in ids:
                 try:
-                    run_id = registry.resolve(str(selector))
+                    run_id = registry.resolve(str(selector), caller=caller, visible_only=True)
                     if run_id == "main": raise ValueError("main cannot be cancelled through hub")
-                    cancelled.append(_summary(await registry.cancel(run_id, reason=str(kwargs.get("reason") or "cancel"))))
+                    cancelled.append(_summary(await registry.cancel(run_id, reason=str(kwargs.get("reason") or "cancel"), caller=caller)))
                 except (LookupError, RuntimeError, ValueError) as exc:
                     errors.append({"id": str(selector), "error": str(exc)})
             return {"cancelled": cancelled, "errors": errors}

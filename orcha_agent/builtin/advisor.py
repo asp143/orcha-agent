@@ -51,12 +51,32 @@ def _configured_model(cfg: Any) -> str | list[str]:
     raise ValueError(f"Unknown advisor model role: {configured}")
 
 
-def _watchdog_path(cwd: Path) -> Path | None:
+def _watchdog_path(
+    cwd: Path,
+    *,
+    trust_cwd: bool = True,
+    trusted_dirs: tuple[Path, ...] | None = None,
+) -> Path | None:
     root = cwd.resolve()
-    for directory in (root, *root.parents):
-        candidate = directory / "WATCHDOG.md"
-        if candidate.is_file():
-            return candidate
+    if trust_cwd:
+        directories = (root, *root.parents)
+        if trusted_dirs is not None:
+            containing_roots = [
+                trusted
+                for configured in trusted_dirs
+                if root == (trusted := Path(configured).resolve())
+                or root.is_relative_to(trusted)
+            ]
+            boundary = max(
+                containing_roots,
+                key=lambda path: len(path.parts),
+                default=root,
+            )
+            directories = directories[: directories.index(boundary) + 1]
+        for directory in directories:
+            candidate = directory / "WATCHDOG.md"
+            if candidate.is_file():
+                return candidate
     fallback = Path.home() / ".config" / "orcha-agent" / "WATCHDOG.md"
     return fallback if fallback.is_file() else None
 
@@ -182,7 +202,12 @@ class AdvisorService:
         if state.watchdog_loaded:
             return state.watchdog
         state.watchdog_loaded = True
-        path = _watchdog_path(Path(self.ctx.cfg.cwd))
+        cfg = self.ctx.cfg
+        path = _watchdog_path(
+            Path(cfg.cwd),
+            trust_cwd=bool(getattr(cfg, "trust_cwd", False)),
+            trusted_dirs=tuple(getattr(cfg, "trusted_dirs", ()) or ()),
+        )
         if path is not None:
             try:
                 state.watchdog = path.read_text(encoding="utf-8")
@@ -380,10 +405,13 @@ class AdvisorService:
                     state.cursor = previous_cursor
                     return
         except (TimeoutError, asyncio.CancelledError):
+            state.cursor = previous_cursor
             return
         except Exception:
+            state.cursor = previous_cursor
             return
         if str(self.ctx.session_id) != session_id:
+            state.cursor = previous_cursor
             return
 
         note = payload.get("note")

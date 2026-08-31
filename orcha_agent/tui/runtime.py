@@ -45,6 +45,7 @@ from orcha_agent.core.events import (
     Event,
     EventBus,
     InterruptRaised,
+    ModelChunk,
     SessionSwitch,
     ToolCallEnd,
     ToolCallStart,
@@ -154,6 +155,27 @@ def _bottom_toolbar(ctx: Any) -> Any:
         width=width,
         composer_shape=getattr(ctx.cfg, "composer", "box"),
     )
+
+_MAIN_ACCOUNTING_EVENTS = (TurnStart, ModelChunk, TurnEnd)
+
+
+def _scope_main_statusbar_accounting(bus: EventBus) -> None:
+    """Keep main-session status accounting isolated from forwarded agent turns."""
+
+    for index, registration in enumerate(bus.handlers):
+        if (
+            registration.plugin != "statusbar"
+            or registration.event_type not in _MAIN_ACCOUNTING_EVENTS
+        ):
+            continue
+        handler = registration.handler
+
+        async def main_only(event: Any, *, _handler: Any = handler) -> Any:
+            if getattr(event, "source_id", "main") != "main":
+                return None
+            return await _handler(event)
+
+        bus.handlers[index] = replace(registration, handler=main_only)
 
 
 async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
@@ -1318,17 +1340,50 @@ class ApplicationRuntime:
             await self._submit(text)
 
     @staticmethod
-    def _agent_delivery_notification(runs: list[Any]) -> str:
+    def _agent_delivery_payload(run: Any) -> Any:
+        findings = getattr(run, "partial_findings", None)
+        if not findings:
+            return run.result
+        return {
+            "result": run.result,
+            "partial_findings": findings,
+        }
+
+    @staticmethod
+    def _agent_delivery_snapshot(job: Mapping[str, Any]) -> dict[str, Any]:
+        snapshot = dict(job)
+        findings = snapshot.get("partial_findings")
+        if findings:
+            snapshot["result"] = {
+                "result": snapshot.get("result"),
+                "partial_findings": findings,
+            }
+        return snapshot
+
+    @classmethod
+    def _agent_delivery_notification(cls, runs: list[Any]) -> str:
         lines = ["<system-notification>"]
         for index, run in enumerate(runs):
             if index:
                 lines.append("")
             lines.append(f"Job {run.id} ({run.name}) finished: {run.status}")
+            payload = json.dumps(
+                cls._agent_delivery_payload(run),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
             lines.append(
-                json.dumps(run.result, ensure_ascii=False, sort_keys=True)
+                payload.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             )
         lines.append("</system-notification>")
         return "\n".join(lines)
+
+    @classmethod
+    async def _prepare_agent_delivery(cls, event: AgentDelivered) -> None:
+        event.jobs = tuple(
+            cls._agent_delivery_snapshot(job) if isinstance(job, Mapping) else job
+            for job in event.jobs
+        )
 
     async def _claim_agent_delivery(self) -> str | None:
         agents = getattr(self.ctx, "agents", None)
@@ -1749,6 +1804,7 @@ async def run_app(cfg: Config) -> int:
 
         loader = _compat("load_plugins", load_plugins)
         records = loader(registry, bus, cfg, states, request_rebuild)
+        _scope_main_statusbar_accounting(bus)
         ctx = AppContext(
             cfg=cfg,
             registry=registry,
@@ -1847,6 +1903,13 @@ async def run_app(cfg: Config) -> int:
                     runtime.handle_presentation,
                     plugin="<tui-presentation>",
                     priority=10_000,
+                )
+            if hasattr(runtime, "_prepare_agent_delivery"):
+                bus.on(
+                    AgentDelivered,
+                    runtime._prepare_agent_delivery,
+                    plugin="<tui-delivery>",
+                    priority=8_900,
                 )
             bus.on(
                 Event,

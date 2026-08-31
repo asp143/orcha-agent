@@ -854,6 +854,80 @@ def _notification(merged: Mapping[str, Any], *, fix: bool) -> str:
     return "\n".join(lines)
 
 
+async def _cancel_unsettled_reviewers(
+    agents: Any,
+    runs: Sequence[Any],
+    *,
+    reason: str,
+) -> None:
+    unsettled = [run for run in runs if not getattr(run, "terminal", False)]
+    if not unsettled:
+        return
+    cancel = getattr(agents, "cancel", None)
+    if callable(cancel):
+
+        async def cancel_one(run: Any) -> None:
+            try:
+                await cancel(run.id, reason=reason)
+            except Exception:
+                pass
+
+        await asyncio.gather(*(cancel_one(run) for run in unsettled))
+    try:
+        await agents.wait_all(
+            (run.id for run in unsettled),
+            timeout_s=300,
+        )
+    except Exception:
+        pass
+
+
+async def _deliver_terminal_reviewers(agents: Any, runs: Sequence[Any]) -> list[Any]:
+    terminal = [run for run in runs if getattr(run, "terminal", False)]
+    if terminal:
+        try:
+            await agents.deliver("main", (run.id for run in terminal))
+        except Exception:
+            pass
+    return terminal
+
+
+async def _cleanup_aborted_review(
+    agents: Any,
+    spawn_batch: Any,
+    spawned: Sequence[Any | None],
+) -> None:
+    if not spawn_batch.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(spawn_batch), timeout=300)
+        except TimeoutError:
+            spawn_batch.cancel()
+            try:
+                await spawn_batch
+            except BaseException:
+                pass
+        except BaseException:
+            pass
+    runs = [run for run in spawned if run is not None]
+    await _cancel_unsettled_reviewers(agents, runs, reason="cancel")
+    await _deliver_terminal_reviewers(agents, runs)
+
+
+async def _finish_cleanup_without_masking(cleanup: Any) -> None:
+    cleanup_task = asyncio.create_task(cleanup)
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    try:
+        cleanup_task.result()
+    except BaseException:
+        pass
+
+
 async def review(ctx: Any, args: str) -> None:
     """Run reviewers over the selected diff and feed the merged review to main."""
 
@@ -881,8 +955,10 @@ async def review(ctx: Any, args: str) -> None:
         ctx.console.error("Code review agents are unavailable.")
         return
 
+    spawned: list[Any | None] = [None] * len(chunks)
+
     async def spawn(index: int, chunk: str) -> Any:
-        return await agents.spawn(
+        run = await agents.spawn(
             "reviewer",
             _review_prompt(chunk, index + 1, len(chunks)),
             name=f"Reviewer {index + 1}",
@@ -891,51 +967,41 @@ async def review(ctx: Any, args: str) -> None:
             schema_mode="strict",
             blocking=True,
         )
+        spawned[index] = run
+        return run
 
-    outcomes = await asyncio.gather(
+    spawn_batch = asyncio.gather(
         *(spawn(index, chunk) for index, chunk in enumerate(chunks)),
         return_exceptions=True,
     )
-    runs = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
-    failures = len(outcomes) - len(runs)
-    if runs:
-        run_ids = tuple(run.id for run in runs)
-        try:
-            await agents.wait_all(run_ids, timeout_s=300)
-        except Exception:
-            pass
-        unsettled = [run for run in runs if not getattr(run, "terminal", False)]
-        if unsettled:
-            cancel = getattr(agents, "cancel", None)
-            if callable(cancel):
-                async def cancel_one(run: Any) -> None:
-                    try:
-                        await cancel(run.id, reason="timeout")
-                    except Exception:
-                        pass
-
-                await asyncio.gather(*(cancel_one(run) for run in unsettled))
+    try:
+        outcomes = await asyncio.shield(spawn_batch)
+        runs = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
+        failures = len(outcomes) - len(runs)
+        if runs:
+            run_ids = tuple(run.id for run in runs)
             try:
-                await agents.wait_all(
-                    (run.id for run in unsettled),
-                    timeout_s=300,
-                )
+                await agents.wait_all(run_ids, timeout_s=300)
             except Exception:
                 pass
-        terminal = [run for run in runs if getattr(run, "terminal", False)]
-        if terminal:
-            try:
-                await agents.deliver("main", (run.id for run in terminal))
-            except Exception:
-                pass
-        results = [
-            run.result for run in terminal if getattr(run, "status", None) == "done"
-        ]
-        failures += len(runs) - len(results)
-    else:
-        results = []
+            await _cancel_unsettled_reviewers(agents, runs, reason="timeout")
+            terminal = await _deliver_terminal_reviewers(agents, runs)
+            results = [
+                run.result
+                for run in terminal
+                if getattr(run, "status", None) == "done"
+            ]
+            failures += len(runs) - len(results)
+        else:
+            results = []
 
-    merged = merge_reviews(results, failures=failures)
+        merged = merge_reviews(results, failures=failures)
+    except BaseException:
+        await _finish_cleanup_without_masking(
+            _cleanup_aborted_review(agents, spawn_batch, spawned)
+        )
+        raise
+
     ctx.transcript.append_review(merged)
     await run_turn(ctx, _notification(merged, fix=fix))
 

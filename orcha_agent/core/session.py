@@ -37,6 +37,7 @@ class SessionInfo:
     leaf_id: str | None = None
     current_thread: str | None = None
     parent_session: str | None = None
+    kind: str = "user"
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +264,15 @@ class SessionStore:
         )
         self._connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS internal_sessions (
+                thread_id TEXT PRIMARY KEY,
+                FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        self._connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS plugin_state (
                 thread_id TEXT NOT NULL,
                 plugin TEXT NOT NULL,
@@ -475,7 +485,10 @@ class SessionStore:
         title: str | None = None,
         thread_id: str | None = None,
         parent_session: str | None = None,
+        kind: str = "user",
     ) -> SessionInfo:
+        if kind not in ("user", "agent"):
+            raise ValueError(f"Invalid session kind {kind!r}")
         created = datetime.now(UTC).isoformat(timespec="microseconds")
         identifier = thread_id or (
             f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
@@ -492,6 +505,7 @@ class SessionStore:
             mode,
             current_thread=current_thread,
             parent_session=parent_session,
+            kind=kind,
         )
         with self.saver.lock:
             try:
@@ -513,6 +527,11 @@ class SessionStore:
                         info.parent_session,
                     ),
                 )
+                if info.kind == "agent":
+                    self._connection.execute(
+                        "INSERT INTO internal_sessions(thread_id) VALUES (?)",
+                        (info.thread_id,),
+                    )
                 self._connection.execute(
                     """
                     INSERT INTO threads(
@@ -550,6 +569,10 @@ class SessionStore:
                 )
                 self._connection.execute(
                     "DELETE FROM plugin_state WHERE thread_id = ?",
+                    (session_id,),
+                )
+                self._connection.execute(
+                    "DELETE FROM internal_sessions WHERE thread_id = ?",
                     (session_id,),
                 )
                 self._connection.execute(
@@ -606,6 +629,7 @@ class SessionStore:
             row["leaf_id"],
             row["current_thread"],
             row["parent_session"],
+            row["kind"],
         )
 
     @staticmethod
@@ -626,7 +650,11 @@ class SessionStore:
         row = self._connection.execute(
             """
             SELECT thread_id, cwd, model, created, title, mode,
-                   leaf_id, current_thread, parent_session
+                   leaf_id, current_thread, parent_session,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM internal_sessions
+                       WHERE internal_sessions.thread_id = sessions.thread_id
+                   ) THEN 'agent' ELSE 'user' END AS kind
             FROM sessions
             WHERE thread_id = ?
             """,
@@ -639,7 +667,11 @@ class SessionStore:
             rows = self._connection.execute(
                 """
                 SELECT thread_id, cwd, model, created, title, mode,
-                       leaf_id, current_thread, parent_session
+                       leaf_id, current_thread, parent_session,
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM internal_sessions
+                           WHERE internal_sessions.thread_id = sessions.thread_id
+                       ) THEN 'agent' ELSE 'user' END AS kind
                 FROM sessions
                 WHERE parent_session = ?
                 ORDER BY created
@@ -657,14 +689,19 @@ class SessionStore:
         return self.get(thread_id) is not None
 
     def resolve_session(self, prefix: str) -> SessionInfo:
-        if exact := self.get(prefix):
+        if (exact := self.get(prefix)) and exact.kind != "agent":
             return exact
         rows = self._connection.execute(
             """
             SELECT thread_id, cwd, model, created, title, mode,
-                   leaf_id, current_thread, parent_session
+                   leaf_id, current_thread, parent_session,
+                   'user' AS kind
             FROM sessions
-            WHERE substr(thread_id, 1, ?) = ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM internal_sessions
+                WHERE internal_sessions.thread_id = sessions.thread_id
+            )
+              AND substr(thread_id, 1, ?) = ?
             ORDER BY thread_id
             """,
             (len(prefix), prefix),
@@ -878,12 +915,28 @@ class SessionStore:
             (mode, thread_id),
         )
 
-    def list(self) -> list[SessionInfo]:
-        rows = self._connection.execute(
+    def list(self, *, include_children: bool = False) -> list[SessionInfo]:
+        """Return user sessions unless internal callers request agent sessions."""
+        where = (
+            ""
+            if include_children
+            else """
+            WHERE NOT EXISTS (
+                SELECT 1 FROM internal_sessions
+                WHERE internal_sessions.thread_id = sessions.thread_id
+            )
             """
+        )
+        rows = self._connection.execute(
+            f"""
             SELECT thread_id, cwd, model, created, title, mode,
-                   leaf_id, current_thread, parent_session
+                   leaf_id, current_thread, parent_session,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM internal_sessions
+                       WHERE internal_sessions.thread_id = sessions.thread_id
+                   ) THEN 'agent' ELSE 'user' END AS kind
             FROM sessions
+            {where}
             ORDER BY created DESC
             """
         ).fetchall()

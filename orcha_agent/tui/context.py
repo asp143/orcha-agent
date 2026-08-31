@@ -251,6 +251,7 @@ class AppContext:
         return self._always_allowed_tools
 
     def _retarget_agents(self) -> None:
+        self._always_allowed()
         if self.agents is not None:
             self.agents.retarget(self.session_id, self.cfg)
 

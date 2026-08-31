@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Any, Literal
 
@@ -20,7 +21,7 @@ from orcha_agent.tui.turn import run_turn
 from .agent import FILESYSTEM_TOOL_NAMES, build_agent
 from .agent_types import AgentType
 from .capture import capture_graph_values
-from .config import Config
+from .config import Config, is_trusted_cwd
 from .events import (
     AgentDelivered,
     AgentFinished,
@@ -133,6 +134,9 @@ class _RunEventBus:
             self._run.owner._persist_job(self._run)
         if not getattr(self._run, "visible", True):
             return None
+        is_active = getattr(self._run.owner, "_is_active", None)
+        if callable(is_active) and not is_active(self._run):
+            return None
         return await self._target.emit(event)
 
 
@@ -213,6 +217,8 @@ class AgentRun:
         self._completion: tuple[AgentStatusName, Any] | None = None
         self._abort_requested: AbortReason | None = None
         self._runtime_timer: asyncio.Task[None] | None = None
+        self._job_entry_id: str | None = None
+        self._attached = True
         self._runtime_deadline = (
             monotonic() + cfg.agents.max_runtime_s
             if cfg.agents.max_runtime_s > 0 and agent_type.name != "advisor"
@@ -353,6 +359,13 @@ class AgentRun:
         await self.inbox.put(_WAKE)
 
     async def request_abort(self, reason: AbortReason) -> None:
+        cascade = getattr(self.owner, "_request_abort_tree", None)
+        if callable(cascade):
+            await cascade(self, reason)
+            return
+        await self._request_abort_self(reason)
+
+    async def _request_abort_self(self, reason: AbortReason) -> None:
         if self.terminal:
             return
         if self._abort_requested is None:
@@ -377,9 +390,10 @@ class AgentRun:
         self.status = status
         self.updated_at = datetime.now(UTC)
         self.owner._persist_job(self)
+        await self.owner._notify()
         async with self._status_changed:
             self._status_changed.notify_all()
-        if self.visible:
+        if self.visible and self.owner._is_active(self):
             await self.owner.bus.emit(
                 AgentStatus(
                     run_id=self.id,
@@ -447,6 +461,11 @@ class AgentRun:
                 if self.agent_type.name != "advisor":
                     budget = self.cfg.agents.soft_request_budget
                     if self.requests >= budget + 10:
+                        abort_descendants = getattr(
+                            self.owner, "_request_abort_descendants", None
+                        )
+                        if callable(abort_descendants):
+                            await abort_descendants(self, "budget")
                         await self._settle_abort("budget")
                         return
                     if self.requests >= budget:
@@ -497,7 +516,7 @@ class AgentRun:
             ),
         )
         await self._set_status(status, self.abort_reason)
-        if self.visible:
+        if self.visible and self.owner._is_active(self):
             await self.owner.bus.emit(
                 AgentFinished(
                     run_id=self.id,
@@ -543,25 +562,100 @@ class AgentRegistry:
             ],
         ] = {}
         self._changed = asyncio.Condition()
+        self._activity_waiters: dict[tuple[str, str], int] = {}
+        self._activity_reservations: dict[
+            tuple[str, str, str], tuple[str, str]
+        ] = {}
         self._delivery_lock = asyncio.Lock()
         self._hydrate_parent(parent_session_id, "main", 0, set())
 
-    def _persist_job(self, run: AgentRun, *, delivered: bool | None = None) -> None:
-        Ledger(self.session).append(
+    def _detach_job(self, run: AgentRun) -> None:
+        if not run._attached:
+            return
+        run._attached = False
+        if run.terminal or run._abort_requested is not None:
+            return
+        run._abort_requested = "cancel"
+        asyncio.create_task(
+            run.request_abort("cancel"),
+            name=f"detach-agent:{run.id}",
+        )
+
+    def _job_on_active_path(self, run: AgentRun) -> bool:
+        if not run._attached:
+            return False
+        if run._job_entry_id is None:
+            return True
+        if any(
+            entry.id == run._job_entry_id
+            for entry in Ledger(self.session).path(run.parent_session)
+        ):
+            return True
+        self._detach_job(run)
+        return False
+
+    def _persist_job(
+        self, run: AgentRun, *, delivered: bool | None = None
+    ) -> bool:
+        if not self._job_on_active_path(run):
+            return False
+        entry = Ledger(self.session).append(
             run.parent_session,
             CustomEntry(
                 custom_type="agent_job",
                 data=run.snapshot(delivered=delivered),
             ),
         )
+        run._job_entry_id = entry.id
+        return True
+
+    def _runs_for(self, run: AgentRun) -> dict[str, AgentRun] | None:
+        return next(
+            (
+                runs
+                for _view_id, runs, _order, _mailboxes in self._all_views()
+                if runs.get(run.id) is run
+            ),
+            None,
+        )
+
+    async def _request_abort_descendants(
+        self, run: AgentRun, reason: AbortReason
+    ) -> None:
+        runs = self._runs_for(run)
+        if runs is None:
+            return
+        descendants: list[AgentRun] = []
+        parents = [run.id]
+        while parents:
+            parent_id = parents.pop()
+            children = [
+                candidate
+                for candidate in runs.values()
+                if candidate.parent_id == parent_id
+            ]
+            descendants.extend(children)
+            parents.extend(child.id for child in children)
+        for descendant in reversed(descendants):
+            await descendant._request_abort_self(reason)
+
+    async def _request_abort_tree(
+        self, run: AgentRun, reason: AbortReason
+    ) -> None:
+        reason = run._abort_requested or reason
+        await self._request_abort_descendants(run, reason)
+        await run._request_abort_self(reason)
 
     def _session_for_job(
         self, parent_session: str, run_id: str, data: Mapping[str, Any]
     ) -> Any:
+        terminal = data.get("status") in _TERMINAL
         session_id = data.get("session_id")
         if isinstance(session_id, str):
             if info := self.session.get(session_id):
-                return info
+                if info.parent_session == parent_session or terminal:
+                    return info
+                return None
 
         candidates = self.session.children(parent_session)
         for info in candidates:
@@ -573,8 +667,10 @@ class AgentRegistry:
         # Forked parent ledgers retain child job entries while the immutable child
         # session still points at the source parent session. Legacy job payloads
         # did not carry session_id, so fall back to the globally unique run id.
+        if not terminal:
+            return None
         direct_ids = {info.thread_id for info in candidates}
-        for info in self.session.list():
+        for info in self.session.list(include_children=True):
             if info.thread_id in direct_ids or info.parent_session is None:
                 continue
             if run_id in Ledger(self.session).latest_custom(
@@ -613,6 +709,7 @@ class AgentRegistry:
             info = self._session_for_job(parent_session, run_id, data)
             if info is None or info.current_thread is None:
                 continue
+            foreign_snapshot = info.parent_session != parent_session
             type_name = data.get("agent_type")
             if not isinstance(type_name, str):
                 type_name = "task"
@@ -647,6 +744,18 @@ class AgentRegistry:
             model_label = data.get("model_label")
             if not isinstance(model_label, str):
                 model_label = _model_label(info.model)
+            child_cwd = Path(info.cwd)
+            hydrated_cfg = replace(
+                self.cfg,
+                model=info.model,
+                cwd=child_cwd,
+                mode=info.mode,
+                trust_cwd=is_trusted_cwd(
+                    child_cwd,
+                    self.cfg.trusted_dirs,
+                    trust_all=self.cfg.trust_all_cwd,
+                ),
+            )
             run = AgentRun(
                 self,
                 run_id=run_id,
@@ -656,7 +765,7 @@ class AgentRegistry:
                 parent_session=parent_session,
                 session_id=info.thread_id,
                 thread_id=info.current_thread,
-                cfg=replace(self.cfg, model=info.model),
+                cfg=hydrated_cfg,
                 depth=depth,
                 output_schema=output_schema,
                 schema_mode=schema_mode,
@@ -669,9 +778,14 @@ class AgentRegistry:
             run.result = data.get("result")
             run.schema_overridden = bool(data.get("schema_overridden", False))
             run.delivered = data.get("delivered") is True
-            child_result = Ledger(self.session).latest_custom(
-                run.session_id, "agent_result", key="run_id"
-            ).get(run.id)
+            run._job_entry_id = entry.id
+            child_result = (
+                None
+                if foreign_snapshot
+                else Ledger(self.session)
+                .latest_custom(run.session_id, "agent_result", key="run_id")
+                .get(run.id)
+            )
             if child_result is not None and isinstance(child_result.data, Mapping):
                 child_status = child_result.data.get("status")
                 if child_status in _TERMINAL:
@@ -731,13 +845,14 @@ class AgentRegistry:
                     0.0, (datetime.now(UTC) - run.created_at).total_seconds()
                 )
                 run._runtime_deadline = monotonic() + max(
-                    0.0, self.cfg.agents.max_runtime_s - elapsed
+                    0.0, run.cfg.agents.max_runtime_s - elapsed
                 )
             self._runs[run.id] = run
             self._order.append(run.id)
-            self._hydrate_parent(
-                run.session_id, run.id, run.depth + 1, visited_sessions
-            )
+            if not foreign_snapshot:
+                self._hydrate_parent(
+                    run.session_id, run.id, run.depth + 1, visited_sessions
+                )
 
     def retarget(
         self, parent_session_id: str, cfg: Config | None = None
@@ -745,6 +860,8 @@ class AgentRegistry:
         """Point the registry at one active parent ledger and hydrate its runs."""
         if cfg is not None:
             self.cfg = cfg
+        for run in tuple(self._runs.values()):
+            self._job_on_active_path(run)
         if parent_session_id == self.parent_session_id:
             return
         self._views[self.parent_session_id] = (
@@ -756,45 +873,119 @@ class AgentRegistry:
         restored = self._views.pop(parent_session_id, None)
         if restored is not None:
             self._runs, self._order, self._mailboxes = restored
+            for run in tuple(self._runs.values()):
+                self._job_on_active_path(run)
             return
         self._runs = {}
         self._order = []
         self._mailboxes = {}
         self._hydrate_parent(parent_session_id, "main", 0, set())
 
+    def _all_views(
+        self,
+    ) -> Iterable[
+        tuple[
+            str,
+            dict[str, AgentRun],
+            list[str],
+            dict[str, deque[dict[str, Any]]],
+        ]
+    ]:
+        runs = getattr(self, "_runs", {})
+        order = getattr(self, "_order", list(runs))
+        mailboxes = getattr(self, "_mailboxes", {})
+        yield (
+            getattr(self, "parent_session_id", ""),
+            runs,
+            order,
+            mailboxes,
+        )
+        for view_id, (runs, order, mailboxes) in getattr(
+            self, "_views", {}
+        ).items():
+            yield view_id, runs, order, mailboxes
+
+    def _view_for_caller(
+        self, caller: str | None
+    ) -> tuple[
+        str,
+        dict[str, AgentRun],
+        list[str],
+        dict[str, deque[dict[str, Any]]],
+    ]:
+        if caller is None or caller == "main":
+            return next(iter(self._all_views()))
+        for view in self._all_views():
+            if caller in view[1]:
+                return view
+        raise LookupError(f"Unknown agent: {caller}")
+
+    def _view_for_ids(
+        self, ids: Iterable[str], caller: str | None = None
+    ) -> tuple[
+        str,
+        dict[str, AgentRun],
+        list[str],
+        dict[str, deque[dict[str, Any]]],
+    ]:
+        if caller is not None:
+            return self._view_for_caller(caller)
+        selected_view = None
+        for run_id in ids:
+            for view in self._all_views():
+                if run_id not in view[1]:
+                    continue
+                if selected_view is not None and selected_view[0] != view[0]:
+                    raise LookupError("Agents span registry views")
+                selected_view = view
+                break
+        return selected_view or self._view_for_caller(None)
+
+    def _is_active(self, run: AgentRun) -> bool:
+        return run._attached and self._runs.get(run.id) is run
+
     async def _notify(self) -> None:
         async with self._changed:
             self._changed.notify_all()
 
-    def get(self, run_id: str) -> AgentRun | None:
-        return self._runs.get(run_id)
+    def get(self, run_id: str, *, caller: str | None = None) -> AgentRun | None:
+        return self._view_for_caller(caller)[1].get(run_id)
 
-    def list(self, status: str | None = None) -> list[AgentRun]:
+    def list(
+        self, status: str | None = None, *, caller: str | None = None
+    ) -> list[AgentRun]:
+        _view_id, runs, order, _mailboxes = self._view_for_caller(caller)
         return [
-            self._runs[run_id]
-            for run_id in self._order
-            if self._runs[run_id].visible
-            and (status is None or self._runs[run_id].status == status)
+            runs[run_id]
+            for run_id in order
+            if getattr(runs[run_id], "_attached", True)
+            and runs[run_id].visible
+            and (status is None or runs[run_id].status == status)
         ]
 
     def advisor_run(self, parent_session: str) -> AgentRun | None:
-        return next(
-            (
-                run
-                for run_id in reversed(self._order)
-                if (run := self._runs[run_id]).agent_type.name == "advisor"
-                and not run.visible
-                and run.parent_session == parent_session
-                and not run.terminal
-            ),
-            None,
-        )
+        for _view_id, runs, order, _mailboxes in self._all_views():
+            found = next(
+                (
+                    run
+                    for run_id in reversed(order)
+                    if (run := runs[run_id]).agent_type.name == "advisor"
+                    and not run.visible
+                    and run.parent_session == parent_session
+                    and not run.terminal
+                ),
+                None,
+            )
+            if found is not None:
+                return found
+        return None
 
-    def tree(self) -> list[AgentRun]:
+    def tree(self, *, caller: str | None = None) -> list[AgentRun]:
+        _view_id, runs, _order, _mailboxes = self._view_for_caller(caller)
         children: dict[str, list[AgentRun]] = {}
         roots: list[AgentRun] = []
-        for run in self.list():
-            if run.parent_id in self._runs:
+        for run in self.list(caller=caller):
+            if run.parent_id in runs:
                 children.setdefault(run.parent_id, []).append(run)
             else:
                 roots.append(run)
@@ -806,21 +997,55 @@ class AgentRegistry:
             stack.extend(reversed(children.get(run.id, ())))
         return ordered
 
-    def _parent(self, parent: str) -> tuple[str, str, int]:
+    def _parent(
+        self, parent: str, caller: str | None = None
+    ) -> tuple[
+        str,
+        str,
+        int,
+        str,
+        dict[str, AgentRun],
+        list[str],
+        Config,
+    ]:
+        view_id, runs, order, _mailboxes = self._view_for_caller(
+            caller if parent == "main" else parent
+        )
         if parent == "main":
-            return "main", self.parent_session_id, 0
-        run = self.get(parent)
+            base_cfg = (
+                runs[caller].cfg
+                if caller is not None and caller != "main" and caller in runs
+                else self.cfg
+            )
+            return "main", view_id, 0, view_id, runs, order, base_cfg
+        run = runs.get(parent)
         if run is None:
             raise LookupError(f"Unknown parent agent: {parent}")
-        return run.id, run.session_id, run.depth + 1
+        if not run._attached:
+            raise RuntimeError(f"Parent agent {run.name} is detached")
+        return (
+            run.id,
+            run.session_id,
+            run.depth + 1,
+            view_id,
+            runs,
+            order,
+            run.cfg,
+        )
 
-    def _name(self, prompt: str, requested: str | None, parent_id: str) -> str:
+    def _name(
+        self,
+        prompt: str,
+        requested: str | None,
+        parent_id: str,
+        runs: Mapping[str, AgentRun],
+    ) -> str:
         raw = requested or " ".join(re.findall(r"[A-Za-z0-9]+", prompt)[:3]) or "Agent"
         base = "".join(part[:1].upper() + part[1:] for part in re.findall(r"[A-Za-z0-9]+", raw))[:32]
         if not base:
             base = "Agent"
         sibling_names = {
-            run.name for run in self._runs.values() if run.parent_id == parent_id
+            run.name for run in runs.values() if run.parent_id == parent_id
         }
         candidate = base
         suffix = 2
@@ -830,15 +1055,16 @@ class AgentRegistry:
             suffix += 1
         return candidate
 
-    def _model(self, spec: AgentType) -> str | list[str]:
-        configured = self.cfg.model_roles.get(spec.model_role)
+    @staticmethod
+    def _model(spec: AgentType, cfg: Config) -> str | list[str]:
+        configured = cfg.model_roles.get(spec.model_role)
         if configured is not None:
             return configured
         if ":" in spec.model_role:
             return spec.model_role
-        if spec.model_role == "task" and self.cfg.subagent_model is not None:
-            return self.cfg.subagent_model
-        return self.cfg.model
+        if spec.model_role == "task" and cfg.subagent_model is not None:
+            return cfg.subagent_model
+        return cfg.model
 
     async def spawn(
         self,
@@ -853,6 +1079,7 @@ class AgentRegistry:
         model: str | list[str] | None = None,
         tools: Iterable[str] | None = None,
         visible: bool = True,
+        caller: str | None = None,
     ) -> AgentRun:
         spec = self.registry.agent_types.get(agent_type)
         if spec is None:
@@ -865,19 +1092,28 @@ class AgentRegistry:
             spec = replace(spec, tools=scoped_tools)
         if schema_mode not in {"permissive", "strict"}:
             raise ValueError("schema_mode must be permissive or strict")
-        parent_id, parent_session, depth = self._parent(parent)
-        if depth > self.cfg.agents.max_depth:
+        (
+            parent_id,
+            parent_session,
+            depth,
+            view_id,
+            runs,
+            order,
+            base_cfg,
+        ) = self._parent(parent, caller)
+        if depth > base_cfg.agents.max_depth:
             raise ValueError(
-                f"maximum agent depth {self.cfg.agents.max_depth} exceeded by depth {depth}"
+                f"maximum agent depth {base_cfg.agents.max_depth} exceeded by depth {depth}"
             )
-        run_name = self._name(prompt, name, parent_id)
-        model = self._model(spec) if model is None else model
+        run_name = self._name(prompt, name, parent_id, runs)
+        model = self._model(spec, base_cfg) if model is None else model
         info = self.session.create(
-            self.cfg.cwd,
+            base_cfg.cwd,
             model,
-            self.cfg.mode,
+            base_cfg.mode,
             title=run_name,
             parent_session=parent_session,
+            kind="agent",
         )
         if info.current_thread is None:
             raise RuntimeError(f"Agent session {info.thread_id} has no thread")
@@ -890,7 +1126,7 @@ class AgentRegistry:
             parent_session=parent_session,
             session_id=info.thread_id,
             thread_id=info.current_thread,
-            cfg=replace(self.cfg, model=model),
+            cfg=replace(base_cfg, model=model),
             depth=depth,
             output_schema=(
                 spec.output_schema if output_schema is None else output_schema
@@ -902,9 +1138,9 @@ class AgentRegistry:
             model_label=_model_label(model),
         )
         self._persist_job(run)
-        self._runs[run.id] = run
-        self._order.append(run.id)
-        if run.visible:
+        runs[run.id] = run
+        order.append(run.id)
+        if run.visible and view_id == self.parent_session_id:
             await self.bus.emit(
                 AgentSpawned(
                     run_id=run.id,
@@ -917,36 +1153,69 @@ class AgentRegistry:
         await self._notify()
         return run
 
-    async def send(self, run_id: str, text: str, *, interrupt: bool = False) -> AgentRun:
-        run = self.get(run_id)
+    async def send(
+        self,
+        run_id: str,
+        text: str,
+        *,
+        interrupt: bool = False,
+        caller: str | None = None,
+    ) -> AgentRun:
+        _view_id, runs, _order, _mailboxes = self._view_for_ids(
+            (run_id,), caller
+        )
+        run = runs.get(run_id)
         if run is None:
             raise LookupError(f"Unknown agent: {run_id}")
         if run.terminal:
             raise RuntimeError(f"Agent {run.name} is {run.status}")
         if run.status == "parked":
-            await self.revive(run.session_id)
+            await self.revive(run.session_id, caller=run.id)
         if interrupt and run._turn_task is not None:
             run._turn_task.cancel()
         await run.inbox.put(text)
         return run
 
-    async def cancel(self, run_id: str, reason: AbortReason = "cancel") -> AgentRun:
-        run = self.get(run_id)
+    async def cancel(
+        self,
+        run_id: str,
+        reason: AbortReason = "cancel",
+        *,
+        caller: str | None = None,
+    ) -> AgentRun:
+        _view_id, runs, _order, _mailboxes = self._view_for_ids(
+            (run_id,), caller
+        )
+        run = runs.get(run_id)
         if run is None:
             raise LookupError(f"Unknown agent: {run_id}")
         await run.request_abort(reason)
         return run
 
     async def wait(
-        self, ids: Iterable[str] | None = None, *, timeout_s: float = 300
+        self,
+        ids: Iterable[str] | None = None,
+        *,
+        timeout_s: float = 300,
+        caller: str | None = None,
     ) -> list[AgentRun]:
-        selected = set(ids) if ids is not None else set(self._runs)
+        selected = None if ids is None else set(ids)
+        _view_id, runs, order, _mailboxes = (
+            self._view_for_caller(caller)
+            if selected is None
+            else self._view_for_ids(selected, caller)
+        )
+        if selected is None:
+            selected = set(runs)
 
         def settled() -> list[AgentRun]:
             return [
-                run
-                for run in self.list()
-                if run.id in selected and run.status in _TERMINAL
+                runs[run_id]
+                for run_id in order
+                if run_id in selected
+                and runs[run_id]._attached
+                and runs[run_id].visible
+                and runs[run_id].status in _TERMINAL
             ]
 
         if found := settled():
@@ -961,9 +1230,21 @@ class AgentRegistry:
             return []
         return settled()
 
-    async def revive(self, session_id: str) -> AgentRun:
+    async def revive(
+        self, session_id: str, *, caller: str | None = None
+    ) -> AgentRun:
+        views = (
+            (self._view_for_caller(caller),)
+            if caller is not None
+            else tuple(self._all_views())
+        )
         run = next(
-            (candidate for candidate in self._runs.values() if candidate.session_id == session_id),
+            (
+                candidate
+                for _view_id, runs, _order, _mailboxes in views
+                for candidate in runs.values()
+                if candidate.session_id == session_id
+            ),
             None,
         )
         if run is None:
@@ -971,7 +1252,8 @@ class AgentRegistry:
         if run.status != "parked":
             return run
         await run._set_status("idle")
-        run.start(None)
+        if run._attached:
+            run.start(None)
         return run
 
     async def shutdown(self) -> None:
@@ -986,34 +1268,64 @@ class AgentRegistry:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-    def resolve(self, selector: str) -> str:
+    def resolve(
+        self,
+        selector: str,
+        *,
+        caller: str | None = None,
+        visible_only: bool = True,
+    ) -> str:
         """Resolve main, an exact run id, or an unambiguous run name."""
-        if selector == "main" or selector in self._runs:
+        _view_id, runs, _order, _mailboxes = self._view_for_caller(caller)
+        if selector == "main":
             return selector
-        matches = [run.id for run in self._runs.values() if run.name == selector]
+        exact = runs.get(selector)
+        if exact is not None and (
+            not visible_only or (exact._attached and exact.visible)
+        ):
+            return selector
+        matches = [
+            run.id
+            for run in runs.values()
+            if run.name == selector
+            and (not visible_only or (run._attached and run.visible))
+        ]
         if not matches:
             raise LookupError(f"Unknown agent: {selector}")
         if len(matches) > 1:
             raise LookupError(f"Ambiguous agent name: {selector}")
         return matches[0]
 
-    async def post_message(self, sender: str, recipient: str, message: str) -> None:
-        """Queue one serializable peer message and wake activity waiters."""
-        target = self.resolve(recipient)
+    async def post_message(
+        self, sender: str, recipient: str, message: str
+    ) -> bool:
+        """Queue one serializable peer message and report a synchronous waiter."""
+        view_id, _runs, _order, mailboxes = self._view_for_caller(sender)
+        target = self.resolve(recipient, caller=sender)
         envelope = {
             "from": sender,
             "to": target,
             "message": message,
             "created_at": datetime.now(UTC).isoformat(),
         }
-        self._mailboxes.setdefault(target, deque()).append(envelope)
+        mailboxes.setdefault(target, deque()).append(envelope)
+        waiting = self._activity_waiters.get((view_id, target), 0) > 0
         await self._notify()
+        return waiting
 
     def drain_messages(
-        self, recipient: str, *, sender: str | None = None
+        self,
+        recipient: str,
+        *,
+        sender: str | None = None,
+        caller: str | None = None,
     ) -> list[dict[str, Any]]:
         """Drain all addressed messages, optionally from one sender."""
-        mailbox = self._mailboxes.get(recipient)
+        actor = caller if caller is not None else (
+            recipient if recipient != "main" else None
+        )
+        _view_id, _runs, _order, mailboxes = self._view_for_caller(actor)
+        mailbox = mailboxes.get(recipient)
         if not mailbox:
             return []
         if sender is None:
@@ -1025,24 +1337,45 @@ class AgentRegistry:
         while mailbox:
             item = mailbox.popleft()
             (messages if item["from"] == sender else retained).append(item)
-        self._mailboxes[recipient] = retained
+        mailboxes[recipient] = retained
         return messages
 
-    def unread_count(self, recipient: str) -> int:
-        return len(self._mailboxes.get(recipient, ())) + sum(
+    def unread_count(
+        self, recipient: str, *, caller: str | None = None
+    ) -> int:
+        actor = caller if caller is not None else (
+            recipient if recipient != "main" else None
+        )
+        _view_id, runs, _order, mailboxes = self._view_for_caller(actor)
+        return len(mailboxes.get(recipient, ())) + sum(
             1
-            for run in self._runs.values()
-            if run.parent_id == recipient and run.terminal and not run.delivered
+            for run in runs.values()
+            if run._attached
+            and run.visible
+            and run.parent_id == recipient
+            and run.terminal
+            and not run.delivered
         )
 
     def jobs(
-        self, parent: str, ids: Iterable[str] | None = None
+        self,
+        parent: str,
+        ids: Iterable[str] | None = None,
+        *,
+        caller: str | None = None,
     ) -> list[AgentRun]:
+        actor = caller if caller is not None else (
+            parent if parent != "main" else None
+        )
+        _view_id, runs, order, _mailboxes = self._view_for_caller(actor)
         selected = None if ids is None else set(ids)
         return [
-            run
-            for run in self.list()
-            if run.parent_id == parent and (selected is None or run.id in selected)
+            runs[run_id]
+            for run_id in order
+            if runs[run_id]._attached
+            and runs[run_id].visible
+            and runs[run_id].parent_id == parent
+            and (selected is None or run_id in selected)
         ]
 
     async def record_yield(self, run: AgentRun, payload: Any) -> None:
@@ -1058,13 +1391,23 @@ class AgentRegistry:
         await run.advice_outbox.put(payload)
 
     async def deliver(
-        self, parent: str, ids: Iterable[str] | None = None
+        self,
+        parent: str,
+        ids: Iterable[str] | None = None,
+        *,
+        caller: str | None = None,
     ) -> list[AgentRun]:
+        actor = caller if caller is not None else (
+            parent if parent != "main" else None
+        )
+        view_id, _runs, _order, _mailboxes = self._view_for_caller(actor)
         async with self._delivery_lock:
             delivered = [
                 run
-                for run in self.jobs(parent, ids)
-                if run.terminal and not run.delivered
+                for run in self.jobs(parent, ids, caller=actor)
+                if run.terminal
+                and not run.delivered
+                and self._job_on_active_path(run)
             ]
             if not delivered:
                 return []
@@ -1072,7 +1415,7 @@ class AgentRegistry:
             if len(parent_sessions) != 1:
                 raise RuntimeError("Agent jobs for one parent span multiple sessions")
             snapshots = tuple(run.snapshot(delivered=True) for run in delivered)
-            Ledger(self.session).append_many(
+            entries = Ledger(self.session).append_many(
                 parent_sessions.pop(),
                 [
                     CustomEntry(
@@ -1082,26 +1425,34 @@ class AgentRegistry:
                     for snapshot in snapshots
                 ],
             )
-            for run in delivered:
+            for run, entry in zip(delivered, entries, strict=True):
                 run.delivered = True
-        await self.bus.emit(
-            AgentDelivered(
-                parent_id=parent,
-                run_ids=tuple(run.id for run in delivered),
-                jobs=snapshots,
+                run._job_entry_id = entry.id
+        if view_id == self.parent_session_id:
+            await self.bus.emit(
+                AgentDelivered(
+                    parent_id=parent,
+                    run_ids=tuple(run.id for run in delivered),
+                    jobs=snapshots,
+                )
             )
-        )
         await self._notify()
         return delivered
 
     async def wait_all(
-        self, ids: Iterable[str], *, timeout_s: float = 300
+        self,
+        ids: Iterable[str],
+        *,
+        timeout_s: float = 300,
+        caller: str | None = None,
     ) -> list[AgentRun]:
         selected = set(ids)
+        _view_id, runs, order, _mailboxes = self._view_for_ids(selected, caller)
 
         def complete() -> bool:
             return all(
-                (run := self.get(run_id)) is not None and run.terminal
+                (run := runs.get(run_id)) is not None
+                and (run.terminal or not run._attached)
                 for run_id in selected
             )
 
@@ -1112,7 +1463,31 @@ class AgentRegistry:
                         await self._changed.wait_for(complete)
             except TimeoutError:
                 pass
-        return [run for run_id in selected if (run := self.get(run_id)) is not None and run.terminal]
+        return [
+            runs[run_id]
+            for run_id in order
+            if run_id in selected
+            and runs[run_id]._attached
+            and runs[run_id].terminal
+        ]
+
+    def reserve_activity_waiter(self, caller: str) -> tuple[str, str, str]:
+        view_id, _runs, _order, _mailboxes = self._view_for_caller(caller)
+        key = (view_id, caller)
+        token = (view_id, caller, secrets.token_hex(8))
+        self._activity_reservations[token] = key
+        self._activity_waiters[key] = self._activity_waiters.get(key, 0) + 1
+        return token
+
+    def release_activity_waiter(self, token: tuple[str, str, str]) -> None:
+        key = self._activity_reservations.pop(token, None)
+        if key is None:
+            return
+        remaining = self._activity_waiters[key] - 1
+        if remaining:
+            self._activity_waiters[key] = remaining
+        else:
+            del self._activity_waiters[key]
 
     async def wait_activity(
         self,
@@ -1122,34 +1497,54 @@ class AgentRegistry:
         timeout_s: float = 300,
         peer: str | None = None,
         after_yield: int | None = None,
+        reserved: bool = False,
     ) -> bool:
         selected = None if ids is None else set(ids)
+        view_id, runs, _order, mailboxes = self._view_for_caller(caller)
 
         def ready() -> bool:
-            mailbox = self._mailboxes.get(caller, ())
+            mailbox = mailboxes.get(caller, ())
             if peer is not None:
                 if any(message.get("from") == peer for message in mailbox):
                     return True
                 if peer == "main":
                     return False
-                run = self.get(peer)
-                return run is not None and (
+                run = runs.get(peer)
+                return run is not None and run._attached and (
                     run.yield_count > (after_yield or 0) or run.terminal
                 )
             if mailbox:
                 return True
-            if any(run.terminal and not run.delivered for run in self.jobs(caller, selected)):
+            if any(
+                run._attached
+                and run.visible
+                and run.parent_id == caller
+                and (selected is None or run.id in selected)
+                and run.terminal
+                and not run.delivered
+                for run in runs.values()
+            ):
                 return True
             return False
 
         if ready():
             return True
+        key = (view_id, caller)
+        if not reserved:
+            self._activity_waiters[key] = self._activity_waiters.get(key, 0) + 1
         try:
             async with asyncio.timeout(timeout_s):
                 async with self._changed:
                     await self._changed.wait_for(ready)
         except TimeoutError:
             return False
+        finally:
+            if not reserved:
+                remaining = self._activity_waiters[key] - 1
+                if remaining:
+                    self._activity_waiters[key] = remaining
+                else:
+                    del self._activity_waiters[key]
         return True
 
 
