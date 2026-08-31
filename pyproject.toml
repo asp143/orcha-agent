@@ -58,6 +58,7 @@ line-length = 100
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
+# Explicit F401 file baseline preserves Phase 0 scope; remove entries as files are fixed.
 "orcha_agent/tui/blocks/__init__.py" = ["E402"]
 "orcha_agent/tui/blocks/tool.py" = ["E701", "E702", "F401"]
 "tests/tui/test_block_registry.py" = ["E731"]
@@ -165,6 +166,7 @@ typeCheckingMode = "basic"
 pythonVersion = "3.12"
 include = ["orcha_agent", "benchmarks"]
 exclude = ["tests"]
+# Explicit file baseline preserves Phase 0 scope; remove entries as files are fixed.
 ignore = [
     "orcha_agent/__main__.py",
     "orcha_agent/builtin/commands_core.py",
@@ -191,5 +193,6 @@ source = ["orcha_agent"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
+# Phase 0: enforce fail_under later
 show_missing = true
 skip_covered = true

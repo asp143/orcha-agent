@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -20,7 +25,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install uv and Python
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
@@ -28,6 +33,10 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --frozen
+
+      # Smoke check only; do not use this run to generate benchmark baselines.
+      - name: Benchmark smoke check (not baseline generation)
+        run: uv run python -m benchmarks --quick --plain
 
       - name: Lint
         run: uv run ruff check .
