@@ -417,17 +417,19 @@ async def _run_turn(ctx: AppContext, text: str) -> None:
     seen_interrupts: set[str] = set()
     file_diffs: _FileDiffCapture | None = None
     cancelled = False
+    stream_kwargs: dict[str, Any] = {
+        "config": ctx.thread_config,
+        "stream_mode": ["messages", "updates"],
+        "subgraphs": True,
+    }
+    graph_nodes = getattr(ctx.agent, "nodes", None)
+    if graph_nodes is None or "tools" in graph_nodes:
+        stream_kwargs["interrupt_after"] = ["tools"]
     try:
         while True:
             resolution: Resolved | None = None
             static_tool_boundary = False
-            async for stream_item in ctx.agent.astream(
-                next_input,
-                config=ctx.thread_config,
-                stream_mode=["messages", "updates"],
-                subgraphs=True,
-                interrupt_after=["tools"],
-            ):
+            async for stream_item in ctx.agent.astream(next_input, **stream_kwargs):
                 if len(stream_item) == 3:
                     namespace, mode, data = stream_item
                 else:

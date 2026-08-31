@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from prompt_toolkit.data_structures import Size
@@ -32,6 +33,7 @@ from orcha_agent.tui.runtime import (
     _register_theme_refresh,
 )
 from orcha_agent.tui.theme import COLOR_TOKENS, Theme, load_themes
+from orcha_agent.tui.turn import _run_turn
 
 
 class _SizedDummyOutput(DummyOutput):
@@ -130,6 +132,62 @@ async def test_headless_fake_model_turn_keeps_full_width_composer_frame() -> Non
 
     assert submitted == ["render the full turn"]
     assert "A complete fake-model response." in scrollback.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_no_tools_graph_turn_streams_without_tools_interrupt() -> None:
+    errors: list[str] = []
+    chunks: list[ModelChunk] = []
+    real_graph = create_agent(
+        model=FakeListChatModel(responses=["done"]),
+        tools=[],
+    )
+
+    class CapabilityCheckingGraph:
+        nodes = real_graph.nodes
+
+        async def astream(self, *args: object, **kwargs: object):
+            interrupt_after = set(kwargs.get("interrupt_after", ()))
+            unknown = interrupt_after.difference(self.nodes)
+            if unknown:
+                raise ValueError(f"unknown interrupt nodes: {sorted(unknown)}")
+            async for item in real_graph.astream(*args, **kwargs):
+                yield item
+
+    graph = CapabilityCheckingGraph()
+    bus = EventBus()
+
+    async def capture(event: ModelChunk) -> None:
+        chunks.append(event)
+
+    async def ensure_agent() -> bool:
+        return True
+
+    bus.on(ModelChunk, capture, plugin="test")
+    ctx = SimpleNamespace(
+        agent=graph,
+        ensure_agent=ensure_agent,
+        session=SimpleNamespace(get=lambda _session_id: None),
+        session_id="session",
+        thread_id="thread",
+        thread_config={},
+        _bus=bus,
+        bus=bus,
+        registry=Registry(),
+        console=SimpleNamespace(
+            warning=errors.append,
+            error=errors.append,
+            print=lambda: None,
+        ),
+        capture_turn=lambda: None,
+        record_exit=lambda _reason: None,
+        rebuild_requested=False,
+    )
+
+    await _run_turn(ctx, "hello")
+
+    assert "".join(str(chunk.chunk.content) for chunk in chunks) == "done"
+    assert errors == []
 
 
 @pytest.mark.asyncio
