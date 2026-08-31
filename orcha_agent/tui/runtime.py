@@ -892,7 +892,7 @@ class ApplicationRuntime:
                     self.title.set_approval(False)
                 return None
             self._active_overlay = resolved
-            self._root.floats.append(resolved)
+            self._root.floats.extend((resolved.backdrop, resolved))
             try:
                 try:
                     self.application.layout.focus(resolved.focus_target)
@@ -903,8 +903,9 @@ class ApplicationRuntime:
                     self._drill_in(result)
                 return result
             finally:
-                if resolved in self._root.floats:
-                    self._root.floats.remove(resolved)
+                for overlay_float in (resolved, resolved.backdrop):
+                    if overlay_float in self._root.floats:
+                        self._root.floats.remove(overlay_float)
                 self._active_overlay = None
                 if approval:
                     self.title.set_approval(False)

@@ -159,6 +159,14 @@ class Overlay(Float):
             self.cancel()
 
         self.container = _bordered(title, body)
+        self.backdrop = Float(
+            content=Window(char=" "),
+            left=0,
+            right=0,
+            height=self._height,
+            bottom=1 if anchor == "bottom" else None,
+            z_index=9,
+        )
         super().__init__(
             content=self.container,
             width=self._width,
@@ -218,6 +226,7 @@ class Overlay(Float):
         width: int,
         height: int,
         anchor: Anchor = "center",
+        terminal_width: int | None = None,
     ) -> list[str]:
         """Plain overlay rendering used by goldens and terminal diagnostics."""
 
@@ -234,7 +243,12 @@ class Overlay(Float):
         rows.extend(f"│ {line[:inner].ljust(inner)} │" for line in visible)
         rows.extend(f"│ {'':{inner}} │" for _ in range(capacity - len(visible)))
         rows.append(f"╰{'─' * (width - 2)}╯")
-        return rows
+        if terminal_width is None:
+            return rows
+        backdrop_width = max(width, terminal_width)
+        left = (backdrop_width - width) // 2
+        right = backdrop_width - width - left
+        return [f"{' ' * left}{row}{' ' * right}" for row in rows]
 
     @property
     def focus_target(self) -> Any:
