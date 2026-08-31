@@ -134,7 +134,7 @@ class PromptQueue:
                 mode = value.get("mode")
                 if not isinstance(text, str) or mode not in {"steer", "follow_up"}:
                     return False
-                prompt = QueuedPrompt(text.strip(), mode)
+                prompt = QueuedPrompt(text.strip(), "follow_up")
             else:
                 return False
             if prompt.text:

@@ -519,16 +519,17 @@ def test_composer_container_has_exact_dynamic_content_height(
 
 
 @pytest.mark.asyncio
-async def test_ctrl_d_preserves_draft_and_queue_without_dispatching_queue(
+async def test_ctrl_d_persisted_steer_restores_and_runs_as_follow_up(
     tmp_path: Path,
 ) -> None:
-    submitted: list[str] = []
+    first_submitted: list[str] = []
     started = asyncio.Event()
     cancelled = asyncio.Event()
-    ctx = _ctx(tmp_path)
+    first_ctx = _ctx(tmp_path)
 
-    async def submit(text: str) -> None:
-        submitted.append(text)
+    async def first_submit(text: str) -> None:
+        first_submitted.append(text)
+        first.queue.open_steering()
         started.set()
         try:
             await asyncio.Event().wait()
@@ -536,30 +537,68 @@ async def test_ctrl_d_preserves_draft_and_queue_without_dispatching_queue(
             cancelled.set()
             raise
 
-    with create_pipe_input() as pipe:
-        runtime = ApplicationRuntime(
-            submit,
-            ctx=ctx,
-            input=pipe,
+    async def wait_for_queued_steer() -> None:
+        while not first.queue:
+            await asyncio.sleep(0)
+
+    with create_pipe_input() as first_pipe:
+        first = ApplicationRuntime(
+            first_submit,
+            ctx=first_ctx,
+            input=first_pipe,
             output=DummyOutput(),
         )
-        task = asyncio.create_task(runtime.run())
+        first_task = asyncio.create_task(first.run())
         await asyncio.sleep(0)
-        pipe.send_text("active")
-        pipe.send_bytes(b"\r")
+        first_pipe.send_text("active")
+        first_pipe.send_bytes(b"\r")
         await asyncio.wait_for(started.wait(), 1)
-        runtime.queue.extend(["queued one", "queued two"])
-        pipe.send_text("draft")
-        pipe.send_bytes(b"\x04")
+        first_pipe.send_text("queued steer")
+        first_pipe.send_bytes(b"\r")
+        await asyncio.wait_for(wait_for_queued_steer(), 1)
+        first_pipe.send_bytes(b"\x04")
         await asyncio.wait_for(cancelled.wait(), 1)
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(first_task, 1)
 
-    assert submitted == ["active"]
-    assert ctx.plugin_states["composer"]["draft"] == "draft"
-    assert ctx.plugin_states["composer"]["queue"] == [
-        {"text": "queued one", "mode": "follow_up"},
-        {"text": "queued two", "mode": "follow_up"},
+    assert first_submitted == ["active"]
+    persisted = {
+        name: dict(state)
+        for name, state in first_ctx.plugin_states.items()
+    }
+    assert persisted["composer"]["queue"] == [
+        {"text": "queued steer", "mode": "steer"},
     ]
+
+    resumed_submitted: list[str] = []
+    follow_up_ran = asyncio.Event()
+    resumed_ctx = _ctx(tmp_path)
+    resumed_ctx.plugin_states = persisted
+
+    async def resumed_submit(text: str) -> None:
+        resumed_submitted.append(text)
+        if len(resumed_submitted) == 2:
+            follow_up_ran.set()
+
+    with create_pipe_input() as resumed_pipe:
+        resumed = ApplicationRuntime(
+            resumed_submit,
+            ctx=resumed_ctx,
+            input=resumed_pipe,
+            output=DummyOutput(),
+        )
+        assert [(item.text, item.mode) for item in resumed.queue.entries] == [
+            ("queued steer", "follow_up"),
+        ]
+
+        resumed_task = asyncio.create_task(resumed.run())
+        await asyncio.sleep(0)
+        resumed_pipe.send_text("next dispatch")
+        resumed_pipe.send_bytes(b"\r")
+        await asyncio.wait_for(follow_up_ran.wait(), 1)
+        resumed_pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(resumed_task, 1)
+
+    assert resumed_submitted == ["next dispatch", "queued steer"]
 
 
 @pytest.mark.asyncio
@@ -628,7 +667,7 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
 
     assert resumed.buffer.text == "saved draft"
     assert [(item.text, item.mode) for item in resumed.queue.entries] == [
-        ("queued one", "steer"),
+        ("queued one", "follow_up"),
         ("queued two", "follow_up"),
     ]
     assert "draft" not in resumed_ctx.plugin_states["composer"]
@@ -640,7 +679,13 @@ def test_reconstructed_runtime_restores_legacy_string_queue_as_follow_up(
     tmp_path: Path,
 ) -> None:
     ctx = _ctx(tmp_path)
-    ctx.plugin_states["composer"] = {"queue": ["legacy queued"]}
+    ctx.plugin_states["composer"] = {
+        "queue": [
+            "legacy one",
+            {"text": "persisted steer", "mode": "steer"},
+            "legacy two",
+        ],
+    }
 
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -651,7 +696,9 @@ def test_reconstructed_runtime_restores_legacy_string_queue_as_follow_up(
         )
 
     assert [(item.text, item.mode) for item in runtime.queue.entries] == [
-        ("legacy queued", "follow_up"),
+        ("legacy one", "follow_up"),
+        ("persisted steer", "follow_up"),
+        ("legacy two", "follow_up"),
     ]
     assert "queue" not in ctx.plugin_states["composer"]
 
