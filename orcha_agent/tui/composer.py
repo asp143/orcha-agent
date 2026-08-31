@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from prompt_toolkit.application.current import get_app_or_none
@@ -130,15 +130,20 @@ class _BoxMargin(Margin):
     ) -> StyleAndTextTuples:
         del width
         thumb_rows = self._thumb_rows(window_render_info, height)
+        horizontal = self.composer._symbol("boxRound.horizontal", "─")
+        vertical = self.composer._symbol("boxRound.vertical", "│")
+        bottom_left = self.composer._symbol("boxRound.bottomLeft", "╰")
+        bottom_right = self.composer._symbol("boxRound.bottomRight", "╯")
+        scrollbar = self.composer._scrollbar_marker()
         fragments: StyleAndTextTuples = []
         for row in range(height):
             last = row == height - 1
             if self.left:
-                value = "╰─ " if last else "│  "
+                value = f"{bottom_left}{horizontal} " if last else f"{vertical}  "
             elif last:
-                value = " ─╯"
+                value = f" {horizontal}{bottom_right}"
             else:
-                value = f"  {'█' if row in thumb_rows else '│'}"
+                value = f"  {scrollbar if row in thumb_rows else vertical}"
             fragments.append((self.composer.border_style, value))
             if not last:
                 fragments.append(("", "\n"))
@@ -219,21 +224,47 @@ class Composer:
             level = "off"
         return f"class:thinking{level}"
 
+    def _symbols(self) -> Mapping[str, Any]:
+        symbols = getattr(self.theme, "symbols", None)
+        if symbols is None and isinstance(self.theme, Mapping):
+            symbols = self.theme.get("symbols")
+        return symbols if isinstance(symbols, Mapping) else {}
+
+    def _symbol(self, key: str, fallback: str) -> str:
+        value = self._symbols().get(key)
+        return value if isinstance(value, str) and value else fallback
+
+    def _ascii_symbols(self) -> bool:
+        return self._symbols().get("preset") == "ascii"
+
+    def _prompt_marker(self) -> str:
+        return ">" if self._ascii_symbols() else "❯"
+
+    def _scrollbar_marker(self) -> str:
+        return "#" if self._ascii_symbols() else "█"
+
     def _chip(self) -> str:
         return f" {self._model()} · {self._thinking()} "
 
     def _top_line(self, width: int) -> str:
         width = max(1, width)
         chip = self._chip()
+        horizontal = self._symbol("boxRound.horizontal", "─")
         if self.shape == "box":
+            top_left = self._symbol("boxRound.topLeft", "╭")
+            top_right = self._symbol("boxRound.topRight", "╮")
             available = max(0, width - 6)
             if _width(chip) > available:
                 chip = _truncate(chip, max(0, available - 1))
             fill = max(0, available - _width(chip))
-            return _truncate(f"╭──{chip}{'─' * fill}──╮", width)
+            return _truncate(
+                f"{top_left}{horizontal * 2}{chip}"
+                f"{horizontal * fill}{horizontal * 2}{top_right}",
+                width,
+            )
         if self.shape == "claude":
             chip = _truncate(chip, width)
-            return f"{'─' * max(0, width - _width(chip))}{chip}"
+            return f"{horizontal * max(0, width - _width(chip))}{chip}"
         return ""
 
     def _top_fragments(self) -> StyleAndTextTuples:
@@ -249,7 +280,8 @@ class Composer:
         ]
 
     def _bottom_fragments(self) -> StyleAndTextTuples:
-        return [(self.border_style, "─" * self._current_width())]
+        horizontal = self._symbol("boxRound.horizontal", "─")
+        return [(self.border_style, horizontal * self._current_width())]
 
     def _build_container(self) -> AnyContainer:
         if self.shape == "borderless":
@@ -267,7 +299,11 @@ class Composer:
         if self.shape == "claude":
             middle = VSplit(
                 [
-                    Window(width=2, char="❯ ", style=lambda: self.border_style),
+                    Window(
+                        width=2,
+                        char=lambda: f"{self._prompt_marker()} ",
+                        style=lambda: self.border_style,
+                    ),
                     self.input_window,
                 ]
             )
@@ -377,18 +413,30 @@ class Composer:
         if self.shape == "borderless":
             return [_truncate(line, width).ljust(width) for line in content]
         if self.shape == "claude":
-            body = [f"❯ {_truncate(line, max(1, width - 2))}".ljust(width) for line in content]
-            return [self._top_line(width), *body, "─" * width]
+            marker = self._prompt_marker()
+            horizontal = self._symbol("boxRound.horizontal", "─")
+            body = [
+                f"{marker} {_truncate(line, max(1, width - 2))}".ljust(width)
+                for line in content
+            ]
+            return [self._top_line(width), *body, horizontal * width]
+        horizontal = self._symbol("boxRound.horizontal", "─")
+        vertical = self._symbol("boxRound.vertical", "│")
+        bottom_left = self._symbol("boxRound.bottomLeft", "╰")
+        bottom_right = self._symbol("boxRound.bottomRight", "╯")
         inner = max(1, width - 6)
         rows = [self._top_line(width)]
         for index, line in enumerate(content):
             text = _truncate(line, inner)
             last = index == len(content) - 1
             if last:
-                rows.append(f"╰─ {text.ljust(inner)} ─╯")
+                rows.append(
+                    f"{bottom_left}{horizontal} {text.ljust(inner)} "
+                    f"{horizontal}{bottom_right}"
+                )
             else:
-                border = "█" if index in scrollbar_rows else "│"
-                rows.append(f"│  {text.ljust(inner)}  {border}")
+                border = self._scrollbar_marker() if index in scrollbar_rows else vertical
+                rows.append(f"{vertical}  {text.ljust(inner)}  {border}")
         return rows
 
     def text_rows(self, width: int) -> int:
