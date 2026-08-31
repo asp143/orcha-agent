@@ -448,3 +448,33 @@ async def test_depth_cap_removes_task_tool_from_descendant_scope(
         with pytest.raises(ValueError, match="maximum agent depth"):
             await agents.spawn("task", "grandchild", parent=child.id)
         await agents.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_registry_caps_live_runs_and_releases_capacity_after_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "orcha_agent.core.agents.build_agent",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=_Graph()),
+    )
+    with SessionStore(tmp_path / "sessions.db") as store:
+        parent = store.create(tmp_path, "fake:main", thread_id="main")
+        agents = AgentRegistry(
+            _plugin_registry(),
+            _config(tmp_path, max_live_runs=1),
+            store,
+            EventBus(),
+            parent.thread_id,
+        )
+        first = await agents.spawn("task", "first", parent="main")
+        await first.wait_status("idle")
+
+        with pytest.raises(RuntimeError, match="live agent limit 1 reached"):
+            await agents.spawn("task", "second", parent="main")
+
+        await first.complete({"ok": True})
+        await first.wait_status("done")
+        replacement = await agents.spawn("task", "replacement", parent="main")
+        assert replacement.id != first.id
+        await agents.shutdown()

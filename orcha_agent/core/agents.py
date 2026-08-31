@@ -1117,6 +1117,16 @@ class AgentRegistry:
             raise ValueError(
                 f"maximum agent depth {base_cfg.agents.max_depth} exceeded by depth {depth}"
             )
+        live_runs = {
+            run.id
+            for _view_id, view_runs, _order, _mailboxes in self._all_views()
+            for run in view_runs.values()
+            if run._attached and not run.terminal
+        }
+        if len(live_runs) >= self.cfg.agents.max_live_runs:
+            raise RuntimeError(
+                f"live agent limit {self.cfg.agents.max_live_runs} reached"
+            )
         run_name = self._name(prompt, name, parent_id, runs)
         model = self._model(spec, base_cfg) if model is None else model
         info = self.session.create(

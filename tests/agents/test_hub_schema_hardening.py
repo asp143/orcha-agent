@@ -408,6 +408,18 @@ async def test_retained_worker_routes_hub_and_blocking_task_operations_by_caller
 
 
 @pytest.mark.asyncio
+async def test_task_rejects_batches_larger_than_sixteen_before_spawn() -> None:
+    registry = _Registry()
+
+    with pytest.raises(Exception, match="16"):
+        await _tools(_host(registry))["task"].ainvoke(
+            {"tasks": [{"task": f"work {index}"} for index in range(17)]}
+        )
+
+    assert registry.spawn_calls == []
+
+
+@pytest.mark.asyncio
 async def test_task_accepts_the_recursively_supported_output_schema_vocabulary() -> None:
     registry = _Registry()
     schema = {

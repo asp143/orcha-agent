@@ -102,6 +102,7 @@ subagent_model = "fake:legacy"
 
 [agents]
 max_concurrency = 5
+max_live_runs = 17
 max_depth = 3
 idle_ttl_s = 9
 max_runtime_s = 11
@@ -120,6 +121,7 @@ scout = "fake:scout"
 
     assert cfg.agents == AgentsConfig(
         max_concurrency=5,
+        max_live_runs=17,
         max_depth=3,
         idle_ttl_s=9,
         max_runtime_s=11,

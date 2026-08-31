@@ -86,6 +86,7 @@ Agent orchestration is configured independently from the main model:
 ```toml
 [agents]
 max_concurrency = 8
+max_live_runs = 32
 max_depth = 2
 idle_ttl_s = 420
 max_runtime_s = 0       # 0 disables the deadline
@@ -106,10 +107,11 @@ timeout_s = 30
 ```
 
 Role models fall back to the main model. The `task` role also falls back to the
-legacy `core.subagent_model` when configured. Agent concurrency limits model
-turns; depth limits child spawning. Idle workers park after `idle_ttl_s`, and a
-positive `max_runtime_s` adds a deadline. The soft request budget asks a worker
-to yield before aborting it ten requests later.
+legacy `core.subagent_model` when configured. Agent concurrency limits active
+model turns, while `max_live_runs` caps all nonterminal workers across retained
+sessions; depth limits child spawning. Idle workers park after `idle_ttl_s`, and
+a positive `max_runtime_s` adds a deadline. The soft request budget asks a
+worker to yield before aborting it ten requests later.
 
 When enabled, the advisor is one hidden, persistent worker per session.
 `model="@advisor"` uses `[models.roles].advisor`, then the main model. It

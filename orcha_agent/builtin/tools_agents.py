@@ -25,6 +25,7 @@ _TASK_SCHEMA: dict[str, Any] = {
         "tasks": {
             "type": "array",
             "minItems": 1,
+            "maxItems": 16,
             "items": {
                 "type": "object",
                 "properties": {
@@ -217,6 +218,8 @@ def agent_tools(host: Any) -> tuple[StructuredTool, ...]:
     is_main = caller == "main"
 
     async def task_call(tasks: list[dict[str, Any]], context: str | None = None) -> dict[str, Any]:
+        if len(tasks) > 16:
+            raise ValueError("task accepts at most 16 items")
         shared = context.strip() if context else ""
 
         async def spawn(item: dict[str, Any]) -> Any:

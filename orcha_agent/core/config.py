@@ -94,6 +94,7 @@ def _statusline_config(
 @dataclass(frozen=True, slots=True)
 class AgentsConfig:
     max_concurrency: int = 8
+    max_live_runs: int = 32
     max_depth: int = 2
     idle_ttl_s: float = 420
     max_runtime_s: float = 0
@@ -105,6 +106,7 @@ def _agents_config(value: Any, parser: argparse.ArgumentParser) -> AgentsConfig:
         parser.error("agents must be a TOML table")
     fields = {
         "max_concurrency": (8, 1),
+        "max_live_runs": (32, 1),
         "max_depth": (2, 0),
         "idle_ttl_s": (420, 0),
         "max_runtime_s": (0, 0),
@@ -118,6 +120,7 @@ def _agents_config(value: Any, parser: argparse.ArgumentParser) -> AgentsConfig:
         normalized[name] = raw
     return AgentsConfig(
         max_concurrency=int(normalized["max_concurrency"]),
+        max_live_runs=int(normalized["max_live_runs"]),
         max_depth=int(normalized["max_depth"]),
         idle_ttl_s=float(normalized["idle_ttl_s"]),
         max_runtime_s=float(normalized["max_runtime_s"]),
