@@ -14,6 +14,8 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from orcha_agent.core.events import (
+    AgentDelivered,
+    AgentFinished,
     AgentSpawned,
     AgentStatus,
     ModelChunk,
@@ -697,3 +699,69 @@ async def test_late_agent_event_after_settled_task_card_does_not_duplicate_it() 
     await transcript.handle(AgentStatus("run-9", "main", "Scout", "scout", status="done"))
     task_blocks_after = [b for b in transcript.frame.blocks if b.kind == "task"]
     assert task_blocks_after == task_blocks_before
+
+
+@pytest.mark.asyncio
+async def test_task_card_tracks_each_run_once_and_settles_after_delivery() -> None:
+    transcript = Transcript()
+    await transcript.handle(
+        ToolCallStart(
+            "task",
+            {"tasks": [{"task": "first", "name": "Alpha"}, {"task": "second", "name": "Beta"}]},
+            "call-1",
+        )
+    )
+    await transcript.handle(AgentSpawned("run-a", "main", "Alpha", "task"))
+    await transcript.handle(AgentSpawned("run-b", "main", "Beta", "task"))
+    await transcript.handle(AgentStatus("run-a", "main", "Alpha", "task", status="running"))
+    await transcript.handle(AgentStatus("run-b", "main", "Beta", "task", status="running"))
+    await transcript.handle(
+        ToolCallEnd(
+            "task",
+            "call-1",
+            {
+                "spawned": [
+                    {"id": "run-a", "name": "Alpha", "type": "task", "status": "running"},
+                    {"id": "run-b", "name": "Beta", "type": "task", "status": "running"},
+                ],
+                "results": [],
+                "timed_out": [],
+                "errors": [],
+            },
+        )
+    )
+    for run_id, name in (("run-a", "Alpha"), ("run-b", "Beta")):
+        await transcript.handle(AgentStatus(run_id, "main", name, "task", status="idle"))
+        await transcript.handle(AgentStatus(run_id, "main", name, "task", status="done"))
+        await transcript.handle(AgentFinished(run_id, "main", name, "task", {"ok": name}))
+
+    block = transcript._task_blocks["call-1"]
+    assert [agent["run_id"] for agent in block.data["agents"]] == ["run-a", "run-b"]
+    assert [agent["status"] for agent in block.data["agents"]] == ["done", "done"]
+    assert block.state is BlockState.ACTIVE
+
+    await transcript.handle(
+        AgentDelivered(
+            "main",
+            ("run-a", "run-b"),
+            (
+                {
+                    "run_id": "run-a",
+                    "name": "Alpha",
+                    "status": "done",
+                    "result": {"ok": "Alpha"},
+                    "delivered": True,
+                },
+                {
+                    "run_id": "run-b",
+                    "name": "Beta",
+                    "status": "done",
+                    "result": {"ok": "Beta"},
+                    "delivered": True,
+                },
+            ),
+        )
+    )
+
+    assert [agent["run_id"] for agent in block.data["agents"]] == ["run-a", "run-b"]
+    assert block.state is not BlockState.ACTIVE
