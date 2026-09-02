@@ -256,7 +256,7 @@ def test_task_cards_cover_running_done_and_failed_states(
         assert "result-4" not in output
 
 
-def test_delivered_result_is_a_collapsible_system_card() -> None:
+def test_delivered_result_is_a_one_row_notice_that_expands_to_a_card() -> None:
     value = Block(
         "delivery-1",
         "delivery",
@@ -266,6 +266,8 @@ def test_delivered_result_is_a_collapsible_system_card() -> None:
                 "name": "Researcher",
                 "status": "done",
                 "result": "one\ntwo\nthree\nfour\nfive\nsix",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:01:02+00:00",
             }
         },
     )
@@ -273,12 +275,27 @@ def test_delivered_result_is_a_collapsible_system_card() -> None:
     collapsed = plain(render_delivery(value, THEME, 80, 20, False), 80)
     expanded = plain(render_delivery(value, THEME, 80, 20, True), 80)
 
-    assert "↩ Researcher finished" in collapsed
-    assert "one" in collapsed and "four" in collapsed
-    assert "five" not in collapsed
-    assert "… 2 more lines" in collapsed
-    assert "six" in expanded
+    assert collapsed.count("\n") <= 1
+    assert "✔ Researcher finished · done · 1m2s" in collapsed
+    assert "two" not in collapsed
+    assert "╭" not in collapsed
+    assert "↩ Researcher finished" in expanded
+    assert "one" in expanded and "six" in expanded
     assert "more lines" not in expanded
+
+
+def test_failed_delivery_notice_uses_the_error_glyph() -> None:
+    value = Block(
+        "delivery-2",
+        "delivery",
+        data={
+            "job": {"run_id": "w", "name": "Scout", "status": "failed", "result": {"error": "x"}}
+        },
+    )
+
+    collapsed = plain(render_delivery(value, THEME, 80, 20, False), 80)
+
+    assert "✘ Scout finished · failed" in collapsed
 
 
 def test_registry_drives_hud_status_and_title_counts() -> None:
