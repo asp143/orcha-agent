@@ -215,6 +215,7 @@ def task_block(status: str) -> Block:
             {
                 "run_id": f"run-{index}",
                 "name": f"Worker-{index}",
+                "agent_type": "reviewer",
                 "description": f"assignment {index}",
                 "status": status,
                 "requests": index + 1,
@@ -248,20 +249,55 @@ def test_task_cards_cover_running_done_and_failed_states(
     output = plain(render_task(task_block(status), THEME, 120, 100, expanded))
 
     assert "⇶ Task · 5 agents" in output
-    assert f"{marker} Worker-4: assignment 4 ⟦{status}⟧" in output
+    assert f"{marker} Worker-4 ⟨reviewer⟩: assignment 4 ⟦{status}⟧" in output
     assert footer in output
     assert "└ read:" in output
     assert "x" * 40 not in output
     assert "x" * 39 + "…" in output
     if expanded:
-        assert "Worker-0: assignment 0" in output
+        assert "Worker-0 ⟨reviewer⟩: assignment 0" in output
         assert ("partial-0" if status == "running" else "result-0") in output
         assert "earlier agents" not in output
     else:
-        assert "Worker-0: assignment 0" not in output
+        assert "Worker-0 ⟨reviewer⟩: assignment 0" not in output
         assert "… 1 earlier agents" in output
         assert "partial-4" not in output
         assert "result-4" not in output
+
+
+def test_task_row_without_agent_type_omits_type_brackets() -> None:
+    value = Block(
+        "task-legacy",
+        "task",
+        data={"agents": [{"name": "Legacy", "description": "old task", "status": "done"}]},
+    )
+
+    output = plain(render_task(value, THEME, 120, 100, False))
+
+    assert "✔ Legacy: old task ⟦done⟧" in output
+    assert "⟨" not in output
+
+
+def test_task_row_omits_matching_agent_type_case_insensitively() -> None:
+    value = Block(
+        "task-matching-type",
+        "task",
+        data={
+            "agents": [
+                {
+                    "name": "Scout",
+                    "agent_type": "SCOUT",
+                    "description": "inspect code",
+                    "status": "done",
+                }
+            ]
+        },
+    )
+
+    output = plain(render_task(value, THEME, 120, 100, False))
+
+    assert "✔ Scout: inspect code ⟦done⟧" in output
+    assert "⟨" not in output
 
 
 def test_delivered_result_is_a_one_row_notice_that_expands_to_a_card() -> None:
@@ -272,6 +308,7 @@ def test_delivered_result_is_a_one_row_notice_that_expands_to_a_card() -> None:
             "job": {
                 "run_id": "worker",
                 "name": "Researcher",
+                "agent_type": "scout",
                 "status": "done",
                 "result": "one\ntwo\nthree\nfour\nfive\nsix",
                 "created_at": "2026-01-01T00:00:00+00:00",
@@ -284,10 +321,10 @@ def test_delivered_result_is_a_one_row_notice_that_expands_to_a_card() -> None:
     expanded = plain(render_delivery(value, THEME, 80, 20, True), 80)
 
     assert collapsed.count("\n") <= 1
-    assert "✔ Researcher finished · done · 1m2s" in collapsed
+    assert "✔ Researcher ⟨scout⟩ finished · done · 1m2s" in collapsed
     assert "two" not in collapsed
     assert "╭" not in collapsed
-    assert "↩ Researcher finished" in expanded
+    assert "↩ Researcher ⟨scout⟩ finished" in expanded
     assert "one" in expanded and "six" in expanded
     assert "more lines" not in expanded
 
@@ -297,13 +334,19 @@ def test_failed_delivery_notice_uses_the_error_glyph() -> None:
         "delivery-2",
         "delivery",
         data={
-            "job": {"run_id": "w", "name": "Scout", "status": "failed", "result": {"error": "x"}}
+            "job": {
+                "run_id": "w",
+                "name": "Scout",
+                "agent_type": "reviewer",
+                "status": "failed",
+                "result": {"error": "x"},
+            }
         },
     )
 
     collapsed = plain(render_delivery(value, THEME, 80, 20, False), 80)
 
-    assert "✘ Scout finished · failed" in collapsed
+    assert "✘ Scout ⟨reviewer⟩ finished · failed" in collapsed
 
 
 def test_registry_drives_status_and_title_counts() -> None:
