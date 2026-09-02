@@ -13,7 +13,7 @@ from orcha_agent.tui.blocks import BlockRendererDispatcher
 from orcha_agent.tui.blocks.assistant import render as render_assistant
 from orcha_agent.tui.blocks.banner import render as render_banner
 from orcha_agent.tui.blocks.diff import render as render_diff
-from orcha_agent.tui.blocks.hud import render_subagents, render_todo
+from orcha_agent.tui.blocks.hud import render_todo
 from orcha_agent.tui.blocks.marker import render as render_marker
 from orcha_agent.tui.blocks.thinking import SPINNER_FRAMES, render as render_thinking
 from orcha_agent.tui.blocks.tool import render as render_tool
@@ -329,9 +329,8 @@ def test_marker_uses_compact_clear_and_branch_labels() -> None:
     )
 
 
-def test_hud_is_hidden_when_empty_and_capped_at_eight_rows() -> None:
+def test_todo_hud_is_hidden_when_empty_and_capped_at_eight_rows() -> None:
     assert render_todo(block("todo", items=[]), THEME, 80, 20, False) is None
-    assert render_subagents(block("subagents", agents=[]), THEME, 80, 20, False) is None
 
     todo = plain(
         render_todo(
@@ -342,25 +341,10 @@ def test_hud_is_hidden_when_empty_and_capped_at_eight_rows() -> None:
             False,
         )
     )
-    agents = plain(
-        render_subagents(
-            block(
-                "subagents", agents=[{"name": f"agent-{i}", "status": "running"} for i in range(12)]
-            ),
-            THEME,
-            80,
-            20,
-            False,
-        )
-    )
 
     assert len(todo.splitlines()) <= 8
     assert "task 5" in todo
     assert "task 6" not in todo
-    assert len(agents.splitlines()) <= 8
-    assert "agent-8" in agents
-    assert "agent-11" in agents
-    assert "agent-7" not in agents
 
 
 def test_dispatcher_memoizes_by_revision_width_expansion_theme_and_budget() -> None:

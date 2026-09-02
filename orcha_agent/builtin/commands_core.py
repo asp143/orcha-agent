@@ -258,7 +258,7 @@ async def _agents(ctx: Any, _args: str) -> None:
 
 
 async def _agents_key(ctx: Any, _event: Any) -> None:
-    await ctx.ui.show("hub")
+    await ctx.ui.toggle("hub")
 
 
 def register(api: PluginAPI) -> None:

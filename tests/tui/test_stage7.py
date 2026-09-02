@@ -193,7 +193,7 @@ def test_terminal_title_transitions_dedupe_and_ascii_safety() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_hud_tracks_todos_queue_and_real_subagent_lifecycle() -> None:
+async def test_runtime_hud_tracks_todos_queue_without_subagent_card() -> None:
     output = _Output()
     runtime = ApplicationRuntime(
         lambda _text: asyncio.sleep(0),
@@ -216,7 +216,9 @@ async def test_runtime_hud_tracks_todos_queue_and_real_subagent_lifecycle() -> N
 
     text = runtime._hud_text().value
     assert "todo 5" in text and "todo 6" not in text
-    assert "worker" in text and "queued one" in text
+    assert "queued one" in text
+    assert "worker" not in text
+    assert "Subagents" not in text
     assert len(runtime.ui.subagents) == 1
     assert subagents_segment(runtime.ctx).text == "1"
 
@@ -324,7 +326,8 @@ async def test_live_hud_changes_invalidate_cached_sections_and_spinner_frames() 
     first = runtime._hud_text().value
     assert "old todo" in first
     assert "old prompt" in first
-    assert "⣾ call-1: worker one" in first
+    assert "worker one" not in first
+    assert "Subagents" not in first
 
     runtime.set_todos([{"content": "new todo", "status": "pending"}])
     runtime.queue.clear()
@@ -337,7 +340,8 @@ async def test_live_hud_changes_invalidate_cached_sections_and_spinner_frames() 
 
     assert "new todo" in second and "old todo" not in second
     assert "new prompt" in second and "old prompt" not in second
-    assert "worker one" in second and "⣾ call-2: worker two" in second
+    assert "worker one" not in second and "worker two" not in second
+    assert "Subagents" not in second
     await runtime.scheduler.aclose()
 
 

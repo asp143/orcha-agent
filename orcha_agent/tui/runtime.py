@@ -68,7 +68,6 @@ from .blocks import (
     render_task,
     theme_spinner,
 )
-from .blocks.hud import subagent_hud_data
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -234,11 +233,13 @@ class UIFacade:
         self,
         *,
         show_overlay: Callable[..., Awaitable[Any]] | None = None,
+        toggle_overlay: Callable[..., Awaitable[Any]] | None = None,
         notify: Callable[[str], None] | None = None,
         clear: Callable[[], Awaitable[None]] | None = None,
         set_theme: Callable[[str], Any] | None = None,
     ) -> None:
         self._show_overlay = show_overlay
+        self._toggle_overlay = toggle_overlay
         self._notify = notify
         self._clear = clear
         self._set_theme = set_theme
@@ -257,6 +258,11 @@ class UIFacade:
         if self._show_overlay is None:
             raise RuntimeError(f"overlay {overlay!r} is unavailable")
         return await self._show_overlay(overlay, *args, **kwargs)
+
+    async def toggle(self, overlay: object, *args: Any, **kwargs: Any) -> Any:
+        if self._toggle_overlay is None:
+            raise RuntimeError(f"overlay {overlay!r} is unavailable")
+        return await self._toggle_overlay(overlay, *args, **kwargs)
 
     async def ask(self, questions: object) -> Any:
         if self._show_overlay is None:
@@ -344,6 +350,7 @@ class ApplicationRuntime:
         self._fallback_show = getattr(previous_ui, "_show_overlay", None)
         self.ui = UIFacade(
             show_overlay=self._show_overlay,
+            toggle_overlay=self._toggle_overlay,
             notify=self._notify,
             clear=self._clear_scrollback,
             set_theme=self._set_theme,
@@ -384,8 +391,7 @@ class ApplicationRuntime:
         self._turn_active = False
         self._spinner_frame = 0
         self._hud_sections = {
-            kind: Block(f"hud-{kind}", kind)
-            for kind in ("todo", "subagents", "queue")
+            kind: Block(f"hud-{kind}", kind) for kind in ("todo", "queue")
         }
         self._approval_notification_sent = False
         self._shell_runner = shell_runner
@@ -699,27 +705,6 @@ class ApplicationRuntime:
         blocks: list[Block] = []
         if self.ui.todos:
             blocks.append(self._hud_block("todo", {"items": self.ui.todos[:7]}))
-        if self.ctx is not None:
-            agents = subagent_hud_data(self.ctx, spinner_frame=self._spinner_frame)
-            if agents is not None:
-                blocks.append(self._hud_block("subagents", agents))
-        if not any(block.kind == "subagents" for block in blocks) and self.ui.subagents:
-            running = sum(
-                str(agent.get("status", "")).casefold() == "running"
-                for agent in self.ui.subagents
-                if isinstance(agent, Mapping)
-            )
-            blocks.append(
-                self._hud_block(
-                    "subagents",
-                    {
-                        "agents": list(self.ui.subagents),
-                        "running": running,
-                        "idle": len(self.ui.subagents) - running,
-                        "spinner_frame": 0,
-                    },
-                )
-            )
         if self.queue:
             blocks.append(
                 self._hud_block(
@@ -865,6 +850,17 @@ class ApplicationRuntime:
         if not isinstance(created, Overlay):
             raise TypeError(f"overlay factory {overlay!r} did not return Overlay")
         return created
+
+    async def _toggle_overlay(
+        self,
+        overlay: object,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if overlay == "hub" and isinstance(self._active_overlay, HubOverlay):
+            self._active_overlay.cancel()
+            return None
+        return await self._show_overlay(overlay, *args, **kwargs)
 
     async def _show_overlay(
         self,

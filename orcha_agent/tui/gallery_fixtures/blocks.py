@@ -300,19 +300,24 @@ GALLERY_FIXTURES: dict[
     },
     "todo": {
         "streaming": _active(items=[{"text": "render fixtures"}, {"text": "inspect output"}]),
-        "progress": _active(items=[{"text": "render fixtures", "done": True}, {"text": "inspect output"}]),
-        "success": _settled(items=[{"text": "render fixtures", "done": True}, {"text": "inspect output", "done": True}]),
-        "error": _settled(items=[{"text": "render fixtures", "done": True}, {"text": "fix failed output"}]),
-    },
-    "subagents": {
-        "streaming": _active(agents=[{"id": "scan", "name": "Scan", "status": "starting"}], spinner_frame=1),
-        "progress": _active(agents=[{"id": "scan", "name": "Scan", "status": "running", "requests": 2}], spinner_frame=4),
-        "success": _settled(agents=[{"id": "scan", "name": "Scan", "status": "success", "requests": 4, "elapsed": 8}]),
-        "error": _settled(agents=[{"id": "scan", "name": "Scan", "status": "error", "requests": 3, "elapsed": 5}]),
+        "progress": _active(
+            items=[{"text": "render fixtures", "done": True}, {"text": "inspect output"}]
+        ),
+        "success": _settled(
+            items=[
+                {"text": "render fixtures", "done": True},
+                {"text": "inspect output", "done": True},
+            ]
+        ),
+        "error": _settled(
+            items=[{"text": "render fixtures", "done": True}, {"text": "fix failed output"}]
+        ),
     },
     "working": {
         "streaming": _active(message="Working… (Esc to interrupt)", spinner_frame=1),
-        "progress": _active(message="Retrying in 2s… (Esc to cancel)", spinner_frame=4, level="warning"),
+        "progress": _active(
+            message="Retrying in 2s… (Esc to cancel)", spinner_frame=4, level="warning"
+        ),
         "success": _settled(message="Turn completed.", spinner_frame=7),
         "error": _settled(message="Retry failed.", spinner_frame=9, level="warning"),
     },

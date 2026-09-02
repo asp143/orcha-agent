@@ -44,6 +44,19 @@ _STATUS_STYLES = {
 }
 _TERMINAL = frozenset({"done", "failed", "aborted"})
 _REFRESH_INTERVAL = 0.25
+_DEFAULT_AGENTS_BINDINGS = ("escape a",)
+
+
+def _agents_bindings(ctx: Any) -> tuple[str, ...]:
+    effective = getattr(getattr(ctx, "ui", None), "effective_keys", None)
+    if not isinstance(effective, Mapping):
+        return _DEFAULT_AGENTS_BINDINGS
+    configured = effective.get("agents")
+    if isinstance(configured, str):
+        return (configured,)
+    if isinstance(configured, Sequence) and not isinstance(configured, (str, bytes)):
+        return tuple(binding for binding in configured if isinstance(binding, str))
+    return _DEFAULT_AGENTS_BINDINGS
 
 
 def _plain(value: Any) -> str:
@@ -286,6 +299,12 @@ class HubOverlay(Overlay):
 
         bindings = KeyBindings()
         roster = Condition(lambda: self.mode == "roster")
+
+        def _dismiss(_event: Any) -> None:
+            self.cancel()
+
+        for binding in _agents_bindings(ctx):
+            bindings.add(*binding.split())(_dismiss)
 
         @bindings.add("j", filter=roster)
         @bindings.add("down", filter=roster)
