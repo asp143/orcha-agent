@@ -233,11 +233,13 @@ class UIFacade:
         self,
         *,
         show_overlay: Callable[..., Awaitable[Any]] | None = None,
+        toggle_overlay: Callable[..., Awaitable[Any]] | None = None,
         notify: Callable[[str], None] | None = None,
         clear: Callable[[], Awaitable[None]] | None = None,
         set_theme: Callable[[str], Any] | None = None,
     ) -> None:
         self._show_overlay = show_overlay
+        self._toggle_overlay = toggle_overlay
         self._notify = notify
         self._clear = clear
         self._set_theme = set_theme
@@ -256,6 +258,11 @@ class UIFacade:
         if self._show_overlay is None:
             raise RuntimeError(f"overlay {overlay!r} is unavailable")
         return await self._show_overlay(overlay, *args, **kwargs)
+
+    async def toggle(self, overlay: object, *args: Any, **kwargs: Any) -> Any:
+        if self._toggle_overlay is None:
+            raise RuntimeError(f"overlay {overlay!r} is unavailable")
+        return await self._toggle_overlay(overlay, *args, **kwargs)
 
     async def ask(self, questions: object) -> Any:
         if self._show_overlay is None:
@@ -343,6 +350,7 @@ class ApplicationRuntime:
         self._fallback_show = getattr(previous_ui, "_show_overlay", None)
         self.ui = UIFacade(
             show_overlay=self._show_overlay,
+            toggle_overlay=self._toggle_overlay,
             notify=self._notify,
             clear=self._clear_scrollback,
             set_theme=self._set_theme,
@@ -842,6 +850,17 @@ class ApplicationRuntime:
         if not isinstance(created, Overlay):
             raise TypeError(f"overlay factory {overlay!r} did not return Overlay")
         return created
+
+    async def _toggle_overlay(
+        self,
+        overlay: object,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if overlay == "hub" and isinstance(self._active_overlay, HubOverlay):
+            self._active_overlay.cancel()
+            return None
+        return await self._show_overlay(overlay, *args, **kwargs)
 
     async def _show_overlay(
         self,

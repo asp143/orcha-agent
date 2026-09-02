@@ -131,6 +131,9 @@ class FakeRegistry:
         append_children("main")
         return ordered
 
+    def jobs(self, _caller: str) -> list[FakeRun]:
+        return []
+
     def get(self, run_id: str) -> FakeRun | None:
         return next((run for run in self.runs if run.id == run_id), None)
 
@@ -189,9 +192,15 @@ async def drive_overlay(overlay: HubOverlay, keys: bytes | str) -> Any:
             pipe.send_bytes(keys)
         else:
             pipe.send_text(keys)
-        result = await asyncio.wait_for(shown, 1)
-        pipe.send_bytes(b"\x04")
-        await asyncio.wait_for(runtime_task, 1)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(shown), 1)
+        except TimeoutError:
+            pipe.send_bytes(b"\x1b")
+            await asyncio.wait_for(shown, 1)
+            raise
+        finally:
+            pipe.send_bytes(b"\x04")
+            await asyncio.wait_for(runtime_task, 1)
         return result
 
 
@@ -407,6 +416,14 @@ async def test_hub_filter_tree_and_drill_are_headlessly_driven() -> None:
 
 
 @pytest.mark.asyncio
+async def test_hub_uses_effective_agents_binding_to_close() -> None:
+    ctx = hub_context(FakeRegistry([]))
+    ctx.ui = SimpleNamespace(effective_keys={"agents": ("c-x",)})
+
+    assert await drive_overlay(HubOverlay(ctx), b"\x18") is None
+
+
+@pytest.mark.asyncio
 async def test_hub_cancel_revive_message_and_copy_actions_target_selection() -> None:
     running = FakeRun("running", "Runner", "running")
     parked = FakeRun(
@@ -592,7 +609,7 @@ async def test_runtime_drill_send_and_back_restore_main_view() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agents_command_and_alt_a_binding_open_the_hub() -> None:
+async def test_agents_command_opens_and_hotkey_requests_a_toggle() -> None:
     from orcha_agent.builtin import commands_core
     from orcha_agent.core.events import EventBus
     from orcha_agent.core.plugin import PluginAPI
@@ -608,25 +625,81 @@ async def test_agents_command_and_alt_a_binding_open_the_hub() -> None:
         request_rebuild=lambda: None,
     )
     commands_core.register(api)
-    runtime = ApplicationRuntime(
-        lambda _text: asyncio.sleep(0),
-        registry=registry,
-        output=DummyOutput(),
-    )
-    assert "agents" in registry.commands
     shown: list[str] = []
+    toggled: list[str] = []
 
     async def show(name: str) -> None:
         shown.append(name)
 
-    ctx = SimpleNamespace(ui=SimpleNamespace(show=show))
+    async def toggle(name: str) -> None:
+        toggled.append(name)
+
+    ctx = SimpleNamespace(ui=SimpleNamespace(show=show, toggle=toggle))
     assert await dispatch_command(registry, ctx, "/agents") is True
     binding = registry.keybindings["agents"]
     await binding.handler(ctx, SimpleNamespace())
 
     assert binding.default == "escape a"
-    assert shown == ["hub", "hub"]
-    await runtime.scheduler.aclose()
+    assert shown == ["hub"]
+    assert toggled == ["hub"]
+
+
+@pytest.mark.asyncio
+async def test_alt_a_opens_and_closes_the_agent_hub(wait_until) -> None:
+    from orcha_agent.builtin import commands_core
+    from orcha_agent.core.events import EventBus
+    from orcha_agent.core.plugin import PluginAPI
+    from orcha_agent.tui.overlays import register_builtin_overlays
+
+    registry = Registry()
+    api = PluginAPI(
+        name="commands-core",
+        registry=registry,
+        bus=EventBus(),
+        config={},
+        state={},
+        request_rebuild=lambda: None,
+    )
+    commands_core.register(api)
+    register_builtin_overlays(registry)
+    ctx = SimpleNamespace(
+        agents=FakeRegistry([]),
+        cfg=SimpleNamespace(
+            cwd=Path.cwd(),
+            notify=False,
+            statusbar=False,
+            symbols="ascii",
+        ),
+        plugin_states={},
+        session=SimpleNamespace(get=lambda _session_id: None),
+        session_id="session",
+    )
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            submit,
+            registry=registry,
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        runtime_task = asyncio.create_task(runtime.run())
+
+        await wait_until(lambda: runtime.application.is_running)
+        pipe.send_bytes(b"\x1ba")
+        await wait_until(lambda: isinstance(runtime.active_overlay, HubOverlay))
+        pipe.send_bytes(b"\x1ba")
+        await wait_until(lambda: runtime.active_overlay is None)
+
+        assert runtime.drilled_run_id is None
+        assert runtime.buffer.text == ""
+        assert submitted == []
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(runtime_task, 1)
 
 
 @pytest.mark.asyncio
