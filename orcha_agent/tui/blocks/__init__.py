@@ -18,6 +18,7 @@ LEADING_SPACER_KINDS = frozenset({"assistant", "thinking", "tool"})
 def with_leading_spacer(renderable: Any) -> Group:
     return Group(Text(""), renderable)
 
+
 DEFAULT_THEME: dict[str, Any] = {
     "id": "default",
     "colors": {
@@ -33,10 +34,10 @@ DEFAULT_THEME: dict[str, Any] = {
         "toolDiffAdded": "green",
         "toolDiffContext": "bright_black",
         "toolDiffRemoved": "red",
-        "toolErrorBg": "grey15",
+        "toolErrorBg": "",
         "toolOutput": "default",
-        "toolPendingBg": "grey11",
-        "toolSuccessBg": "grey15",
+        "toolPendingBg": "",
+        "toolSuccessBg": "",
         "toolTitle": "cyan",
         "userMessageBg": "grey19",
         "userMessageText": "default",
@@ -65,7 +66,9 @@ def theme_value(theme: Any, name: str, default: Any = "default") -> Any:
 def theme_symbol(theme: Any, name: str, default: Any) -> Any:
     if theme is None:
         theme = DEFAULT_THEME
-    symbols = theme.get("symbols", {}) if isinstance(theme, Mapping) else getattr(theme, "symbols", {})
+    symbols = (
+        theme.get("symbols", {}) if isinstance(theme, Mapping) else getattr(theme, "symbols", {})
+    )
     if isinstance(symbols, Mapping):
         return symbols.get(name, default)
     return getattr(symbols, name, default)
@@ -112,10 +115,7 @@ class BlockRendererDispatcher:
     def evict(self, blocks: Iterable[Block | str]) -> None:
         """Drop every cached rendering owned by the supplied blocks."""
 
-        block_ids = {
-            block if isinstance(block, str) else block.id
-            for block in blocks
-        }
+        block_ids = {block if isinstance(block, str) else block.id for block in blocks}
         if block_ids:
             self._cache = {
                 partition: entries
@@ -156,11 +156,10 @@ class BlockRendererDispatcher:
                     )
                 else:
                     cache[key] = str(
-                        result
-                        if result is not None
-                        else block.data.get("text", block.data)
+                        result if result is not None else block.data.get("text", block.data)
                     )
         return cache[key]
+
 
 def render_queue(
     block: Block,
@@ -173,8 +172,7 @@ def render_queue(
     raw_prompts = block.data.get("prompts", ())
     prompts = (
         list(raw_prompts)
-        if isinstance(raw_prompts, Sequence)
-        and not isinstance(raw_prompts, (str, bytes))
+        if isinstance(raw_prompts, Sequence) and not isinstance(raw_prompts, (str, bytes))
         else []
     )
     has_overflow = len(prompts) > 5
@@ -206,7 +204,6 @@ def render_queue(
         if index < min(len(lines), budget_rows) - 1:
             rendered.append("\n")
     return rendered
-
 
 
 from .assistant import render as render_assistant

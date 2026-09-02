@@ -91,7 +91,10 @@ def _state(block: Block) -> str:
     if isinstance(calls, list) and calls:
         if any(isinstance(call, Mapping) and "result" not in call for call in calls):
             return "running"
-        if any(isinstance(call, Mapping) and _exit_code(call.get("result")) not in (None, 0) for call in calls):
+        if any(
+            isinstance(call, Mapping) and _exit_code(call.get("result")) not in (None, 0)
+            for call in calls
+        ):
             return "error"
         return "done"
     statuses = {explicit, str(getattr(result, "status", "")).casefold()}
@@ -117,9 +120,23 @@ def _state(block: Block) -> str:
 
 def _glyph(block: Block, state: str, theme: Any = None) -> str:
     if state == "running":
-        return theme_spinner(theme, "spinner.activity", int(block.data.get("spinner_frame", 0)), SPINNER_FRAMES)
-    defaults = {"done": "✔", "error": "✘", "warning": "⚠", "info": "ⓘ", "pending": "⏳", "aborted": "⏹"}
-    keys = {"done": "status.success", "error": "status.error", "warning": "status.warning", "pending": "status.pending"}
+        return theme_spinner(
+            theme, "spinner.activity", int(block.data.get("spinner_frame", 0)), SPINNER_FRAMES
+        )
+    defaults = {
+        "done": "✔",
+        "error": "✘",
+        "warning": "⚠",
+        "info": "ⓘ",
+        "pending": "⏳",
+        "aborted": "⏹",
+    }
+    keys = {
+        "done": "status.success",
+        "error": "status.error",
+        "warning": "status.warning",
+        "pending": "status.pending",
+    }
     return str(theme_symbol(theme, keys.get(state, ""), defaults.get(state, "•")))
 
 
@@ -177,11 +194,22 @@ def _detail(name: str, args: Mapping[str, Any], cwd: Any = None) -> str:
 
 def _label(name: str) -> str:
     return {
-        "execute": "Bash", "bash": "Bash", "shell": "Bash",
-        "read": "Read", "read_file": "Read", "write": "Write", "write_file": "Write",
-        "edit": "Edit", "edit_file": "Edit", "apply_patch": "Edit",
-        "web_search": "Web Search", "grep": "Grep", "glob": "Glob",
-        "task": "Task", "todo": "Todo", "ask": "Ask",
+        "execute": "Bash",
+        "bash": "Bash",
+        "shell": "Bash",
+        "read": "Read",
+        "read_file": "Read",
+        "write": "Write",
+        "write_file": "Write",
+        "edit": "Edit",
+        "edit_file": "Edit",
+        "apply_patch": "Edit",
+        "web_search": "Web Search",
+        "grep": "Grep",
+        "glob": "Glob",
+        "task": "Task",
+        "todo": "Todo",
+        "ask": "Ask",
     }.get(name, name.replace("_", " ").title())
 
 
@@ -304,7 +332,9 @@ def _frame(
             section = _middle_ellipsis(_one_line(sections[index]), max(0, width - 8))
             label = f" {section} " if section else ""
             fill = max(0, width - 6 - cell_len(label))
-            _append_line(output, Text(f"{tee_right}{h * 3}{label}{h * fill}{h}{tee_left}", style=border))
+            _append_line(
+                output, Text(f"{tee_right}{h * 3}{label}{h * fill}{h}{tee_left}", style=border)
+            )
             continue
         content_width = width - (2 if edit else 4)
         value = row.copy() if isinstance(row, Text) else Text(str(row))
@@ -319,7 +349,7 @@ def _frame(
         _append_line(output, framed)
     _append_line(output, Text(f"{bl}{h * (width - 2)}{br}", style=border))
     background = theme_value(theme, _card_background_token(state), None)
-    if background is not None:
+    if background not in (None, "", "default"):
         output.stylize(f"on {background}")
     return output
 
@@ -350,7 +380,11 @@ def _diff(value: Any) -> str | None:
         before, after = item.get("before"), item.get("after")
         if isinstance(before, str) and isinstance(after, str):
             path = str(item.get("path") or item.get("file_path") or "file")
-            return "\n".join(difflib.unified_diff(before.splitlines(), after.splitlines(), fromfile=path, tofile=path, lineterm=""))
+            return "\n".join(
+                difflib.unified_diff(
+                    before.splitlines(), after.splitlines(), fromfile=path, tofile=path, lineterm=""
+                )
+            )
     text = _text(value)
     return text if text.startswith(("@@ ", "--- ")) or "\n@@ " in text else None
 
@@ -399,7 +433,11 @@ def _read_display_rows(
         rows.append(row)
     hidden = len(source_rows) - len(visible)
     if hidden:
-        rows.append(Text(f"{' ' * (gutter_width + 1)}… {hidden} more lines {EXPAND_HINT}", style=gutter_style))
+        rows.append(
+            Text(
+                f"{' ' * (gutter_width + 1)}… {hidden} more lines {EXPAND_HINT}", style=gutter_style
+            )
+        )
     return rows
 
 
@@ -425,7 +463,9 @@ def _read_rows(
         return f"⏳ Read: {path}{_selection(args)}", []
     source_rows, first, last = _read_source_rows(block.data.get("result"), args)
     selection = f":{first}-{last}" if first is not None and last is not None else ""
-    return f"• Read {path}{selection}", _read_display_rows(source_rows, expanded=expanded, theme=theme)
+    return f"• Read {path}{selection}", _read_display_rows(
+        source_rows, expanded=expanded, theme=theme
+    )
 
 
 def _write_rows(block: Block, args: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -440,32 +480,55 @@ def _write_rows(block: Block, args: Mapping[str, Any]) -> tuple[str, list[str]]:
     return f"✎ Write: {path} ({len(lines)} lines)", lines[:6]
 
 
-def _edit_rows(block: Block, args: Mapping[str, Any], theme: Any, width: int, expanded: bool) -> tuple[str, list[Text]]:
+def _edit_rows(
+    block: Block, args: Mapping[str, Any], theme: Any, width: int, expanded: bool
+) -> tuple[str, list[Text]]:
     diff = _diff(block.data.get("result")) or _diff(args) or ""
     first = re.search(r"@@ -\d+(?:,\d+)? \+(\d+)", diff)
     line = f":{first.group(1)}" if first else ""
-    added = sum(1 for value in diff.splitlines() if value.startswith("+") and not value.startswith("+++"))
-    removed = sum(1 for value in diff.splitlines() if value.startswith("-") and not value.startswith("---"))
-    header = f"{_glyph(block, _state(block), theme)} Edit: {_path(args)}{line} ⟦+{added}/-{removed}⟧"
-    rendered = render_diff(replace(block, kind="diff", data={"text": diff}), theme, width, 10_000, expanded)
+    added = sum(
+        1 for value in diff.splitlines() if value.startswith("+") and not value.startswith("+++")
+    )
+    removed = sum(
+        1 for value in diff.splitlines() if value.startswith("-") and not value.startswith("---")
+    )
+    header = (
+        f"{_glyph(block, _state(block), theme)} Edit: {_path(args)}{line} ⟦+{added}/-{removed}⟧"
+    )
+    rendered = render_diff(
+        replace(block, kind="diff", data={"text": diff}), theme, width, 10_000, expanded
+    )
     rows = list(rendered.split("\n", allow_blank=True))
     if block.state is BlockState.ACTIVE:
         hidden = max(0, len(rows) - 12)
         rows = rows[-12:]
         if hidden:
             rows.insert(0, Text("… (content above)", style="dim"))
-        rows.append(Text(f"{SPINNER_FRAMES[int(block.data.get('spinner_frame', 0)) % 8]} (preview)", style="dim"))
+        rows.append(
+            Text(
+                f"{SPINNER_FRAMES[int(block.data.get('spinner_frame', 0)) % 8]} (preview)",
+                style="dim",
+            )
+        )
     return header, rows
 
 
-def _bash_rows(block: Block, args: Mapping[str, Any], expanded: bool) -> tuple[list[str | Text], dict[int, str]]:
+def _bash_rows(
+    block: Block, args: Mapping[str, Any], expanded: bool
+) -> tuple[list[str | Text], dict[int, str]]:
     command_lines = str(args.get("command", args.get("cmd", ""))).splitlines() or [""]
     if len(command_lines) > 6 and not expanded:
-        command_lines = [f"… {len(command_lines) - 6} earlier lines {EXPAND_HINT}", *command_lines[-6:]]
+        command_lines = [
+            f"… {len(command_lines) - 6} earlier lines {EXPAND_HINT}",
+            *command_lines[-6:],
+        ]
     output = _result_text(block.data.get("result")).splitlines()
     if len(output) > 10 and not expanded:
         total = len(output)
-        output = [f"… ({total - 10} earlier lines, showing 10 of {total}) (ctrl+o to expand)", *output[-10:]]
+        output = [
+            f"… ({total - 10} earlier lines, showing 10 of {total}) (ctrl+o to expand)",
+            *output[-10:],
+        ]
     rows: list[str | Text] = [*(f"$ {line}" for line in command_lines)]
     section_index = len(rows)
     rows.append("")
@@ -474,7 +537,9 @@ def _bash_rows(block: Block, args: Mapping[str, Any], expanded: bool) -> tuple[l
     wall = _value(
         result,
         "wall_time",
-        block.data.get("elapsed") if _state(block) == "running" else block.data.get("duration", 0.0),
+        block.data.get("elapsed")
+        if _state(block) == "running"
+        else block.data.get("duration", 0.0),
     )
     footer = f"⟦Wall: {float(wall):.1f}s | Exit: {_exit_code(result) if _exit_code(result) is not None else '—'}"
     if args.get("timeout") is not None:
@@ -525,7 +590,8 @@ def _path_item(item: Any) -> str:
 def _grep_items(result: Any, output_mode: str) -> tuple[list[str], int, int]:
     structured = _items_from_result(result, "matches")
     has_structured_matches = any(
-        isinstance(item.get("matches"), Sequence) and not isinstance(item.get("matches"), (str, bytes))
+        isinstance(item.get("matches"), Sequence)
+        and not isinstance(item.get("matches"), (str, bytes))
         for item in _mappings(result)
     )
     if has_structured_matches:
@@ -588,7 +654,9 @@ def _timed_inline_header(text: str, timing: str, theme: Any) -> Text:
     return header
 
 
-def _tree_output(header: str | Text, items: list[str], *, total: int, limit: int, item_type: str) -> Text:
+def _tree_output(
+    header: str | Text, items: list[str], *, total: int, limit: int, item_type: str
+) -> Text:
     visible = items[:limit]
     hidden = max(0, total - len(visible))
     output = header.copy() if isinstance(header, Text) else Text(header)
@@ -601,7 +669,9 @@ def _tree_output(header: str | Text, items: list[str], *, total: int, limit: int
     return output
 
 
-def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: bool, theme: Any) -> Text:
+def _inline_rows(
+    block: Block, name: str, args: Mapping[str, Any], expanded: bool, theme: Any
+) -> Text:
     state = _state(block)
     result = block.data.get("result")
     pattern = str(args.get("pattern", args.get("query", "")))
@@ -619,7 +689,9 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
         title = f"✘ {_label(name)}{f': {detail}' if detail else ''}"
         output = _timed_inline_header(title, timing, theme)
         output.append("\n")
-        output.append(_result_text(result)[:110] or "Unknown error", style=str(theme_value(theme, "error")))
+        output.append(
+            _result_text(result)[:110] or "Unknown error", style=str(theme_value(theme, "error"))
+        )
         return output
     if name == "grep":
         grep_result = None if _result_text(result).strip() == "No matches found" else result
@@ -636,9 +708,14 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
             timing,
             theme,
         )
-        return _tree_output(header, items, total=total, limit=24 if expanded else 6, item_type="match")
+        return _tree_output(
+            header, items, total=total, limit=24 if expanded else 6, item_type="match"
+        )
     if name == "ls":
-        items = [_path_item(item) for item in _items_from_result(result, "entries", "items", "files", "paths")]
+        items = [
+            _path_item(item)
+            for item in _items_from_result(result, "entries", "items", "files", "paths")
+        ]
         items = [item for item in items if item and item != "No files found"]
         supplied_total = _numeric_value(result, "count", "total", "total_count")
         total = len(items) if supplied_total is None else supplied_total
@@ -653,8 +730,15 @@ def _inline_rows(block: Block, name: str, args: Mapping[str, Any], expanded: boo
             item_type="item",
         )
 
-    items = [_path_item(item) for item in _items_from_result(result, "matches", "items", "results", "files", "paths")]
-    items = [item for item in items if item and item not in {"No files found", "No files found matching pattern"}]
+    items = [
+        _path_item(item)
+        for item in _items_from_result(result, "matches", "items", "results", "files", "paths")
+    ]
+    items = [
+        item
+        for item in items
+        if item and item not in {"No files found", "No files found matching pattern"}
+    ]
     supplied_total = _numeric_value(result, "count", "total", "total_count", "result_count")
     total = len(items) if supplied_total is None else supplied_total
     if not items and total == 0:
@@ -684,7 +768,14 @@ def _todo_rows(args: Mapping[str, Any], result: Any, theme: Any) -> tuple[str, l
             "status.success" if done else "status.pending",
             "☑" if done else "☐",
         )
-        rows.append(Text(f"{glyph} {label}", style=f"{theme_value(theme, 'success')} strike" if done else str(theme_value(theme, "accent"))))
+        rows.append(
+            Text(
+                f"{glyph} {label}",
+                style=f"{theme_value(theme, 'success')} strike"
+                if done
+                else str(theme_value(theme, "accent")),
+            )
+        )
     header_glyph = theme_symbol(theme, "status.success", "☑")
     separator = theme_symbol(theme, "sep.thin", "·")
     return f"{header_glyph} Todo {separator} {len(items)} tasks", rows
@@ -693,10 +784,15 @@ def _todo_rows(args: Mapping[str, Any], result: Any, theme: Any) -> tuple[str, l
 def _generic_rows(args: Mapping[str, Any], result: Any, expanded: bool) -> list[str]:
     arg_text = " ".join(f"{key}={value}" for key, value in args.items())
     output = _result_text(result).splitlines()
-    return [f"└─ {arg_text}" if arg_text else "└─", *_limited(output, 12 if expanded else 4, expanded)]
+    return [
+        f"└─ {arg_text}" if arg_text else "└─",
+        *_limited(output, 12 if expanded else 4, expanded),
+    ]
 
 
-def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Text | None:
+def _render_impl(
+    block: Block, theme: Any, width: int, budget_rows: int, expanded: bool
+) -> Text | None:
     if budget_rows <= 0:
         return None
     name = str(block.data.get("name", "tool"))
@@ -717,16 +813,23 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     timing = _timing_label(block, state)
     compact = f"{label}{f' {separator} {detail}' if detail else ''}{f' {separator} {timing}' if timing else ''}"
     if budget_rows == 1:
-        return Text(f"{_glyph(block, state, theme)} {compact}", style=str(theme_value(theme, "toolTitle")))
+        return Text(
+            f"{_glyph(block, state, theme)} {compact}", style=str(theme_value(theme, "toolTitle"))
+        )
     if budget_rows == 2:
         top_left = _box_char(theme, "topLeft", "╭", "top_left")
         bottom_left = _box_char(theme, "bottomLeft", "╰", "bottom_left")
         horizontal = _box_char(theme, "horizontal", "─", "top")
-        return Text(f"{top_left}{horizontal} {compact}\n{bottom_left}", style=str(theme_value(theme, _border_token(name, state))))
+        return Text(
+            f"{top_left}{horizontal} {compact}\n{bottom_left}",
+            style=str(theme_value(theme, _border_token(name, state))),
+        )
     if name in _INLINE:
         return _inline_rows(block, name, args, expanded, theme)
     if state == "error" and name not in _BASH:
-        header = _header_with_timing(f"✘ {label}{f' {detail}' if detail else ''}", block, state, theme)
+        header = _header_with_timing(
+            f"✘ {label}{f' {detail}' if detail else ''}", block, state, theme
+        )
         return _frame(
             header,
             _result_text(block.data.get("result")).splitlines() or ["Unknown error"],
@@ -743,9 +846,11 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     elif name in _WRITE:
         header, rows = _write_rows(block, args)
     elif name in _EDIT:
-        header, rows = _edit_rows(block, args, theme, width, expanded); edit = True
+        header, rows = _edit_rows(block, args, theme, width, expanded)
+        edit = True
     elif name in _BASH:
-        header = f"{_glyph(block, state, theme)} Bash"; rows, sections = _bash_rows(block, args, expanded)
+        header = f"{_glyph(block, state, theme)} Bash"
+        rows, sections = _bash_rows(block, args, expanded)
     elif name == "todo":
         header, rows = _todo_rows(args, block.data.get("result"), theme)
     else:
@@ -765,7 +870,9 @@ def _render_impl(block: Block, theme: Any, width: int, budget_rows: int, expande
     )
 
 
-def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Group | Text | None:
+def render(
+    block: Block, theme: Any, width: int, budget_rows: int, expanded: bool
+) -> Group | Text | None:
     try:
         content = _render_impl(block, theme, width, budget_rows, expanded)
     except Exception:

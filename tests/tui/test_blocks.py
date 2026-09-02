@@ -99,11 +99,7 @@ def test_user_bubble_emits_full_width_background_cells_to_a_terminal() -> None:
     terminal_text = Text.from_ansi(raw).plain
 
     assert "48;5;236" in raw
-    assert terminal_text == (
-        f"{' ' * 40}\n"
-        f" visible terminal bubble{' ' * 16}\n"
-        f"{' ' * 40}\n"
-    )
+    assert terminal_text == (f"{' ' * 40}\n visible terminal bubble{' ' * 16}\n{' ' * 40}\n")
     assert all(len(line) == 40 for line in terminal_text.splitlines())
 
 
@@ -322,8 +318,12 @@ def test_banner_caps_error_at_eight_lines() -> None:
 
 
 def test_marker_uses_compact_clear_and_branch_labels() -> None:
-    assert "⊟ compacted" in plain(render_marker(block("marker", reason="compact"), THEME, 80, 20, False))
-    assert "⊠ cleared" in plain(render_marker(block("marker", reason="clear"), THEME, 80, 20, False))
+    assert "⊟ compacted" in plain(
+        render_marker(block("marker", reason="compact"), THEME, 80, 20, False)
+    )
+    assert "⊠ cleared" in plain(
+        render_marker(block("marker", reason="clear"), THEME, 80, 20, False)
+    )
     assert "⎇ branched to child" in plain(
         render_marker(block("marker", reason="branch", new="child"), THEME, 80, 20, False)
     )
@@ -344,7 +344,9 @@ def test_hud_is_hidden_when_empty_and_capped_at_eight_rows() -> None:
     )
     agents = plain(
         render_subagents(
-            block("subagents", agents=[{"name": f"agent-{i}", "status": "running"} for i in range(12)]),
+            block(
+                "subagents", agents=[{"name": f"agent-{i}", "status": "running"} for i in range(12)]
+            ),
             THEME,
             80,
             20,
@@ -458,8 +460,7 @@ def test_grouped_reads_and_diffs_share_collapsed_preview_caps() -> None:
         name="edit_file",
         args={"file_path": "demo.py"},
         result={
-            "diff": "@@ -1,25 +1,25 @@\n"
-            + "\n".join(f" context {index}" for index in range(25))
+            "diff": "@@ -1,25 +1,25 @@\n" + "\n".join(f" context {index}" for index in range(25))
         },
     )
 
@@ -473,6 +474,51 @@ def test_grouped_reads_and_diffs_share_collapsed_preview_caps() -> None:
     assert "24.py" in grouped_expanded
     assert "context 20" in diff_collapsed
     assert "context 24" in diff_expanded
+
+
+@pytest.mark.parametrize(
+    ("background", "expected"),
+    [
+        ("", None),
+        (None, None),
+        ("default", None),
+        ("#010203", (1, 2, 3)),
+    ],
+)
+def test_tool_card_background_is_opt_in(
+    background: str | None,
+    expected: tuple[int, int, int] | None,
+) -> None:
+    theme = {
+        **THEME,
+        "colors": {**THEME["colors"], "toolSuccessBg": background},
+    }
+    card = render_tool(
+        block(
+            "tool",
+            name="read_file",
+            args={"path": "a.py"},
+            result="ok",
+            leading_spacer=False,
+        ),
+        theme,
+        80,
+        20,
+        False,
+    )
+    assert isinstance(card, Text)
+    assert card.plain.startswith("╭")
+
+    console = Console(color_system="truecolor")
+    for offset, character in enumerate(card.plain):
+        if character == "\n":
+            continue
+        color = card.get_style_at_offset(console, offset).bgcolor
+        if expected is None:
+            assert color is None
+        else:
+            assert color is not None
+            assert tuple(color.get_truecolor()) == expected
 
 
 def test_tool_cards_tint_every_row_and_use_state_timing_contract() -> None:
