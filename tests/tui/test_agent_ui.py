@@ -14,6 +14,8 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from orcha_agent.core.events import (
+    AgentDelivered,
+    AgentFinished,
     AgentSpawned,
     AgentStatus,
     ModelChunk,
@@ -254,7 +256,7 @@ def test_task_cards_cover_running_done_and_failed_states(
         assert "result-4" not in output
 
 
-def test_delivered_result_is_a_collapsible_system_card() -> None:
+def test_delivered_result_is_a_one_row_notice_that_expands_to_a_card() -> None:
     value = Block(
         "delivery-1",
         "delivery",
@@ -264,6 +266,8 @@ def test_delivered_result_is_a_collapsible_system_card() -> None:
                 "name": "Researcher",
                 "status": "done",
                 "result": "one\ntwo\nthree\nfour\nfive\nsix",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:01:02+00:00",
             }
         },
     )
@@ -271,12 +275,27 @@ def test_delivered_result_is_a_collapsible_system_card() -> None:
     collapsed = plain(render_delivery(value, THEME, 80, 20, False), 80)
     expanded = plain(render_delivery(value, THEME, 80, 20, True), 80)
 
-    assert "↩ Researcher finished" in collapsed
-    assert "one" in collapsed and "four" in collapsed
-    assert "five" not in collapsed
-    assert "… 2 more lines" in collapsed
-    assert "six" in expanded
+    assert collapsed.count("\n") <= 1
+    assert "✔ Researcher finished · done · 1m2s" in collapsed
+    assert "two" not in collapsed
+    assert "╭" not in collapsed
+    assert "↩ Researcher finished" in expanded
+    assert "one" in expanded and "six" in expanded
     assert "more lines" not in expanded
+
+
+def test_failed_delivery_notice_uses_the_error_glyph() -> None:
+    value = Block(
+        "delivery-2",
+        "delivery",
+        data={
+            "job": {"run_id": "w", "name": "Scout", "status": "failed", "result": {"error": "x"}}
+        },
+    )
+
+    collapsed = plain(render_delivery(value, THEME, 80, 20, False), 80)
+
+    assert "✘ Scout finished · failed" in collapsed
 
 
 def test_registry_drives_hud_status_and_title_counts() -> None:
@@ -697,3 +716,69 @@ async def test_late_agent_event_after_settled_task_card_does_not_duplicate_it() 
     await transcript.handle(AgentStatus("run-9", "main", "Scout", "scout", status="done"))
     task_blocks_after = [b for b in transcript.frame.blocks if b.kind == "task"]
     assert task_blocks_after == task_blocks_before
+
+
+@pytest.mark.asyncio
+async def test_task_card_tracks_each_run_once_and_settles_after_delivery() -> None:
+    transcript = Transcript()
+    await transcript.handle(
+        ToolCallStart(
+            "task",
+            {"tasks": [{"task": "first", "name": "Alpha"}, {"task": "second", "name": "Beta"}]},
+            "call-1",
+        )
+    )
+    await transcript.handle(AgentSpawned("run-a", "main", "Alpha", "task"))
+    await transcript.handle(AgentSpawned("run-b", "main", "Beta", "task"))
+    await transcript.handle(AgentStatus("run-a", "main", "Alpha", "task", status="running"))
+    await transcript.handle(AgentStatus("run-b", "main", "Beta", "task", status="running"))
+    await transcript.handle(
+        ToolCallEnd(
+            "task",
+            "call-1",
+            {
+                "spawned": [
+                    {"id": "run-a", "name": "Alpha", "type": "task", "status": "running"},
+                    {"id": "run-b", "name": "Beta", "type": "task", "status": "running"},
+                ],
+                "results": [],
+                "timed_out": [],
+                "errors": [],
+            },
+        )
+    )
+    for run_id, name in (("run-a", "Alpha"), ("run-b", "Beta")):
+        await transcript.handle(AgentStatus(run_id, "main", name, "task", status="idle"))
+        await transcript.handle(AgentStatus(run_id, "main", name, "task", status="done"))
+        await transcript.handle(AgentFinished(run_id, "main", name, "task", {"ok": name}))
+
+    block = transcript._task_blocks["call-1"]
+    assert [agent["run_id"] for agent in block.data["agents"]] == ["run-a", "run-b"]
+    assert [agent["status"] for agent in block.data["agents"]] == ["done", "done"]
+    assert block.state is BlockState.ACTIVE
+
+    await transcript.handle(
+        AgentDelivered(
+            "main",
+            ("run-a", "run-b"),
+            (
+                {
+                    "run_id": "run-a",
+                    "name": "Alpha",
+                    "status": "done",
+                    "result": {"ok": "Alpha"},
+                    "delivered": True,
+                },
+                {
+                    "run_id": "run-b",
+                    "name": "Beta",
+                    "status": "done",
+                    "result": {"ok": "Beta"},
+                    "delivered": True,
+                },
+            ),
+        )
+    )
+
+    assert [agent["run_id"] for agent in block.data["agents"]] == ["run-a", "run-b"]
+    assert block.state is not BlockState.ACTIVE

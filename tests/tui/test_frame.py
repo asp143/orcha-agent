@@ -92,6 +92,20 @@ def test_viewport_gives_every_block_one_row_then_surplus_to_non_tools() -> None:
     ]
 
 
+def test_viewport_squeezes_task_cards_before_prose_like_tool_cards() -> None:
+    frame = Frame()
+    assistant = frame.add("assistant", {"text": "one\ntwo\nthree"})
+    task = frame.add("task", {"name": "task", "agents": []})
+
+    plan = frame.viewport_plan(
+        5,
+        width=80,
+        measure=lambda block, _width: 3 if block is assistant else 8,
+    )
+
+    assert plan == [ViewportItem(assistant, 3), ViewportItem(task, 2)]
+
+
 @pytest.mark.asyncio
 async def test_commit_and_invalidation_requests_are_coalesced() -> None:
     commit_batches: list[list[str]] = []

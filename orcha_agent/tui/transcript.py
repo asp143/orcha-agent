@@ -581,6 +581,18 @@ class Transcript:
                     for key in ("result", "delivered", "reason"):
                         restored.pop(key, None)
                 agents[duplicate] = restored
+        if index is None and run_id:
+            # Every lifecycle event for a known run updates its existing row;
+            # otherwise each status change would append a duplicate agent and
+            # the card could never settle.
+            index = next(
+                (
+                    position
+                    for position, agent in enumerate(agents)
+                    if str(agent.get("run_id") or agent.get("id") or "") == run_id
+                ),
+                None,
+            )
         if index is None:
             index = next(
                 (

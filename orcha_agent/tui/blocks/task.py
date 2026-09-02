@@ -347,14 +347,30 @@ def render_delivery(
     result = snapshot.get("result", block.data.get("result"))
     if result is None:
         result = snapshot.get("partial_findings", snapshot.get("findings"))
+    failed = status in {"error", "failed"}
+    if not expanded or budget_rows == 1:
+        # Collapsed form mirrors omp's one-row background-job notice; the
+        # task card already carries the result, so a framed copy per job
+        # only adds clutter to the transcript.
+        if failed:
+            glyph, token = str(theme_symbol(theme, "status.error", "✘")), "error"
+        elif status in _FAILURE:
+            glyph, token = "⏹", "warning"
+        else:
+            glyph, token = str(theme_symbol(theme, "status.success", "✔")), "success"
+        separator = str(theme_symbol(theme, "sep.thin", "·"))
+        parts = [f"{name} finished", status]
+        elapsed = _elapsed(snapshot)
+        if elapsed > 0:
+            parts.append(_duration(elapsed))
+        line = Text(glyph, style=str(theme_value(theme, token)))
+        line.append(" ")
+        line.append(f" {separator} ".join(parts), style=str(theme_value(theme, "muted")))
+        line.truncate(max(1, width), overflow="ellipsis")
+        return line
+
     lines = _result_text(result).splitlines() or ["No result was returned."]
-    if not expanded and len(lines) > 4:
-        lines = [*lines[:4], f"… {len(lines) - 4} more lines {EXPAND_HINT}"]
-    border = (
-        "error"
-        if status in {"error", "failed"}
-        else ("warning" if status in _FAILURE else "borderMuted")
-    )
+    border = "error" if failed else ("warning" if status in _FAILURE else "borderMuted")
     return _frame(
         f"↩ {name} finished",
         lines,
@@ -362,7 +378,7 @@ def render_delivery(
         budget_rows=budget_rows,
         theme=theme,
         border_token=border,
-        state=("error" if status in {"error", "failed"} or status in _FAILURE else "success"),
+        state=("error" if status in _FAILURE else "success"),
     )
 
 

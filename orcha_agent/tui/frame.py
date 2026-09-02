@@ -12,6 +12,9 @@ from itertools import count
 from typing import Any
 
 
+_ACTIVITY_KINDS = frozenset({"tool", "task"})
+
+
 class BlockState(str, Enum):
     ACTIVE = "active"
     SETTLED = "settled"
@@ -187,11 +190,12 @@ class Frame:
                 for line in content.split("\n")
             )
 
-        # Keep every active block observable. Non-tool prose gets surplus rows
-        # before tool cards, which then degrade deterministically to 2/1 rows.
+        # Keep every active block observable. Prose gets surplus rows before
+        # activity cards (tool and task), which then degrade deterministically
+        # to their compact forms instead of clipping already-visible text.
         for group in (
-            [block for block in reversed(selected) if block.kind != "tool"],
-            [block for block in reversed(selected) if block.kind == "tool"],
+            [block for block in reversed(selected) if block.kind not in _ACTIVITY_KINDS],
+            [block for block in reversed(selected) if block.kind in _ACTIVITY_KINDS],
         ):
             for block in group:
                 if remaining == 0:
