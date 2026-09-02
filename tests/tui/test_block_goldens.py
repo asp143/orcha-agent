@@ -263,8 +263,22 @@ SAMPLES = (
             name="task",
             result={
                 "agents": [
-                    {"id": "a", "description": "inspect", "status": "success", "requests": 3, "elapsed": 4},
-                    {"id": "b", "description": "test", "status": "error", "requests": 2, "elapsed": 7},
+                    {
+                        "id": "a",
+                        "agent_type": "scout",
+                        "description": "inspect",
+                        "status": "success",
+                        "requests": 3,
+                        "elapsed": 4,
+                    },
+                    {
+                        "id": "b",
+                        "agent_type": "reviewer",
+                        "description": "test",
+                        "status": "error",
+                        "requests": 2,
+                        "elapsed": 7,
+                    },
                 ],
                 "requests": 5,
                 "elapsed": 11,

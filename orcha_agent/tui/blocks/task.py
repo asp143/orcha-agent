@@ -141,6 +141,13 @@ def _one_line(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
+def _agent_label(name: str, agent_type: Any) -> str:
+    normalized_type = _one_line(agent_type) if isinstance(agent_type, str) else ""
+    if normalized_type and normalized_type.casefold() != name.casefold():
+        return f"{name} ⟨{normalized_type}⟩"
+    return name
+
+
 def _clip(value: Any, maximum: int = 40) -> str:
     text = _one_line(
         json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, Mapping) else value
@@ -227,12 +234,13 @@ def _agent_rows(
     status = _status(agent)
     glyph, _token = _glyph(block, status, theme)
     name = _one_line(agent.get("name") or agent.get("run_id") or agent.get("id") or "agent")
+    identity_label = _agent_label(name, agent.get("agent_type"))
     description = _one_line(agent.get("description") or agent.get("task") or agent.get("prompt"))
     repeat_description = bool(block.data.get("repeat_description"))
     label = (
-        f"{name}: {description}"
+        f"{identity_label}: {description}"
         if description and (description != name or repeat_description)
-        else name
+        else identity_label
     )
     metrics = _metrics(agent)
 
@@ -343,6 +351,7 @@ def render_delivery(
     name = _one_line(
         snapshot.get("name") or snapshot.get("run_id") or snapshot.get("id") or "Agent"
     )
+    identity_label = _agent_label(name, snapshot.get("agent_type"))
     status = _status(snapshot)
     result = snapshot.get("result", block.data.get("result"))
     if result is None:
@@ -359,7 +368,7 @@ def render_delivery(
         else:
             glyph, token = str(theme_symbol(theme, "status.success", "✔")), "success"
         separator = str(theme_symbol(theme, "sep.thin", "·"))
-        parts = [f"{name} finished", status]
+        parts = [f"{identity_label} finished", status]
         elapsed = _elapsed(snapshot)
         if elapsed > 0:
             parts.append(_duration(elapsed))
@@ -372,7 +381,7 @@ def render_delivery(
     lines = _result_text(result).splitlines() or ["No result was returned."]
     border = "error" if failed else ("warning" if status in _FAILURE else "borderMuted")
     return _frame(
-        f"↩ {name} finished",
+        f"↩ {identity_label} finished",
         lines,
         width=width,
         budget_rows=budget_rows,
