@@ -29,7 +29,6 @@ def test_builtin_registers_native_block_renderers_only() -> None:
         "marker",
         "queue",
         "todo",
-        "subagents",
         "welcome",
         "working",
     }

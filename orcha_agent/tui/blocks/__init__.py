@@ -213,7 +213,7 @@ from .assistant import render as render_assistant
 from .advisory import render as render_advisory
 from .banner import render as render_banner
 from .diff import render as render_diff
-from .hud import render_subagents, render_todo
+from .hud import render_todo
 from .marker import render as render_marker
 from .review import render as render_review
 from .task import render_delivery, render_task
@@ -234,7 +234,6 @@ DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
     "banner": render_banner,
     "marker": render_marker,
     "todo": render_todo,
-    "subagents": render_subagents,
     "queue": render_queue,
     "working": render_working,
     "welcome": render_welcome,

@@ -6,7 +6,7 @@ import pytest
 from rich import box
 from rich.console import Console
 
-from orcha_agent.tui.blocks.hud import render_subagents, render_todo
+from orcha_agent.tui.blocks.hud import render_todo
 from orcha_agent.tui.blocks.thinking import render as render_thinking
 from orcha_agent.tui.blocks.tool import render as render_tool
 from orcha_agent.tui.frame import Block, BlockState
@@ -194,17 +194,6 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
         3,
         False,
     )
-    subagents = render_subagents(
-        Block(
-            id="agents",
-            kind="subagents",
-            data={"agents": [{"name": "worker"}], "spinner_frame": 1},
-        ),
-        theme,
-        80,
-        2,
-        False,
-    )
 
     rendered = tuple(
         _plain(value)
@@ -216,7 +205,6 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
             grouped,
             thinking,
             todo,
-            subagents,
         )
     )
     (
@@ -227,7 +215,6 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
         grouped_text,
         thinking_text,
         todo_text,
-        subagents_text,
     ) = rendered
 
     assert pending_text.startswith("B ")
@@ -237,7 +224,6 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
     assert "S Bash (2)" in grouped_text
     assert thinking_text.startswith("B ")
     assert "S done" in todo_text
-    assert "Task | 1 agents" in subagents_text
     assert all(
         value.isascii()
         for value in (
@@ -247,7 +233,6 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
             folded_text,
             grouped_text,
             todo_text,
-            subagents_text,
         )
     )
     assert thinking_text.replace("…", "...").isascii()

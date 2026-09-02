@@ -193,17 +193,6 @@ SAMPLES = (
         ),
     ),
     Sample(
-        "subagents",
-        _block(
-            "subagents",
-            "subagents",
-            agents=[
-                {"name": "Research", "status": "running"},
-                {"name": "Review", "status": "idle"},
-            ],
-        ),
-    ),
-    Sample(
         "tool-read-group",
         _block(
             "tool-read-group",

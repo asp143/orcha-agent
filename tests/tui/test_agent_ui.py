@@ -23,7 +23,6 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.registry import Registry
-from orcha_agent.tui.blocks.hud import subagent_hud_data
 from orcha_agent.tui.blocks.task import render_delivery, render_task
 from orcha_agent.tui.frame import Block, BlockState
 from orcha_agent.tui.overlays.hub import HubOverlay
@@ -279,7 +278,7 @@ def test_delivered_result_is_a_collapsible_system_card() -> None:
     assert "more lines" not in expanded
 
 
-def test_registry_drives_hud_status_and_title_counts() -> None:
+def test_registry_drives_status_and_title_counts() -> None:
     registry = FakeRegistry(
         [
             FakeRun(
@@ -299,24 +298,6 @@ def test_registry_drives_hud_status_and_title_counts() -> None:
     )
     ctx = SimpleNamespace(agents=registry)
 
-    data = subagent_hud_data(ctx, spinner_frame=3)
-    assert data is not None
-    assert data["running"] == 1
-    assert data["idle"] == 1
-    assert data["queued"] == 1
-    assert data["spinner_frame"] == 3
-    assert [row["name"] for row in data["agents"]] == [
-        "Runner",
-        "Queued",
-        "Idle",
-        "Parked",
-        "Done",
-        "Failed",
-        "Aborted",
-    ]
-    assert data["agents"][0]["last_tool"] == "read"
-    assert "result" not in data["agents"][0]
-    assert "partial_findings" not in data["agents"][0]
     assert agent_counts(ctx) == (1, 1, 4)
     assert subagents_segment(ctx).text == "1 running · 1 idle · 1 queued"
 
@@ -334,10 +315,9 @@ def test_registry_drives_hud_status_and_title_counts() -> None:
     ]
 
 
-def test_empty_registry_hides_agent_hud_and_status() -> None:
+def test_empty_registry_hides_agent_status() -> None:
     ctx = SimpleNamespace(agents=FakeRegistry([]))
 
-    assert subagent_hud_data(ctx) is None
     assert agent_counts(ctx) == (0, 0, 0)
     assert subagents_segment(ctx) is None
 

@@ -68,7 +68,6 @@ from .blocks import (
     render_task,
     theme_spinner,
 )
-from .blocks.hud import subagent_hud_data
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
 from .composer import Composer
@@ -384,8 +383,7 @@ class ApplicationRuntime:
         self._turn_active = False
         self._spinner_frame = 0
         self._hud_sections = {
-            kind: Block(f"hud-{kind}", kind)
-            for kind in ("todo", "subagents", "queue")
+            kind: Block(f"hud-{kind}", kind) for kind in ("todo", "queue")
         }
         self._approval_notification_sent = False
         self._shell_runner = shell_runner
@@ -699,27 +697,6 @@ class ApplicationRuntime:
         blocks: list[Block] = []
         if self.ui.todos:
             blocks.append(self._hud_block("todo", {"items": self.ui.todos[:7]}))
-        if self.ctx is not None:
-            agents = subagent_hud_data(self.ctx, spinner_frame=self._spinner_frame)
-            if agents is not None:
-                blocks.append(self._hud_block("subagents", agents))
-        if not any(block.kind == "subagents" for block in blocks) and self.ui.subagents:
-            running = sum(
-                str(agent.get("status", "")).casefold() == "running"
-                for agent in self.ui.subagents
-                if isinstance(agent, Mapping)
-            )
-            blocks.append(
-                self._hud_block(
-                    "subagents",
-                    {
-                        "agents": list(self.ui.subagents),
-                        "running": running,
-                        "idle": len(self.ui.subagents) - running,
-                        "spinner_frame": 0,
-                    },
-                )
-            )
         if self.queue:
             blocks.append(
                 self._hud_block(

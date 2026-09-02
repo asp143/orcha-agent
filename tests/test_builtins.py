@@ -173,7 +173,6 @@ def test_loading_builtins_registers_expected_plugins_and_features(
         "diff",
         "marker",
         "queue",
-        "subagents",
         "thinking",
         "todo",
         "tool",
