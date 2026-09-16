@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from contextvars import ContextVar
 from time import monotonic
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -87,12 +88,30 @@ class RuleStreamCallback(AsyncCallbackHandler):
 
 def install_model_callback(model: Any) -> None:
     """Install an inert, context-local dispatcher without cloning model state.
+class _RuleInterruptLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # LangChain logs before honoring raise_error. Match its exact structured
+        # record, preserving genuine callback failures and all other warnings.
+        return not (
+            record.msg == "Error in %s.%s callback: %s"
+            and record.args
+            == (
+                "RuleStreamCallback",
+                "on_llm_new_token",
+                "StreamInterrupt('Stream rule interrupted the model')",
+            )
+        )
+
+
 
     Cloning resets stateful fake/custom models. A single permanent dispatcher also
     avoids restoring shared callback lists in competing model-call finalizers.
     """
     callbacks = model.callbacks
     handlers = callbacks.handlers if isinstance(callbacks, BaseCallbackManager) else callbacks or []
+    callback_logger = logging.getLogger("langchain_core.callbacks.manager")
+    if not any(isinstance(item, _RuleInterruptLogFilter) for item in callback_logger.filters):
+        callback_logger.addFilter(_RuleInterruptLogFilter())
     if any(isinstance(callback, RuleStreamCallback) for callback in handlers):
         return
     if isinstance(callbacks, BaseCallbackManager):
