@@ -12,6 +12,7 @@ from orcha_agent.tui.runtime import _run_runtime
 @pytest.mark.asyncio
 async def test_startup_failure_still_shuts_down_agents() -> None:
     shutdown = False
+    events: list[Any] = []
 
     class Agents:
         async def shutdown(self) -> None:
@@ -24,8 +25,9 @@ async def test_startup_failure_still_shuts_down_agents() -> None:
 
     class Bus:
         async def emit(self, event: Any) -> None:
-            assert isinstance(event, AppStart)
-            raise RuntimeError("boom")
+            events.append(event)
+            if isinstance(event, AppStart):
+                raise RuntimeError("boom")
 
     ctx = SimpleNamespace(agents=Agents())
 
@@ -33,6 +35,7 @@ async def test_startup_failure_still_shuts_down_agents() -> None:
         await _run_runtime(ctx, Runtime(), Bus())
 
     assert shutdown is True
+    assert [type(event) for event in events] == [AppStart, AppExit]
 
 
 @pytest.mark.asyncio
@@ -79,6 +82,7 @@ async def test_failed_shutdown_is_retried_in_finally() -> None:
         "record",
         "shutdown",
         "shutdown",
+        "exit",
     ]
 
 

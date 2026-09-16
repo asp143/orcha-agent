@@ -20,6 +20,9 @@ class AppStart(Event):
 @dataclass(slots=True)
 class AgentBuildBefore(Event):
     kwargs: dict[str, Any]
+    tool_scope: set[str] | None = None
+    always_allowed: frozenset[str] = frozenset()
+    mode_interrupt_on: dict[str, bool] | None = None
 
 
 @dataclass(slots=True)

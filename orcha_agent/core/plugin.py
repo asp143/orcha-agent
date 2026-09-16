@@ -96,6 +96,14 @@ class PluginAPI:
     def add_tool(self, tool: Any, *, replace: bool = False) -> None:
         self._registry._add_tool(self.name, tool, replace=replace)
 
+    def remove_tool(self, name: str) -> bool:
+        """Remove a dynamically registered tool owned by this plugin."""
+        if self._registry._tool_owners.get(name) != self.name:
+            return False
+        self._registry.tools.pop(name, None)
+        self._registry._tool_owners.pop(name, None)
+        return True
+
     def add_middleware(
         self,
         middleware: Any,

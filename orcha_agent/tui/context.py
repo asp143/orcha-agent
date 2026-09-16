@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
@@ -202,6 +203,27 @@ class AppContext:
     _registry: Registry = field(init=False, repr=False)
     _bus: Any = field(init=False, repr=False)
     _always_allowed_tools: set[str] = field(default_factory=set, init=False, repr=False)
+    _command_discovery_tasks: list[asyncio.Task[None]] = field(
+        default_factory=list, init=False, repr=False
+    )
+
+    def add_command_discovery_task(self, task: asyncio.Task[None]) -> None:
+        """Track extension registration without delaying the initial paint."""
+        self._command_discovery_tasks.append(task)
+
+    async def wait_command_discovery(self) -> None:
+        """Wait at command dispatch; cancelling input must not cancel discovery."""
+        tasks = tuple(self._command_discovery_tasks)
+        if tasks:
+            results = await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks), return_exceptions=True
+            )
+            self._command_discovery_tasks[:] = [
+                task for task in self._command_discovery_tasks if task not in tasks
+            ]
+            for result in results:
+                if isinstance(result, Exception):
+                    self.console.warning(f"Command discovery failed: {result}")
 
     def __post_init__(self) -> None:
         if isinstance(self.registry, Registry):
@@ -735,6 +757,45 @@ class AppContext:
             SessionSwitch(old=old_session, new=saved_session.thread_id)
         )
         self._warn_interrupted_resume()
+
+    async def submit_prompt(self, text: str, *, model: str | None = None) -> None:
+        """Submit plugin-expanded text as a user turn, bypassing command dispatch."""
+        from .turn import _run_cancellable_turn
+
+        if not text.strip():
+            return
+        if model is None or model == self.cfg.model:
+            await _run_cancellable_turn(self, text)
+            return
+        previous_cfg, previous_agent = self.cfg, self.agent
+        previous_summarizer = self.summarizer
+        candidate_cfg = replace(self.cfg, model=model)
+        candidate_agent = await _compat("build_agent", build_agent)(
+            self.registry,
+            candidate_cfg,
+            self.session,
+            self._bus,
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+            exclude_general_purpose=True,
+        )
+        candidate_summarizer = self._resolve_summarizer(candidate_cfg)
+        if not self._reseed_pending():
+            self._clean_history_for_model(
+                candidate_agent, self.history_model or previous_cfg.model, model
+            )
+        self.cfg, self.agent, self.summarizer = candidate_cfg, candidate_agent, candidate_summarizer
+        try:
+            await _run_cancellable_turn(self, text)
+        finally:
+            self.cfg, self.agent, self.summarizer = previous_cfg, previous_agent, previous_summarizer
+            if previous_agent is not None:
+                self._clean_history_for_model(previous_agent, model, previous_cfg.model)
+                # A discovery/reconnect during the temporary turn may have changed
+                # plugin contributions. Rebuild the restored graph at the normal boundary.
+                self.request_rebuild()
+            else:
+                self.history_model = model
 
     async def switch_model(self, spec: str | list[str]) -> None:
         old_model = self.cfg.model

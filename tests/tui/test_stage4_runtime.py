@@ -385,9 +385,11 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
         available=lambda: None,
     )
     plugin_calls: list[str] = []
+    plugin_called = asyncio.Event()
 
     async def plugin_handler(_ctx: object, _event: object) -> None:
         plugin_calls.append("custom")
+        plugin_called.set()
 
     registry._add_keybinding("plugin", "custom", plugin_handler, "c-x")
     ctx = _ctx(tmp_path, registry)
@@ -419,8 +421,11 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
         await asyncio.sleep(0)
         pipe.send_bytes(b"\x1b[Z")
         pipe.send_bytes(b"\x10")
-        pipe.send_bytes(b"\x18")
-        await asyncio.sleep(0.2)
+        # Ctrl+X is also a prefix for built-in Emacs chords. Resolve it
+        # explicitly with a harmless cursor movement instead of racing its timer.
+        runtime.application.timeoutlen = None
+        pipe.send_bytes(b"\x18\x01")
+        await asyncio.wait_for(plugin_called.wait(), 0.2)
         assert runtime.thinking_level == "low"
         assert ctx.plugin_states["composer"]["thinking_level"] == "low"
         assert switched == ["second"]
