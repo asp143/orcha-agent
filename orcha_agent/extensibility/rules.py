@@ -36,11 +36,17 @@ class Rule:
     trusted: bool = True
 
     def reminder(self) -> SystemMessage:
+        body = regex.sub(
+            r"</system-reminder\s*>",
+            lambda match: escape(match.group(), quote=False),
+            self.body,
+            flags=regex.IGNORECASE,
+        )
         return SystemMessage(
             content=(
                 f'<system-reminder rule="{escape(self.name, quote=True)}" '
                 f'trust="{"trusted" if self.trusted else "untrusted"}">\n'
-                f"{escape(self.body)}\n</system-reminder>"
+                f"{body}\n</system-reminder>"
             ),
             additional_kwargs={MARKER: [self.name]},
         )
