@@ -215,3 +215,69 @@ The factory diagnostic with three `FakeListChatModel` fallbacks (1,000 local cal
 `uv run python tests/tui/tmux/verify.py` passed: both turns and fanout had zero repaint growth; markers occurred once each, and narrow/wide resize frames occurred once each. Existing golden files were unchanged. Existing test changes were limited to lazy-import monkeypatch targets, waiting for the asynchronous title snapshot, and the intentionally reduced eager model-factory count (plus formatting in touched files).
 
 CLI/models, streaming, persistence, and overlays/status were implemented in parallel. Independent validation commands ran concurrently. Storage-dependent changes, integration, review fixes and Git commits were serialized. The full default benchmark run was isolated from test jobs. The implementation and measurement updates are local commits on `perf/smoothness-sprint`; no push or PR was performed.
+
+## Review round 1 after — 2026-09-17
+
+Measured code commit: `87436089b54bcf928379db14a55d1e391efdd984` (clean). Scoped working-tree SHA-256: `d3cce1fdb0c2998d268ee03056b77abae9c2a60a14563cffaa230add3c487d3b`. This documentation commit follows the measured code commit.
+
+Environment: CPython 3.12.13; `Linux-7.2.3-arch1-3-x86_64-with-glibc2.44`; native libsql tests enabled. Command: `uv run python -m benchmarks`, default 20 repetitions and 20 fresh startup subprocesses, isolated from test jobs. Raw JSON remains ignored in `benchmarks/results/`.
+
+Generated UTC: startup `2026-09-16T16:05:20+00:00`; streaming `2026-09-16T16:07:44+00:00`; ledger `2026-09-16T16:07:46+00:00`; turn_capture `2026-09-16T16:07:56+00:00`; history_load `2026-09-16T16:08:05+00:00`; session_overlay_load `2026-09-16T16:08:23+00:00`.
+
+These results supersede the sprint 1 copying tradeoff above. Decoded messages are immutable snapshots shared by context readers. The known LangGraph missing-ID mutation boundary copies messages before handing them to the reducer. The store-owned decoded cache is bounded to 2,048 messages and 8 MiB of serialized payload, with a 64 KiB per-message admission limit; those are payload budgets, not a bound on total Python heap overhead. Full row keys detect externally edited database payloads.
+
+### Ledger after review
+
+All cases retain 1,000 active entries. `Ledger.path` below measures repeated reads with the decoded-message cache warm, including through newly constructed Ledger instances sharing the store. The separately added cold metric clears that cache before each timed read; it does not clear SQLite/OS caches. Garbage collection remains enabled.
+
+| Operation | Abandoned entries | Median | P95 | Unit |
+| --- | ---: | ---: | ---: | --- |
+| `Ledger.path` cold decoded cache | 0 | 8.126 | 9.171 | milliseconds |
+| `Ledger.path` warm decoded cache | 0 | 2.277 | 2.329 | milliseconds |
+| `Ledger.fork` | 0 | 7.164 | 8.144 | milliseconds |
+| `build_context` | 0 | 0.378 | 0.399 | milliseconds |
+| `Ledger.path` cold decoded cache | 10,000 | 8.432 | 117.163 | milliseconds |
+| `Ledger.path` warm decoded cache | 10,000 | 2.427 | 2.849 | milliseconds |
+| `Ledger.fork` | 10,000 | 7.560 | 9.611 | milliseconds |
+| `build_context` | 10,000 | 0.379 | 0.423 | milliseconds |
+| `Ledger.path` cold decoded cache | 100,000 | 9.008 | 118.013 | milliseconds |
+| `Ledger.path` warm decoded cache | 100,000 | 2.526 | 2.593 | milliseconds |
+| `Ledger.fork` | 100,000 | 7.877 | 9.601 | milliseconds |
+| `build_context` | 100,000 | 0.383 | 0.396 | milliseconds |
+
+Unbranched warm path median improves from sprint 1’s 12.157 ms to 2.277 ms (original reference: 5.678 ms); context reconstruction improves from 4.258 ms to 0.378 ms (original: 2.958 ms). At 10,000 abandoned entries, warm path/fork p95 falls from 121.014/125.944 ms to 2.849/9.611 ms.
+
+The cold unbranched median is still 8.126 ms, above the requested 5.7 ms target. Cold p95 remains about 117–118 ms with abandoned branches. EXPLAIN QUERY PLAN confirms indexed `(session_id, id)` lookups for the recursive seed, parent and payload join; no abandoned-payload scan occurs. Local profiling attributes the large cold outliers to generation-2 garbage collection from repeated decoded-object allocation. The bounded cache removes that work from repeated reads; it does not solve first-load allocation cost or cache-thrashing workloads. No GC disabling or timing exclusions were used.
+
+### Turn capture after review
+
+| Turns | State | Median | P95 | WAL while open | Final database size |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 100 | Stable empty state | 0.0968 ms | 0.1112 ms | 3.352 MiB | 0.141 MiB |
+| 100 | Unchanged 100 KiB state | 0.0959 ms | 0.1050 ms | 3.454 MiB | 0.238 MiB |
+| 1,000 | Stable empty state | 0.4131 ms | 0.4551 ms | 3.957 MiB | 0.533 MiB |
+| 1,000 | Unchanged 100 KiB state | 0.4082 ms | 0.4279 ms | 3.957 MiB | 0.629 MiB |
+
+The ordinary append path skips replacement/order scans after validating an unchanged digest prefix. At 1,000 turns, unchanged 100 KiB state improves from sprint 1’s 0.4321 ms to 0.4082 ms; stable empty state improves from 0.4317 ms to 0.4131 ms. Arbitrary mutable graph messages still require the existing linear digest-safety scan.
+
+### Review regression evidence
+
+| Item | Before | After / evidence |
+| --- | --- | --- |
+| M1: one same-ID edit in 2,000 messages | 2,001 → 4,003 ledger entries | 2,001 → 2,002 entries; at most 5 changed DB rows; context matches graph (`test_capture_review.py`) |
+| M1: cross-provider model switch | Stripped graph diverged from capture cursor | Targeted replacement captured, cursor reseeded, next unchanged capture writes nothing; activation failure restores cursor and ledger (`test_tui.py`) |
+| M2: compaction retaining six messages | Six retained rows duplicated | Six retained rows appear once, preceding-entry boundary is set, export has no duplicates; full retention, reopen, fork and replacement cases covered (`test_capture_review.py`) |
+| M3: decoded message reuse | Deepcopy at decode and deep copy at reconstruction | One validation per cold message; no further deserialization for repeated reads; explicit copy at reducer mutation boundary (`test_ledger.py`, `test_tui.py`) |
+| m1: ledger tail latency | Warm 10k-abandoned path p95 121.014 ms | 2.849 ms; cold outliers remain, query plan and GC findings described above |
+| m2: unchanged state on reset | State appended again | One state entry retained across reset; live files preserved (`test_capture_review.py`) |
+| m3: dispatcher eviction | Scans every cached block | Visits only affected block variants; test forbids top-level traversal with 1,000 unrelated blocks (`tui/test_blocks.py`) |
+| m4: capture theme cache | Object identity | Semantic theme ID; equivalent theme objects cause zero extra layouts (`tui/test_runtime.py`) |
+| m5: session refresh | Raw daemon thread from async paint | Running loop uses `asyncio.to_thread`; no-loop fallback retained; awaitable completion and 120-paint coalescing tested (`test_status_snapshot.py`, `test_statusline.py`) |
+| m6: recovery/documentation | Misleading force-write implication; missing restart regression | Both flag values skip unchanged state; restart/recover updates cursor with at most 7 DB changes, then no-op (`test_tui.py`) |
+| m7: untagged summary | Silent snapshot reset | Explicit `unrecognized_summary` ledger marker (`test_capture_review.py`) |
+
+### Validation and execution after review
+
+`uv sync --extra turso`, Ruff check, Ruff format check, Pyright, the full default benchmark command, and the tmux harness passed. Final full pytest: **1,178 passed in 16.95 s, no skips**. Tmux recorded zero repaint growth for both turns and fanout, one occurrence per marker, and one narrow/wide resize frame. Golden files are unchanged.
+
+Capture, ledger, renderer and status work/review ran concurrently. Integration and commits were serialized; independent quality gates ran concurrently, followed by the isolated full benchmark run. Existing mutation-isolation tests were intentionally changed to the requested immutable snapshot contract, with a regression at the actual consumer mutation boundary. All changes are local conventional commits on `perf/smoothness-sprint`; no push or PR was performed.
