@@ -75,11 +75,10 @@ class Block:
         if changes:
             self.data.update(changes)
         self.revision += 1
-        changed_keys = set(data or ()) | set(changes)
         metrics_only = (
             self.kind == "thinking"
-            and bool(changed_keys)
-            and changed_keys
+            and bool(data or changes)
+            and (set(data or ()) | set(changes))
             <= {
                 "spinner_frame",
                 "reasoning_tokens",
