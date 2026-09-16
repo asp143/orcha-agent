@@ -62,6 +62,42 @@ def test_explicit_roots_and_both_spellings_use_the_same_policy(tmp_path: Path) -
     assert policy.read_bytes(allowed / "created.txt", 100) == b"new"
 
 
+@pytest.mark.parametrize("ancestor", ["secrets.d", "Credentials"])
+def test_deny_patterns_ignore_ancestors_of_allowed_roots(tmp_path: Path, ancestor: str) -> None:
+    # Policy-only assertions: no contents beneath these fixture paths are read.
+    root = tmp_path / ancestor / "workspace"
+    allowed = tmp_path / ancestor / "shared"
+    policy = PathPolicy(root, allowed_roots=[allowed])
+    assert policy.resolve("ordinary.txt") == root / "ordinary.txt"
+    assert policy.resolve(allowed / "ordinary.txt") == allowed / "ordinary.txt"
+    assert not policy.permits("secrets.json")
+    assert not policy.permits("Credentials/ordinary.txt")
+    assert not policy.permits(allowed / "credentials.json")
+    assert not policy.permits(tmp_path / "outside.txt")
+
+
+@pytest.mark.parametrize("canonical_cwd", [False, True])
+def test_symlinked_workspace_spellings_share_policy(tmp_path: Path, canonical_cwd: bool) -> None:
+    actual = tmp_path / "real" / "workspace"
+    actual.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual.parent, target_is_directory=True)
+    spelled_root = alias / "workspace"
+    policy = PathPolicy(actual if canonical_cwd else spelled_root)
+    (actual / "ordinary.txt").write_text("inside")
+    assert policy.read_bytes("ordinary.txt", 100) == b"inside"
+    assert policy.read_bytes(spelled_root / "ordinary.txt", 100) == b"inside"
+    atomic_write(spelled_root / "created.txt", "new", policy=policy)
+    assert (actual / "created.txt").read_text() == "new"
+    (actual / ".env.alias").symlink_to(actual / "ordinary.txt")
+    assert not policy.permits(spelled_root / ".env.alias")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (actual / "escape").symlink_to(outside, target_is_directory=True)
+    assert not policy.permits(spelled_root / "escape" / "ordinary.txt")
+    assert not policy.permits(spelled_root / ".." / "outside.txt")
+
+
 @pytest.mark.parametrize("operation", ["read", "write"])
 def test_ancestor_symlink_swap_cannot_redirect_io(
     tmp_path: Path, monkeypatch, operation: str

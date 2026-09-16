@@ -50,9 +50,19 @@ class PathPolicy:
 
     def _denied(self, path: Path) -> bool:
         for root in self.roots:
-            if not path.is_relative_to(root):
-                continue
-            parts = path.parts[1:]
+            if path.is_relative_to(root):
+                parts = path.relative_to(root).parts
+            else:
+                # An absolute spelling may use an aliased workspace ancestor
+                # (for example /tmp on macOS). Keep its in-root component
+                # names so a denied symlink name cannot hide behind its target.
+                alias = next(
+                    (parent for parent in (path, *path.parents) if parent.resolve() == root),
+                    None,
+                )
+                if alias is None:
+                    continue
+                parts = path.relative_to(alias).parts
             for pattern in self.deny:
                 pattern = pattern.rstrip("/").casefold()
                 if "/" not in pattern:
@@ -73,9 +83,7 @@ class PathPolicy:
             resolved = lexical.resolve()
         except (OSError, RuntimeError) as exc:
             raise PermissionError(f"Cannot resolve path safely: {lexical}") from exc
-        if not any(lexical.is_relative_to(root) for root in self.roots) or not any(
-            resolved.is_relative_to(root) for root in self.roots
-        ):
+        if not any(resolved.is_relative_to(root) for root in self.roots):
             raise PermissionError(f"Path outside allowed workspace roots: {resolved}")
         if self._denied(lexical) or self._denied(resolved):
             raise PermissionError(f"Path denied by tools policy: {lexical}")
