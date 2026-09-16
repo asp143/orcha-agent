@@ -1008,12 +1008,11 @@ def test_loaded_context_deserializes_each_message_once(
     path = ledger.path(session_id)
     first = build_context(path)
     assert calls == 10
-    first.messages[0].content = "consumer mutation"
-    assert build_context(path).messages[0].content == "0"
+    assert build_context(path).messages[0] is first.messages[0]
     assert calls == 10
 
 
-def test_loaded_message_cache_respects_mutable_serialized_payload(
+def test_consumer_can_copy_loaded_message_before_mutation(
     ledger_session: tuple[Ledger, SessionStore, str],
 ) -> None:
     ledger, _, session_id = ledger_session
@@ -1021,5 +1020,70 @@ def test_loaded_message_cache_respects_mutable_serialized_payload(
     path = ledger.path(session_id)
     entry = path[0]
     assert isinstance(entry, MessageEntry)
-    entry.message["data"]["content"] = "updated serialized content"
-    assert build_context(path).messages[0].content == "updated serialized content"
+    message = build_context(path).messages[0]
+    assert message is entry._validated_message
+    copied = message.model_copy(deep=True)
+    copied.content = "consumer mutation"
+    assert message.content == "original"
+    assert entry.message["data"]["content"] == "original"
+
+
+def test_repeated_paths_reuse_messages_and_detect_external_payload_edits(
+    ledger_session: tuple[Ledger, SessionStore, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orcha_agent.core.ledger as ledger_module
+
+    ledger, store, session_id = ledger_session
+    ledger.append(session_id, _message(HumanMessage(content="original")))
+    original = ledger_module.messages_from_dict
+    calls = 0
+
+    def counted(messages: Any) -> Any:
+        nonlocal calls
+        calls += len(messages)
+        return original(messages)
+
+    monkeypatch.setattr(ledger_module, "messages_from_dict", counted)
+    first = ledger.path(session_id)
+    assert Ledger(store).path(session_id)[0] is first[0]
+    assert calls == 1
+    payload = json.dumps({"message": message_to_dict(HumanMessage(content="changed"))})
+    with store.saver.lock:
+        store._connection.execute(
+            "UPDATE entries SET payload = ? WHERE session_id = ?", (payload, session_id)
+        )
+        store._connection.commit()
+    assert build_context(ledger.path(session_id)).messages[0].content == "changed"
+    assert calls == 2
+
+
+def test_decoded_message_cache_is_bounded(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    ledger.append_many(
+        session_id, [_message(HumanMessage(content=str(i))) for i in range(2050)]
+    )
+    assert len(ledger.path(session_id)) == 2050
+    assert len(store._ledger_message_cache) == 2048
+    ledger.append(session_id, _message(HumanMessage(content="x" * 65536)))
+    ledger.path(session_id)
+    assert len(store._ledger_message_cache) == 2048
+    assert all(len(key[-1]) <= 65536 for key in store._ledger_message_cache)
+    assert store._ledger_message_cache_bytes == sum(size for _, size in store._ledger_message_cache.values())
+
+
+def test_decoded_message_cache_bounds_utf8_payload_bytes(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    ledger.append_many(
+        session_id,
+        [_message(HumanMessage(content="界" * 20000, id=str(i))) for i in range(160)],
+    )
+    assert len(ledger.path(session_id)) == 160
+    assert len(store._ledger_message_cache) < 160
+    assert store._ledger_message_cache_bytes <= 8 * 1024 * 1024
+    assert store._ledger_message_cache_bytes == sum(
+        len(key[-1].encode("utf-8")) for key in store._ledger_message_cache
+    )

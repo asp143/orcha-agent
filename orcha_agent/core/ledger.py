@@ -38,9 +38,14 @@ class Entry:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MessageEntry(Entry):
+    """Immutable ledger snapshot, including its payload and cached message.
+
+    Context reconstruction shares the decoded message. Consumers that change a
+    message must copy it first rather than mutating this snapshot in place.
+    """
+
     message: dict[str, Any]
     _validated_message: BaseMessage | None = field(default=None, repr=False, compare=False)
-    _validated_payload: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -181,7 +186,6 @@ def _decode_entry(
         return MessageEntry(
             message=serialized_message,
             _validated_message=validated_message,
-            _validated_payload=deepcopy(serialized_message),
             **common
         )
     if entry_type == "model_change":
@@ -287,6 +291,37 @@ class Ledger:
 
     def __init__(self, store: SessionStore) -> None:
         self.store = store
+
+    def _cached_entry_from_row(self, row: sqlite3.Row) -> Entry:
+        # Repeated active-path reads otherwise allocate enough Pydantic objects
+        # to trigger expensive full-heap collections during interactive use.
+        # Only immutable messages are shared; full row keys detect external edits.
+        if row["type"] != "message":
+            return _entry_from_row(row)
+        key = tuple(row)
+        cache = self.store._ledger_message_cache
+        with self.store._ledger_message_cache_lock:
+            cached = cache.get(key)
+            if cached is not None:
+                cache.move_to_end(key)
+                return cached[0]
+        entry = _entry_from_row(row)
+        if not isinstance(entry, MessageEntry):
+            return entry
+        payload = row["payload"]
+        payload_size = len(payload.encode("utf-8") if isinstance(payload, str) else payload)
+        if payload_size <= 64 * 1024:
+            with self.store._ledger_message_cache_lock:
+                if key not in cache:
+                    cache[key] = entry, payload_size
+                    self.store._ledger_message_cache_bytes += payload_size
+                while (
+                    len(cache) > 2048
+                    or self.store._ledger_message_cache_bytes > 8 * 1024 * 1024
+                ):
+                    _, (_, evicted_size) = cache.popitem(last=False)
+                    self.store._ledger_message_cache_bytes -= evicted_size
+        return entry
 
     def _new_id(self, session_id: str, reserved: set[str]) -> str:
         while True:
@@ -633,9 +668,8 @@ class Ledger:
             raise AmbiguousEntry(prefix, (row["id"] for row in rows))
         return _entry_from_row(rows[0])
 
-    @staticmethod
     def _path_from_rows(
-        rows: Iterable[sqlite3.Row], leaf_id: str | None
+        self, rows: Iterable[sqlite3.Row], leaf_id: str | None
     ) -> list[Entry]:
         if leaf_id is None:
             return []
@@ -650,7 +684,7 @@ class Ledger:
             row = by_id.get(current)
             if row is None:
                 raise EntryNotFound(current)
-            reverse_path.append(_entry_from_row(row))
+            reverse_path.append(self._cached_entry_from_row(row))
             current = row["parent_id"]
         reverse_path.reverse()
         return reverse_path
@@ -806,9 +840,8 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
 
 
 def _message_from_entry(entry: MessageEntry) -> BaseMessage:
-    if entry._validated_message is not None and entry.message == entry._validated_payload:
-        # Context consumers may mutate messages; keep the validated entry reusable.
-        return entry._validated_message.model_copy(deep=True)
+    if entry._validated_message is not None:
+        return entry._validated_message
     return messages_from_dict([entry.message])[0]
 
 

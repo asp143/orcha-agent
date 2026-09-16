@@ -129,6 +129,17 @@ def run_ledger(config: RunConfig) -> dict[str, Any]:
                 active_path = Ledger(store).path(source.thread_id)
                 ledger = Ledger(store)
 
+                cold_path_samples: list[float] = []
+                for _ in range(config.repetitions):
+                    with store._ledger_message_cache_lock:
+                        store._ledger_message_cache.clear()
+                        store._ledger_message_cache_bytes = 0
+                    started = perf_counter_ns()
+                    resolved = ledger.path(source.thread_id)
+                    cold_path_samples.append((perf_counter_ns() - started) / 1_000_000_000)
+                    if len(resolved) != active_entries:
+                        raise AssertionError("cold ledger path lost active fixture messages")
+
                 path_samples: list[float] = []
                 for _ in range(config.repetitions):
                     started = perf_counter_ns()
@@ -160,8 +171,10 @@ def run_ledger(config: RunConfig) -> dict[str, Any]:
                             "active_entries": active_entries,
                             "abandoned_entries": abandoned_entries,
                             "fixture_population_timed": False,
+                            "path_cache": "warm; cold_path_wall clears decoded message cache",
                         },
                         "measurements": {
+                            "cold_path_wall": measurement(cold_path_samples, "seconds"),
                             "path_wall": measurement(path_samples, "seconds"),
                             "fork_wall": measurement(fork_samples, "seconds"),
                             "build_context_wall": measurement(context_samples, "seconds"),

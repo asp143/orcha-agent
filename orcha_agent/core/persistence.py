@@ -300,6 +300,7 @@ class TursoSessionStore(SessionStore):
     ) -> None:
         secret = _SecretValue(auth_token)
         del auth_token
+        self._initialize_ledger_cache()
         self.db_path = Path(db_path)
         self._closed = False
         self._sync_on_close = sync_on_close

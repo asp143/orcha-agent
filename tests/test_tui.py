@@ -4136,3 +4136,39 @@ def test_application_runtime_accepts_real_app_context(tmp_path: Path) -> None:
         )
     assert ctx.queue is runtime.queue
     assert ctx.ui is runtime.ui
+
+
+@pytest.mark.asyncio
+async def test_reseed_copies_messages_before_reducer_assigns_missing_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langgraph.graph.message import add_messages
+
+    import orcha_agent.tui.context as context_module
+
+    class AssigningGraph(_HistoryGraph):
+        async def aupdate_state(
+            self,
+            config: dict[str, Any],
+            values: dict[str, Any],
+            *,
+            as_node: str,
+        ) -> None:
+            values["messages"] = add_messages([], values["messages"])
+            await super().aupdate_state(config, values, as_node=as_node)
+
+    graph = AssigningGraph([])
+    with SessionStore(tmp_path / "seed-copy.sqlite") as store:
+        ctx = _real_context(tmp_path, store, graph)
+        ctx.ledger.append(
+            ctx.session_id, MessageEntry(message=message_to_dict(HumanMessage(content="saved")))
+        )
+        path = ctx.ledger.path(ctx.session_id)
+        snapshot = build_context(path)
+        monkeypatch.setattr(context_module, "build_context", lambda *_a, **_kw: snapshot)
+        ctx.ledger.set_position(
+            ctx.session_id, leaf_id=ctx.ledger.leaf(ctx.session_id), thread_id=None
+        )
+        await ctx._seed_ready_thread("reseed")
+        assert snapshot.messages[0].id is None
+        assert graph.messages[0].id is not None

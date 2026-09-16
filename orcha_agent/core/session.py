@@ -11,11 +11,12 @@ import sqlite3
 import stat
 import threading
 import warnings
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import BaseMessage, message_to_dict
 from langchain_core.runnables import RunnableConfig
@@ -26,6 +27,9 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
 )
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+if TYPE_CHECKING:
+    from .ledger import MessageEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +128,15 @@ class SessionStore:
     supports_sync = False
     structured_memory: Any | None = None
 
+    def _initialize_ledger_cache(self) -> None:
+        self._ledger_message_cache: OrderedDict[
+            tuple[Any, ...], tuple[MessageEntry, int]
+        ] = OrderedDict()
+        self._ledger_message_cache_bytes = 0
+        self._ledger_message_cache_lock = threading.Lock()
+
     def __init__(self, db_path: str | Path) -> None:
+        self._initialize_ledger_cache()
         self.db_path = Path(db_path)
         self._prepare_database_directory()
         self._reject_database_symlinks()

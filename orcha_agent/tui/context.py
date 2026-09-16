@@ -372,7 +372,12 @@ class AppContext:
             await self.agent.aupdate_state(
                 config,
                 {
-                    "messages": context.messages,
+                    # LangGraph assigns missing IDs in place. Preserve cached
+                    # ledger snapshots at that mutation boundary.
+                    "messages": [
+                        message.model_copy() if message.id is None else message
+                        for message in context.messages
+                    ],
                     "todos": context.todos,
                     "files": context.files,
                 },
