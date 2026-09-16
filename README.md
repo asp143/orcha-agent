@@ -1059,7 +1059,8 @@ colliding untrusted rule names are skipped with a warning. Untrusted project
 rules are listed for explicit `rule://name` lookup only: `alwaysApply`, sticky
 `RULES.md`, glob attachment, and stream conditions cannot inject them
 automatically. User rules remain trusted. Explicitly loaded untrusted bodies
-are labelled as untrusted, and all rule wrappers escape embedded markup.
+are labelled as untrusted. Rule names and closing reminder tags are escaped;
+ordinary markup and code in rule bodies remain intact.
 
 `/rules` lists the rulebook; the model reads bodies on demand through the `rule`
 tool with `rule://name`. Matching file paths automatically attach trusted rule
@@ -1077,7 +1078,9 @@ Use explicit type annotations in Python code.
 
 A `condition` regex (or list of regexes) monitors streamed assistant text, even
 when a match spans chunks. An interrupting match fails the model node from its
-stream callback, preventing LangGraph from committing its tool calls. A durable
+stream callback, preventing LangGraph from committing its tool calls. Models
+without token callbacks are checked on their final response before the model
+node commits. Rule interrupts do not trigger provider fallback. A durable
 system reminder is inserted, and generation retries from the pending model checkpoint
 without replaying completed tools. The transcript shows **⚠ Injecting rule:
 <name>**. The aborted partial answer is dimmed and struck through so it cannot
@@ -1088,7 +1091,9 @@ Reminders survive compaction and session reload; reset clears them.
 Scopes include `text`, `thinking`, `tool`/`toolcall`, and named tools such as
 `tool:write(*.py)`; a list combines scopes. The default monitors text and tool
 arguments. `globs` also gate stream matches by tool file path. Nested agent
-streams are not interrupted by the parent monitor.
+streams are not interrupted by the parent monitor; monitoring belongs to the
+thread that owns the retry boundary. Aborting one source leaves other sources'
+active transcript blocks intact.
 
 ```markdown
 ---
