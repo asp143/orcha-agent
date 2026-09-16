@@ -179,3 +179,63 @@ Merge ordering, dependent conflict integration, full-suite runs, and commits sta
 serial. Final benchmarks ran after validation without concurrent test workloads.
 The full combined changes received a review pass, with integration findings fixed
 and covered before final validation.
+
+## Review follow-up — 2026-09-17
+
+The review corrections are four small commits:
+
+- `f260563`: the outermost terminal transaction invalidates a skipped redraw when
+  it closes, regardless of current queue depth. Four regression cases failed
+  before the fix and pass afterward, covering nested frames and high/drained
+  queues without a watchdog tick.
+- `531b728`: `_PaintOutput.set_enabled()` owns the preference/capability decision.
+  Constructor, terminal reports, and settings updates use it. Tests check that
+  disabling synchronization mid-frame still closes the existing DECSET-2026
+  transaction and that unsupported terminals remain unsynchronized.
+- `2a08cf1`: overlay exports and factories load lazily; the hub imports the ledger
+  only when reading a session. Fresh-process tests assert that gallery and hub
+  imports do not load `langchain_core`. The attribution above now identifies the
+  eager ledger dependency chain, rather than blaming gallery rendering.
+- `a71e768`: the keybinding test subscribes to `after_render` before startup and
+  awaits concrete thinking-rebuild, model-switch, and plugin-completion events.
+  A controlled model-switch barrier demonstrates that plugin completion does
+  not imply model completion. This replaces the earlier short action deadline
+  and transient-renderer-state check; cleanup releases barriers and joins the
+  runtime even on failure.
+
+Final follow-up gates: `uv sync`, Ruff check/format, Pyright, gallery, tmux
+verification, and the full default benchmark suite passed. Ordinary pytest:
+**1,763 passed, 2 skipped in 50.24 s**; the exact clean-environment command:
+**1,763 passed, 2 skipped in 46.95 s**. The skips remain optional native-libsql
+checks. Tmux recorded zero repaint growth, one occurrence per marker, and passing
+paste, expansion, mouse, and resize checks. Existing golden assertions passed.
+
+### Follow-up startup measurements
+
+The full default benchmark ran after tests, with 20 samples and no concurrent
+test workloads. It measured clean code commit
+`a71e76809554bfde83b47eda7a338e67afe9b4b6`, scoped SHA-256
+`ab06f1b5a612c4693da75ba809ebe2230ef26640bc35d740e7ee0e3b2c106ee6`,
+on CPython 3.12.13 / Linux 7.2.3. All six result files in `benchmarks/results/`
+record that same clean tree. The earlier tables describe the original integration;
+these startup measurements supersede its gallery regression.
+
+| Direct-executable benchmark | Original integration median | Follow-up median | Follow-up p95 |
+| --- | ---: | ---: | ---: |
+| `orcha --help` | 58.363 ms | 58.889 ms | 60.788 ms |
+| `orcha gallery --plain` | 613.425 ms | 226.278 ms | 230.353 ms |
+
+Gallery median decreased **63.1%** and meets the **250 ms** target. Its peak RSS
+median decreased from **84.324 MiB** to approximately **41.03 MiB**. The pre-parity
+156 ms baseline remains lower; the measured follow-up does not claim to recover
+that exact baseline.
+
+An additional 20-run measurement including `uv run` overhead gave gallery median
+**238.786 ms**, p95 **241.339 ms**, maximum **242.731 ms**; every sample was below
+250 ms. Help median was **73.948 ms**, p95 **76.772 ms**, maximum **76.773 ms**.
+Samples are retained in `/tmp/orcha-followup-startup.json` for this run.
+
+Gallery imports, paint handling, and keybinding synchronization were implemented
+and cross-reviewed in parallel with explicit file ownership. Git commits and
+full-suite runs remained serial; benchmark measurements ran without concurrent
+tests. No push was performed.
