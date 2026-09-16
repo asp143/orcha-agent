@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from langchain_core.messages import HumanMessage, message_to_dict
@@ -22,6 +24,21 @@ from .ledger import (
 from .session import SessionStore
 
 _SUMMARIZATION_PREFIX = "Here is a summary of the conversation to date:\n\n"
+
+_CaptureReport = tuple[Callable[[str], None], str]
+_DEFERRED_ERRORS: ContextVar[list[_CaptureReport] | None] = ContextVar(
+    "capture_deferred_errors", default=None
+)
+
+
+@contextmanager
+def defer_capture_errors(reports: list[_CaptureReport]) -> Iterator[None]:
+    """Collect worker reports for delivery by its owning UI task."""
+    token = _DEFERRED_ERRORS.set(reports)
+    try:
+        yield
+    finally:
+        _DEFERRED_ERRORS.reset(token)
 
 
 def capture_graph_values(
@@ -136,7 +153,11 @@ def capture_graph_values(
     except Exception as exc:
         message = f"Failed to capture session {session_id} thread {thread_id}: {exc}"
         if report_error is not None:
-            report_error(message)
+            deferred = _DEFERRED_ERRORS.get()
+            if deferred is None:
+                report_error(message)
+            else:
+                deferred.append((report_error, message))
         raise RuntimeError(message) from exc
     cache.cursor = fingerprints
     cache.leaf_id = appended[-1].id

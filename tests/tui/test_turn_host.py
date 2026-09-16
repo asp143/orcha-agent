@@ -221,3 +221,60 @@ async def test_capture_failure_still_emits_turn_end() -> None:
     with pytest.raises(RuntimeError, match="capture failed"):
         await run_turn(host, "hello")
     assert isinstance(host.bus.events[-1], TurnEnd)
+
+
+@pytest.mark.asyncio
+async def test_capture_storage_error_reports_on_ui_loop_with_real_scheduler(tmp_path: Any) -> None:
+    import threading
+
+    from langchain_core.messages import HumanMessage
+
+    from orcha_agent.core.capture import capture_graph_values
+    from orcha_agent.core.session import SessionStore
+    from orcha_agent.tui.console import ConsoleOutput
+    from orcha_agent.tui.frame import Frame, FrameScheduler
+    from orcha_agent.tui.transcript import Transcript
+    from orcha_agent.tui.turn import _capture_turn
+
+    frame = Frame()
+    scheduler = FrameScheduler(frame, commit=lambda _: None, invalidate=lambda: None)
+    console = ConsoleOutput(transcript=Transcript(frame, scheduler=scheduler))
+    ui_thread = threading.get_ident()
+    report_threads: list[int] = []
+    capture_threads: list[int] = []
+
+    def report(message: str) -> None:
+        report_threads.append(threading.get_ident())
+        console.error(message)
+
+    with SessionStore(tmp_path / "capture-error.db") as store:
+        session = store.create(tmp_path, "fake:model")
+        store._connection.execute(
+            "CREATE TRIGGER fail_capture BEFORE UPDATE ON threads "
+            "BEGIN SELECT RAISE(FAIL, 'original-storage-error'); END"
+        )
+
+        def capture() -> None:
+            capture_threads.append(threading.get_ident())
+            capture_graph_values(
+                store,
+                session.thread_id,
+                session.current_thread or "",
+                {"messages": [HumanMessage(content="test", id="test")]},
+                only_if_new=False,
+                report_error=report,
+            )
+
+        host: Any = SimpleNamespace(capture_turn=capture)
+        try:
+            with pytest.raises(RuntimeError, match="original-storage-error") as failure:
+                await _capture_turn(host, cancelled=False)
+            assert failure.value.__cause__ is not None
+            assert "original-storage-error" in str(failure.value.__cause__)
+            assert capture_threads and capture_threads[0] != ui_thread
+            assert report_threads == [ui_thread]
+            assert frame.blocks[-1].kind == "banner"
+            assert "original-storage-error" in frame.blocks[-1].data["message"]
+            assert scheduler._commit_task is not None
+        finally:
+            await scheduler.aclose()

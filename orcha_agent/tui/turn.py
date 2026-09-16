@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import signal
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -13,6 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.types import Command
 
+from orcha_agent.core.capture import defer_capture_errors
 from orcha_agent.core.events import (
     InterruptRaised,
     ModelChunk,
@@ -578,25 +580,36 @@ async def run_turn(host: TurnHost, text: str) -> None:
 
 async def _capture_turn(host: TurnHost, *, cancelled: bool) -> None:
     """Keep disk work off the event loop and finish it before teardown."""
+    reports: list[tuple[Callable[[str], None], str]] = []
 
     def capture() -> None:
-        host.capture_turn()
-        if cancelled and getattr(host, "record_cancelled_turn_exit", True):
-            host.record_exit("signal")
+        with defer_capture_errors(reports):
+            host.capture_turn()
+            if cancelled and getattr(host, "record_cancelled_turn_exit", True):
+                host.record_exit("signal")
 
     worker = asyncio.create_task(asyncio.to_thread(capture))
     interrupted = False
-    while True:
-        try:
-            await asyncio.shield(worker)
-            break
-        except asyncio.CancelledError:
-            # Cancelling to_thread does not stop its thread. Join the shielded
-            # worker even after repeated interrupts so stores remain open.
-            interrupted = True
-            if worker.done():
-                worker.result()
+    try:
+        while True:
+            try:
+                await asyncio.shield(worker)
                 break
+            except asyncio.CancelledError:
+                # Cancelling to_thread does not stop its thread. Join the shielded
+                # worker even after repeated interrupts so stores remain open.
+                interrupted = True
+                if worker.done():
+                    worker.result()
+                    break
+    finally:
+        # Console reporters can schedule transcript commits, so they must run
+        # on this task's event loop, including when persistence failed.
+        for report, message in reports:
+            try:
+                report(message)
+            except Exception:
+                logging.getLogger(__name__).exception("Failed to display capture error")
     if interrupted:
         raise asyncio.CancelledError
 
