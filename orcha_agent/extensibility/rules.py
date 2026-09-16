@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
-import re
+import regex
+from html import escape
+from itertools import islice
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,9 @@ from .frontmatter import parse_frontmatter
 from .skill_globs import SkillGlobsMiddleware
 
 MARKER = "orcha_rules"
+MAX_RULES = 256
+MAX_CONDITIONS = 8
+MAX_PATTERN_LENGTH = 512
 
 
 @dataclass(frozen=True)
@@ -25,13 +30,18 @@ class Rule:
     body: str
     globs: tuple[str, ...] = ()
     always_apply: bool = False
-    conditions: tuple[re.Pattern[str], ...] = ()
+    conditions: tuple[regex.Pattern[str], ...] = ()
     scope: tuple[str, ...] = ("text", "tool")
     interrupt_mode: str | None = None
+    trusted: bool = True
 
     def reminder(self) -> SystemMessage:
         return SystemMessage(
-            content=f"<system-reminder rule={self.name!r}>\n{self.body}\n</system-reminder>",
+            content=(
+                f'<system-reminder rule="{escape(self.name, quote=True)}" '
+                f'trust="{"trusted" if self.trusted else "untrusted"}">\n'
+                f"{escape(self.body)}\n</system-reminder>"
+            ),
             additional_kwargs={MARKER: [self.name]},
         )
 
@@ -44,57 +54,89 @@ def _strings(value: Any) -> tuple[str, ...]:
     return ()
 
 
-def discover_rules(cwd: Path, home: Path) -> tuple[dict[str, Rule], list[str]]:
-    """Native project > native user > imported project > imported user, by name."""
-    sources: list[tuple[Path, bool]] = [(cwd / "RULES.md", True)]
-    for root in (cwd / ".orcha-agent", home / ".config/orcha-agent"):
-        sources.extend((path, False) for path in sorted((root / "rules").glob("*.md")))
-        sources.append((root / "RULES.md", True))
-    for root in (cwd, home):
-        for directory, suffix in ((".claude", "md"), (".cursor", "mdc")):
-            sources.extend(
-                (path, False) for path in sorted((root / directory / "rules").glob(f"*.{suffix}"))
-            )
+def discover_rules(
+    cwd: Path, home: Path, *, trust_cwd: bool = False
+) -> tuple[dict[str, Rule], list[str]]:
+    """Trust controls automatic instructions and precedence, never explicit lookup."""
+    roots = [
+        (cwd / "RULES.md", None, True, trust_cwd),
+        (cwd / ".orcha-agent/rules", "*.md", False, trust_cwd),
+        (cwd / ".orcha-agent/RULES.md", None, True, trust_cwd),
+        (home / ".config/orcha-agent/rules", "*.md", False, True),
+        (home / ".config/orcha-agent/RULES.md", None, True, True),
+        (cwd / ".claude/rules", "*.md", False, trust_cwd),
+        (cwd / ".cursor/rules", "*.mdc", False, trust_cwd),
+        (home / ".claude/rules", "*.md", False, True),
+        (home / ".cursor/rules", "*.mdc", False, True),
+    ]
+    if not trust_cwd:
+        roots.sort(key=lambda item: not item[3])
     rules: dict[str, Rule] = {}
     warnings: list[str] = []
-    for path, sticky in sources:
-        if not path.is_file() or path.stem in rules:
-            continue
-        # Never follow rule symlinks or inspect forbidden file/directory names.
-        if any(part.startswith(".env") or part == "Credentials" for part in path.parts):
-            continue
-        if any(parent.is_symlink() for parent in (path, *path.parents)):
-            warnings.append(f"Skipping symlink rule: {path.name}")
-            continue
-        if path.stat().st_size > 1024 * 1024:
-            warnings.append(f"Skipping oversized rule: {path.name}")
-            continue
+    for root, pattern, sticky, trusted in roots:
         try:
-            metadata, body = parse_frontmatter(path.read_text())
-            patterns = []
-            for condition in _strings(metadata.get("condition")):
-                try:
-                    patterns.append(re.compile(condition))
-                except re.error as exc:
-                    warnings.append(f"Rule {path.stem}: invalid condition: {exc}")
-            globs = _strings(metadata.get("globs", metadata.get("paths")))
-            # Cursor commonly encodes multiple globs in a comma-separated string.
-            if isinstance(metadata.get("globs"), str):
-                globs = tuple(part.strip() for part in globs[0].split(",") if part.strip())
-            mode = metadata.get("interruptMode")
-            if mode not in (None, "always", "never", "prose-only", "tool-only"):
-                raise ValueError("invalid interruptMode")
-            rules[path.stem] = Rule(
-                name=path.stem,
-                body=body,
-                globs=globs,
-                always_apply=sticky or metadata.get("alwaysApply") is True,
-                conditions=tuple(patterns),
-                scope=_strings(metadata.get("scope")) or ("text", "tool"),
-                interrupt_mode=mode,
+            sources = (
+                [root] if pattern is None else sorted(islice(root.glob(pattern), MAX_RULES + 1))
             )
-        except (OSError, UnicodeError, ValueError) as exc:
-            warnings.append(f"Could not load rule {path.name}: {exc}")
+        except OSError:
+            warnings.append(f"Could not list rules: {root}")
+            continue
+        for path in sources:
+            if len(rules) >= MAX_RULES:
+                warnings.append(f"Rule discovery limit reached ({MAX_RULES})")
+                return rules, warnings
+            existing = rules.get(path.stem)
+            if existing is not None:
+                if existing.trusted and not trusted:
+                    warnings.append(
+                        f"Skipping untrusted rule {path.name}: name already defined by a trusted rule"
+                    )
+                continue
+            # Never follow rule symlinks or inspect forbidden names.
+            if any(part.startswith(".env") or part == "Credentials" for part in path.parts):
+                continue
+            if any(parent.is_symlink() for parent in (path, *path.parents)):
+                warnings.append(f"Skipping symlink rule: {path.name}")
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                if path.stat().st_size > 1024 * 1024:
+                    warnings.append(f"Skipping oversized rule: {path.name}")
+                    continue
+                metadata, body = parse_frontmatter(path.read_text())
+                patterns = []
+                conditions = _strings(metadata.get("condition")) if trusted else ()
+                if len(conditions) > MAX_CONDITIONS:
+                    warnings.append(f"Rule {path.stem}: condition limit is {MAX_CONDITIONS}")
+                for condition in conditions[:MAX_CONDITIONS]:
+                    if len(condition) > MAX_PATTERN_LENGTH:
+                        warnings.append(
+                            f"Rule {path.stem}: pattern length limit is {MAX_PATTERN_LENGTH}"
+                        )
+                        continue
+                    try:
+                        patterns.append(regex.compile(condition))
+                    except regex.error as exc:
+                        warnings.append(f"Rule {path.stem}: invalid condition: {exc}")
+                globs = _strings(metadata.get("globs", metadata.get("paths")))
+                if isinstance(metadata.get("globs"), str):
+                    globs = tuple(part.strip() for part in globs[0].split(",") if part.strip())
+                mode = metadata.get("interruptMode")
+                if mode not in (None, "always", "never", "prose-only", "tool-only"):
+                    raise ValueError("invalid interruptMode")
+                rules[path.stem] = Rule(
+                    name=path.stem,
+                    body=body,
+                    globs=globs,
+                    always_apply=trusted and (sticky or metadata.get("alwaysApply") is True),
+                    conditions=tuple(patterns),
+                    scope=_strings(metadata.get("scope")) or ("text", "tool"),
+                    interrupt_mode=mode,
+                    trusted=trusted,
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                warnings.append(f"Could not load rule {path.name}: {exc}")
     return rules, warnings
 
 
@@ -113,10 +155,12 @@ def rulebook(rules: Mapping[str, Rule]) -> str:
         return ""
     lines = ["Rulebook: use the rule tool with rule://name to read instructions on demand."]
     for rule in rules.values():
-        if rule.always_apply:
+        if rule.trusted and rule.always_apply:
             lines.append(rule.reminder().text)
         else:
-            lines.append(f"- rule://{rule.name} — globs: {', '.join(rule.globs) or '(on demand)'}")
+            lines.append(
+                f"- rule://{escape(rule.name)} — globs: {escape(', '.join(rule.globs)) or '(on demand)'}"
+            )
     return "\n".join(lines)
 
 
@@ -179,7 +223,7 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
         selected = [
             rule.reminder()
             for rule in self.rules.values()
-            if rule.name not in attached and not rule.always_apply and matches_paths(rule, paths)
+            if rule.trusted and rule.name not in attached and not rule.always_apply and matches_paths(rule, paths)
         ]
         if self.pending:
             config = get_config()

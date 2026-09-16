@@ -64,7 +64,10 @@ def register(api: PluginAPI) -> None:
         middleware.paths.cwd = Path(cwd)
 
         async def load() -> None:
-            found, warnings = await asyncio.to_thread(discover_rules, Path(cwd), Path.home())
+            found, warnings = await asyncio.to_thread(
+                discover_rules, Path(cwd), Path.home(),
+                trust_cwd=getattr(context.cfg, "trust_cwd", False),
+            )
             rules.update(found)
             for warning in warnings:
                 context.console.warning(warning)
@@ -100,7 +103,7 @@ def register(api: PluginAPI) -> None:
         if discovery is not None:
             await asyncio.shield(discovery)
         rule = rules.get(name.removeprefix("rule://"))
-        return rule.body if rule is not None else f"Error: unknown rule {name}"
+        return rule.reminder().text if rule is not None else f"Error: unknown rule {name}"
 
     async def listing(ctx: Any, _args: str) -> None:
         ctx.console.print(rulebook(rules) or "No rules found.", markup=False)

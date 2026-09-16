@@ -40,7 +40,7 @@ def test_discovery_imports_and_precedence(tmp_path: Path) -> None:
     write(cwd, ".claude/rules/imported.md", '---\npaths: ["src/**"]\n---\nClaude body')
     write(cwd, ".cursor/rules/web.mdc", '---\nglobs: "*.js, *.ts"\n---\nCursor body')
     write(cwd, ".orcha-agent/rules/bad.md", '---\ncondition: "["\n---\nBad expression')
-    rules, warnings = discover_rules(cwd, home)
+    rules, warnings = discover_rules(cwd, home, trust_cwd=True)
     assert rules["RULES"].always_apply
     assert rules["python"].body == "Native body"
     assert rules["imported"].globs == ("src/**",)
@@ -142,7 +142,7 @@ async def test_real_stream_abort_retry_and_reminder(
         )
     )
     host = SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path),
+        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True),
         session_id="session",
         console=Mock(),
         bus=bus,
@@ -260,7 +260,7 @@ async def test_deferred_rule_and_restored_once_policy(tmp_path: Path, monkeypatc
         )
     )
     host = SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path),
+        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True),
         session_id="s",
         console=Mock(),
         bus=bus,
@@ -363,7 +363,7 @@ async def test_retry_does_not_replay_completed_tool(
         )
     )
     host = SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path),
+        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True),
         session_id="s",
         console=Mock(),
         bus=bus,
@@ -494,7 +494,7 @@ async def test_after_gap_restores_injection_age_on_resume(tmp_path: Path, monkey
         )
     )
     host = SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path),
+        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True),
         session_id="s",
         console=Mock(),
         bus=bus,
