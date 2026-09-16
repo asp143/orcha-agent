@@ -784,7 +784,7 @@ class Transcript:
             self._task_changed(block)
             return
 
-        block = self._read_groups.get(source) if event.name == "read_file" else None
+        block = self._read_groups.get(source) if event.name in {"read_file", "read"} else None
         can_group = (
             block is not None
             and block.state is BlockState.ACTIVE
@@ -817,7 +817,7 @@ class Transcript:
                 },
                 source_id=event.source_id,
             )
-            if event.name == "read_file":
+            if event.name in {"read_file", "read"}:
                 self._read_groups[source] = block
         self._tools[event.id] = block
         if self.scheduler is not None:
