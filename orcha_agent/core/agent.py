@@ -18,7 +18,7 @@ from deepagents.backends import CompositeBackend, LocalShellBackend
 from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-from deepagents.middleware.summarization import create_summarization_middleware
+from .compaction import CompactionMiddleware, Compactor
 
 from .config import Config
 from .events import AgentBuildAfter, AgentBuildBefore, EventBus
@@ -377,7 +377,13 @@ async def build_agent(
     )
     if len(main_models) > 1:
         middleware.append(ModelFallbackMiddleware(*main_models[1:]))
-    middleware.append(create_summarization_middleware(roles["summarizer"], backend))
+    from .catalog import get_model
+    from .models import expand_model_spec
+    catalog_model = get_model(expand_model_spec(cfg.model, cfg)[0], cfg)
+    middleware.append(CompactionMiddleware(Compactor(
+        roles["summarizer"], cfg.compaction,
+        (catalog_model.context_window or 128_000) if catalog_model else 128_000, bus=bus,
+    )))
 
     prompt = "\n\n".join(
         value

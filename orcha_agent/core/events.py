@@ -136,6 +136,11 @@ class ModelSwitch(Event):
 
 
 @dataclass(slots=True)
+class CompactionStatus(Event):
+    active: bool
+
+
+@dataclass(slots=True)
 class AppExit(Event):
     pass
 

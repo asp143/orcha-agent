@@ -356,9 +356,9 @@ async def _message_event(
     if not isinstance(data, tuple) or len(data) != 2:
         return file_diffs
     message, metadata = data
-    if not isinstance(message, BaseMessage):
-        return file_diffs
-    if isinstance(message, ToolMessage):
+    # Checkpoint updates can echo HumanMessage summary markers. Only model
+    # output belongs in the assistant stream; compactions have their own card.
+    if not isinstance(message, AIMessage):
         return file_diffs
     source_id = _event_source(ctx, namespace)
     if isinstance(message, AIMessage):

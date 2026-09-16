@@ -18,7 +18,7 @@ from typing import Any
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.enums import EditingMode
 
-from orcha_agent.core.usage import DEFAULT_PRICING
+from orcha_agent.core.usage import DEFAULT_PRICING, pricing_for
 
 from .symbols import resolve_symbols
 from .blocks import theme_spinner
@@ -34,7 +34,7 @@ class Segment:
 PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "default": (
         ("brand", "model", "mode", "path", "git", "context", "cost"),
-        ("subagents", "session"),
+        ("compaction", "subagents", "session"),
     ),
     "minimal": (("brand", "model", "path"), ("context",)),
     "powerline": (("brand", "model", "path", "git", "pr"), ("token_rate", "usage", "context")),
@@ -55,15 +55,27 @@ PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 
 SEPARATORS = frozenset({"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"})
 
-WINDOWS = {
-    "codex:gpt-5.6-sol": 272_000,
-    "codex:gpt-5.6-luna": 272_000,
-    "codex:gpt-5.6-terra": 272_000,
-    "codex:gpt-5.5": 272_000,
-    "codex:gpt-5.4": 272_000,
-    "codex:gpt-5.4-mini": 272_000,
-    "codex:gpt-5.3-codex-spark": 128_000,
-}
+class _CatalogWindows(Mapping[str, int]):
+    """Lazy compatibility view backed by the bundled catalog."""
+
+    def __getitem__(self, key: str) -> int:
+        from orcha_agent.core.catalog import get_model
+
+        entry = get_model(key)
+        if entry is None or not entry.context_window:
+            raise KeyError(key)
+        return entry.context_window
+
+    def __iter__(self):
+        from orcha_agent.core.catalog import get_catalog
+
+        return (key for key, value in get_catalog().items() if value.context_window)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+
+WINDOWS = _CatalogWindows()
 
 _GIT_REFRESH_SECONDS = 2.0
 _GIT_TIMEOUT_SECONDS = 1.0
@@ -506,42 +518,70 @@ def cache_segment(ctx: Any) -> Segment | None:
     return Segment(f"{reads} read {writes} write", "muted", "icon.tokens")
 
 
+async def refresh_model_snapshot(ctx: Any, actual_spec: str | None = None) -> None:
+    """Resolve catalog/config files outside terminal rendering."""
+    from orcha_agent.core.catalog import get_model
+    from orcha_agent.core.models import expand_model_spec
+
+    def read() -> tuple[str, int | None, dict[str, float]]:
+        specs = expand_model_spec(ctx.cfg.model, ctx.cfg)
+        spec = actual_spec or specs[0]
+        entry = get_model(spec, ctx.cfg)
+        return (
+            spec,
+            entry.context_window if entry else None,
+            pricing_for(spec, getattr(ctx.cfg, "pricing", {}), config=ctx.cfg),
+        )
+
+    spec, window, price = await asyncio.to_thread(read)
+    _state(ctx).update(_model_spec=spec, _model_window=window, _model_price=price)
+
+
 def _window(ctx: Any, spec: str) -> int | None:
-    if spec in WINDOWS:
-        return WINDOWS[spec]
-    prefix, _, model_name = spec.partition(":")
-    lowered = model_name.lower()
-    if prefix == "codex":
-        if lowered.startswith(("gpt-5.6-", "gpt-5.5", "gpt-5.4")):
-            return 272_000
-        if "spark" in lowered:
-            return 128_000
-    if prefix == "anthropic":
-        if "opus" in lowered or "sonnet" in lowered:
-            return 1_000_000
-        if "haiku" in lowered:
-            return 200_000
+    state = _state(ctx)
+    if state.get("_model_spec") == spec:
+        return state.get("_model_window")
+    # Standalone extension callers use the bundled catalog, with no user-file scans.
+    from orcha_agent.core.catalog import get_model
+
+    entry = get_model(spec)
+    if entry is not None:
+        return entry.context_window
+    prefix = spec.partition(":")[0]
     provider = ctx.registry.providers.get(prefix)
     return getattr(getattr(provider, "capabilities", None), "max_context", None)
 
 
 def context_segment(ctx: Any) -> Segment | None:
-    spec, _ = _spec(ctx)
+    state = _state(ctx)
+    spec = str(state.get("_model_spec") or _spec(ctx)[0])
     window = _window(ctx, spec)
     if not window:
         return None
-    used = int(_state(ctx).get("last_input_tokens", 0))
+    used = int(state.get("last_input_tokens", 0))
     percent = min(100.0, max(0.0, used / window * 100))
-    return Segment(f"{percent:.1f}%/{_quantity(window)}", "statusLineContext", "icon.context")
+    token = "statusLineContext"
+    compaction = getattr(ctx.cfg, "compaction", None)
+    if compaction is not None and compaction.enabled:
+        threshold = compaction.threshold(window)
+        if used >= threshold:
+            token = "error"
+        elif used >= threshold * 0.9:
+            token = "warning"
+    return Segment(f"{percent:.1f}%/{_quantity(window)}", token, "icon.context")
 
 
 def cost_segment(ctx: Any) -> Segment | None:
+    cumulative = getattr(ctx, "plugin_states", {}).get("usage", {})
+    if "session_cost" in cumulative:
+        return Segment(f"${float(cumulative['session_cost']):.2f}", "statusLineCost", "icon.cost")
+    state = _state(ctx)
     spec, _ = _spec(ctx)
-    configured = getattr(ctx.cfg, "pricing", {}).get(spec, {})
-    price = {**DEFAULT_PRICING.get(spec, {}), **configured}
+    price = state.get("_model_price")
+    if price is None:
+        price = pricing_for(spec, getattr(ctx.cfg, "pricing", {}))
     if not price:
         return None
-    state = _state(ctx)
     inputs = float(state.get("input_tokens", 0))
     outputs = float(state.get("output_tokens", 0))
     reads = float(state.get("cache_read_tokens", 0))
@@ -554,6 +594,21 @@ def cost_segment(ctx: Any) -> Segment | None:
         + outputs * float(price.get("output", 0))
     ) / 1_000_000
     return Segment(f"${cost:.2f}", "statusLineCost", "icon.cost")
+
+
+def usage_segment(ctx: Any) -> Segment | None:
+    state = getattr(ctx, "plugin_states", {}).get("usage", {})
+    if "session_cost" not in state:
+        return cost_segment(ctx)
+    return Segment(
+        f"${float(state['session_cost']):.2f} session · ${float(state.get('today_cost', 0)):.2f} today",
+        "statusLineCost", "icon.cost",
+    )
+
+
+def compaction_segment(ctx: Any) -> Segment | None:
+    status = getattr(ctx, "compaction_status", None)
+    return Segment(f"/compact {status}", "warning") if status else None
 
 
 def time_segment(ctx: Any) -> Segment | None:
@@ -738,7 +793,8 @@ BUILTIN_SEGMENTS = (
     ("hostname", hostname_segment),
     ("vim", vim_segment),
     ("pr", pr_segment),
-    ("usage", cost_segment),
+    ("usage", usage_segment),
+    ("compaction", compaction_segment),
     ("model", model_segment),
     ("mode", mode_segment),
     ("path", path_segment),
@@ -1053,7 +1109,9 @@ def _gauge(
     filled = round(bar_width * percent / 100)
     filled_glyph = "#" if ascii_mode else "━"
     empty_glyph = "-" if ascii_mode else "─"
-    token = "success" if percent < 70 else "warning" if percent < 90 else "error"
+    token = segment.token if segment.token in {"warning", "error"} else (
+        "success" if percent < 70 else "warning" if percent < 90 else "error"
+    )
     active_style = _style(theme, token, transparent=transparent)
     rest_style = _style(theme, "statusLineSep", transparent=transparent)
     return [

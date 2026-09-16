@@ -126,7 +126,7 @@ def capture_graph_values(
             ),
             None,
         )
-        if reset
+        if reset or not previous
         else None
     )
     changed = []
@@ -173,6 +173,7 @@ def capture_graph_values(
         entries.append(
             CompactionEntry(
                 summary=str(summary).removeprefix(_SUMMARIZATION_PREFIX),
+                **messages[summary_index].additional_kwargs.get("compaction", {}),
                 first_kept_id=marker,
             )
         )
@@ -221,6 +222,14 @@ def capture_graph_values(
             )
         )
     entries.extend(MessageEntry(message=message_to_dict(message)) for message in candidates)
+    for message in [*changed, *candidates]:
+        metadata = message.additional_kwargs.get("compaction_shake")
+        if isinstance(metadata, dict):
+            entries.append(
+                CompactionEntry(
+                    summary="Superseded tool results removed.", first_kept_id="", **metadata
+                )
+            )
     state = {"todos": values.get("todos", []), "files": values.get("files", {})}
     digest = cache.live_state_digest(state)
     if state_row is None or state_row["digest"] != digest:

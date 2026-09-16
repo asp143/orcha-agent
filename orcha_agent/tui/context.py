@@ -13,7 +13,6 @@ from typing import Any
 
 from langchain_core.messages import (
     AIMessage,
-    HumanMessage,
     messages_from_dict,
 )
 
@@ -22,7 +21,9 @@ from orcha_agent.core.agent import build_agent
 from orcha_agent.core.agents import AgentRegistry
 from orcha_agent.core.capture import capture_graph_values
 from orcha_agent.core.config import Config, is_trusted_cwd
-from orcha_agent.core.events import ModelSwitch, SessionSwitch, ThreadSwitch
+from orcha_agent.core.events import AppExit, ModelSwitch, SessionSwitch, ThreadSwitch, TurnStart, TurnEnd
+from orcha_agent.core.compaction import Compactor
+from orcha_agent.core.events import CompactionStatus
 from orcha_agent.core.ledger import (
     CompactionEntry,
     CustomEntry,
@@ -201,6 +202,9 @@ class AppContext:
     queue: Any = None
     agents: AgentRegistry | None = None
     _title_written: bool = False
+    compaction_status: str = ""
+    _idle_compaction: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _shown_compactions: set[str] = field(default_factory=set, init=False, repr=False)
     _pending_switch_old_thread: str | None = field(
         default=None, init=False, repr=False
     )
@@ -237,6 +241,14 @@ class AppContext:
             self._registry = self.registry._registry
         self._bus = self.bus._bus if isinstance(self.bus, EventBusView) else self.bus
         self.bus = EventBusView(self._bus)
+        if callable(getattr(self._bus, "on", None)):
+            self._bus.on(TurnStart, self._compaction_activity, plugin="compaction")
+            self._bus.on(TurnEnd, self._compaction_activity, plugin="compaction")
+            self._bus.on(AppExit, self._compaction_activity, plugin="compaction")
+            self._bus.on(SessionSwitch, self._compaction_activity, plugin="compaction")
+            self._bus.on(ModelSwitch, self._compaction_activity, plugin="compaction")
+            self._bus.on(ThreadSwitch, self._compaction_activity, plugin="compaction")
+            self._bus.on(CompactionStatus, self._compaction_status_changed, plugin="compaction")
         if self.agents is None:
             self.agents = AgentRegistry(
                 self._registry,
@@ -925,31 +937,97 @@ class AppContext:
         self.rebuild_requested = False
         self._retarget_agents()
 
-    async def compact(self) -> None:
+    async def _compaction_status_changed(self, event: CompactionStatus) -> None:
+        self.compaction_status = "compacting" if event.active else ""
+
+    async def _compaction_activity(self, event: Any) -> None:
+        if getattr(event, "source_id", "main") != "main":
+            return
+        if self._idle_compaction is not None:
+            task, self._idle_compaction = self._idle_compaction, None
+            if task is not asyncio.current_task():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        if isinstance(event, TurnEnd):
+            for entry in self.ledger.path(self.session_id):
+                if isinstance(entry, CompactionEntry) and entry.id not in self._shown_compactions:
+                    self._compaction_card(entry)
+            if self.cfg.compaction.enabled:
+                self._idle_compaction = asyncio.create_task(self._compact_when_idle())
+
+    async def _compact_when_idle(self) -> None:
+        await asyncio.sleep(self.cfg.compaction.idle_seconds)
+        try:
+            await self.maybe_compact("idle")
+        except Exception as exc:
+            self.console.warning(f"Idle compaction failed: {type(exc).__name__}: {exc}")
+
+    async def maybe_compact(self, trigger: str) -> None:
+        if self.agent is None:
+            return
+        from orcha_agent.core.catalog import get_model
+        from orcha_agent.core.models import expand_model_spec
+        spec = expand_model_spec(self.cfg.model, self.cfg)[0]
+        info = get_model(spec, self.cfg)
+        messages = build_context(self.ledger.path(self.session_id)).messages
+        policy = Compactor(None, self.cfg.compaction, (info.context_window or 128_000) if info else 128_000)
+        if policy.needed(messages, trigger):
+            await self.compact()
+
+    def _compaction_card(self, entry: CompactionEntry) -> None:
+        from rich.panel import Panel
+        from rich.text import Text
+        self._shown_compactions.add(entry.id)
+        self.console.print(Panel(Text(entry.short_summary or entry.summary[:160]), title=f"Compacted · {entry.method} · {entry.tokens_before or 0:,} tokens before", border_style="yellow"))
+
+    async def compact(self, instructions: str = "") -> None:
+        if self._idle_compaction is not None and self._idle_compaction is not asyncio.current_task():
+            task, self._idle_compaction = self._idle_compaction, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.compaction_status = "compacting"
+        try:
+            await self._compact(instructions)
+        finally:
+            self.compaction_status = ""
+
+    async def _compact(self, instructions: str) -> None:
         if self.agent is None and not await self.ensure_agent(seed_pending=False):
             return
-        instruction = (
-            "Summarize the conversation for continuation. Preserve decisions, current files, "
-            "constraints, failures, and remaining work."
-        )
         messages = filter_foreign_blocks(
             build_context(self.ledger.path(self.session_id)).messages,
             {"reasoning", "thinking"},
         )
         if self.summarizer is None and self.registry.providers:
             self.summarizer = ModelResolver(self.registry, self.cfg).resolve(
-                self.cfg.summarizer_model or self.cfg.model, "summarizer"
+                self.cfg.summarizer_model or self.cfg.model_roles.get("summarizer") or self.cfg.model, "summarizer"
             )
         if self.summarizer is None:
             raise RuntimeError("summarizer model is unavailable")
-        summary = await self.summarizer.ainvoke(
-            [*messages, HumanMessage(content=instruction)]
-        )
-        summary_text = (
-            summary.content
-            if isinstance(summary.content, str)
-            else str(summary.content)
-        )
+        from langchain_core.language_models import BaseChatModel
+        from orcha_agent.core.usage_store import UsageCallback
+        summarizer = self.summarizer
+        if isinstance(summarizer, BaseChatModel):
+            summarizer = summarizer.with_config(callbacks=[UsageCallback(self.session, self.cfg, session_id=self.session_id, role="summarizer", bus=self.bus)])
+        result = await Compactor(summarizer, self.cfg.compaction).compact(messages, instructions)
+        if result.method == "shake":
+            # Persist arbitrary payload replacements using normal graph capture.
+            from orcha_agent.core.compaction import _update
+            await self.agent.aupdate_state(self.thread_config, _update(result.messages))
+            self.capture_turn()
+            entry = next((item for item in reversed(self.ledger.path(self.session_id)) if isinstance(item, CompactionEntry) and item.method == "shake"), None)
+            if entry is not None:
+                self._compaction_card(entry)
+            return
+        summary_text = result.summary
+        retained = result.messages[1:]
+        first_kept_id = None
+        if retained:
+            path = self.ledger.path(self.session_id)
+            message_positions = [index for index, entry in enumerate(path) if isinstance(entry, MessageEntry)]
+            first_at = message_positions[-len(retained)] if len(message_positions) >= len(retained) else None
+            if first_at is not None:
+                first_kept_id = path[first_at - 1].id if first_at else ""
         ledger = self.ledger
         prior_leaf = ledger.leaf(self.session_id)
         prior_thread = self.thread_id
@@ -960,8 +1038,10 @@ class AppContext:
             self.session_id,
             CompactionEntry(
                 summary=summary_text,
-                first_kept_id=None,
-                tokens_before=None,
+                first_kept_id=first_kept_id,
+                tokens_before=result.tokens_before,
+                short_summary=result.short_summary,
+                method=result.method,
             ),
             thread_id=None,
         )
@@ -981,7 +1061,13 @@ class AppContext:
                 self.thread_id = prior_thread
                 self._pending_switch_old_thread = prior_switch_old_thread
             raise
-        self.console.print("Conversation compacted.")
+        if retained:
+            # Preserve pruning and invalidate pre-compaction usage on the kept tail.
+            seeded = self.agent.get_state(self.thread_config).values.get("messages", [])
+            retained = [message.model_copy(update={"id": current.id}) if message.id is None else message for message, current in zip(retained, seeded[-len(retained):], strict=True)]
+            await self.agent.aupdate_state(self.thread_config, {"messages": retained}, as_node="__start__")
+            self.capture_turn()
+        self._compaction_card(appended)
 
     def _capture_values(
         self,

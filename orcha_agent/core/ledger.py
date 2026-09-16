@@ -69,6 +69,8 @@ class CompactionEntry(Entry):
     summary: str
     first_kept_id: str | None = None
     tokens_before: int | None = None
+    short_summary: str = ""
+    method: str = "summary"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -154,6 +156,8 @@ def _entry_type_and_payload(entry: Entry) -> tuple[str, dict[str, Any]]:
             "summary": entry.summary,
             "first_kept_id": entry.first_kept_id,
             "tokens_before": entry.tokens_before,
+            "short_summary": entry.short_summary,
+            "method": entry.method,
         }
     if isinstance(entry, ResetBoundaryEntry):
         return "reset_boundary", {}
@@ -232,6 +236,8 @@ def _decode_entry(
             summary=summary,
             first_kept_id=first_kept_id,
             tokens_before=tokens_before,
+            short_summary=str(payload.get("short_summary", "")),
+            method=str(payload.get("method", "summary")),
             **common,
         )
     if entry_type == "reset_boundary":
@@ -836,7 +842,7 @@ def _after_last_reset(path: list[Entry]) -> list[Entry]:
 def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
     for compact_at in range(len(path) - 1, -1, -1):
         entry = path[compact_at]
-        if not isinstance(entry, CompactionEntry):
+        if not isinstance(entry, CompactionEntry) or entry.method == "shake":
             continue
         if entry.first_kept_id is None:
             return path[compact_at + 1 :], entry.summary

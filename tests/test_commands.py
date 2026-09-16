@@ -1242,7 +1242,6 @@ async def test_resume_delegates_the_supplied_session_prefix() -> None:
         pytest.param("/fork extra", id="fork"),
         pytest.param("/new extra", id="new"),
         pytest.param("/clear extra", id="clear"),
-        pytest.param("/compact extra", id="compact"),
         pytest.param("/export --bogus", id="export-unknown-option"),
         pytest.param("/export path.jsonl --force", id="export-option-order"),
         pytest.param("/export --force --force", id="export-repeated-option"),
@@ -1312,3 +1311,16 @@ async def test_model_switch_without_config_path_is_ignored() -> None:
 
     await bus.emit(AppStart(ctx=ctx))
     await bus.emit(ModelSwitch(old="a", new="b"))  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_compact_passes_custom_instructions() -> None:
+    registry = Registry()
+    commands_session.register(_api(registry, EventBus()))
+    ctx, _ = _context()
+    calls = []
+    async def compact(instructions):
+        calls.append(instructions)
+    ctx.compact = compact
+    assert await dispatch_command(registry, ctx, "/compact preserve failing tests")
+    assert calls == ["preserve failing tests"]

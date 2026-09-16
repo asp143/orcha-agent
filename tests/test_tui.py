@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from deepagents.middleware.summarization import SummarizationMiddleware
+from orcha_agent.core.compaction import CompactionMiddleware as SummarizationMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import (

@@ -165,7 +165,7 @@ def test_preset_groups_are_stable() -> None:
     assert PRESETS == {
         "default": (
             ("brand", "model", "mode", "path", "git", "context", "cost"),
-            ("subagents", "session"),
+            ("compaction", "subagents", "session"),
         ),
         "minimal": (("brand", "model", "path"), ("context",)),
         "powerline": (("brand", "model", "path", "git", "pr"), ("token_rate", "usage", "context")),
@@ -522,8 +522,8 @@ async def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None
     assert subagents_segment(ctx).text == "1"
     assert tokens_segment(ctx).text == "136k in 12k out"
     assert cache_segment(ctx).text == "4k read 2k write"
-    assert cost_segment(ctx).text == "$1.02"
-    assert context_segment(ctx).text == "50.0%/272k"
+    assert cost_segment(ctx).text == "$0.77"
+    assert context_segment(ctx).text == "13.6%/1M"
     assert time_segment(ctx).text == "3.2s"
 
 

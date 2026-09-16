@@ -86,7 +86,7 @@ def test_default_statusline_matches_omp_order_separator_and_colors(tmp_path: Pat
 
     assert PRESETS["default"] == (
         ("brand", "model", "mode", "path", "git", "context", "cost"),
-        ("subagents", "session"),
+        ("compaction", "subagents", "session"),
     )
     assert [name for name, _segment in visible_segments(ctx)] == [
         "model",

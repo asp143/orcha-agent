@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .compaction_config import CompactionConfig, compaction_config
 from .tools.common import DEFAULT_DENY
 
 DEFAULT_MODEL = "anthropic:claude-opus-5"
@@ -310,6 +311,7 @@ class Config:
     model_role_default: str | list[str] | None = None
     agents: AgentsConfig = field(default_factory=AgentsConfig)
 
+    compaction: CompactionConfig = field(default_factory=CompactionConfig)
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
     advisor: AdvisorConfig = field(default_factory=AdvisorConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
@@ -821,6 +823,10 @@ def load_config(
     notify = ui.get("notify", False)
 
 
+    try:
+        compact_config = compaction_config(values.get("compaction", {}))
+    except ValueError as exc:
+        parser.error(str(exc))
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
         model=model,
@@ -851,6 +857,7 @@ def load_config(
         composer=composer,
         tui=tui_config,
         statusline=statusline,
+        compaction=compact_config,
         model_roles=model_roles,
         model_role_default=normalize_model_spec(default_role_model) if not (isinstance(default_role_model, str) and default_role_model.startswith("@")) else DEFAULT_MODEL,
         agents=agent_config,
