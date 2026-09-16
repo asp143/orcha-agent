@@ -1,2 +1,2 @@
-default: Explain 
- class:composer.placeholder dim: [Pasted 6 lines #1]
+default: 'Explain '
+ class:composer.placeholder dim: '[Pasted 6 lines #1]'

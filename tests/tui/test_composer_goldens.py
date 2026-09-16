@@ -230,7 +230,7 @@ def test_paste_chip_style_golden(update_goldens: bool) -> None:
 
     actual = (
         "\n".join(
-            f"{style or 'default'}: {''.join(fragment[1] for fragment in group)}"
+            f"{style or 'default'}: {''.join(fragment[1] for fragment in group)!r}"
             for style, group in groupby(fragments, key=lambda fragment: fragment[0])
         )
         + "\n"
