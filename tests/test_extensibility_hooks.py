@@ -31,14 +31,14 @@ def test_remove_tool_cannot_remove_another_plugins_tool():
 
 
 @pytest.mark.asyncio
-async def test_expanded_prompt_bypasses_dispatch_and_restores_model(monkeypatch):
+async def test_expanded_prompt_bypasses_dispatch_without_model_change(monkeypatch):
     turn = AsyncMock(side_effect=ValueError("turn failed"))
     monkeypatch.setattr("orcha_agent.tui.turn._run_cancellable_turn", turn)
     ctx = SimpleNamespace(cfg=SimpleNamespace(model="original"), switch_model=AsyncMock())
     with pytest.raises(ValueError, match="turn failed"):
-        await AppContext.submit_prompt(ctx, "/literal body", model="temporary")
+        await AppContext.submit_prompt(ctx, "/literal body")
     turn.assert_awaited_once_with(ctx, "/literal body")
-    assert [call.args[0] for call in ctx.switch_model.await_args_list] == ["temporary", "original"]
+    ctx.switch_model.assert_not_called()
 
 
 @pytest.mark.asyncio

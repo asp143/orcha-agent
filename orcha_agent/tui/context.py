@@ -757,15 +757,38 @@ class AppContext:
 
         if not text.strip():
             return
-        previous = self.cfg.model
-        changed = model is not None and model != previous
-        if changed:
-            await self.switch_model(model)
+        if model is None or model == self.cfg.model:
+            await _run_cancellable_turn(self, text)
+            return
+        previous_cfg, previous_agent = self.cfg, self.agent
+        previous_summarizer = self.summarizer
+        candidate_cfg = replace(self.cfg, model=model)
+        candidate_agent = await _compat("build_agent", build_agent)(
+            self.registry,
+            candidate_cfg,
+            self.session,
+            self._bus,
+            always_allowed=self._always_allowed(),
+            extra_tools=agent_tools(self),
+            exclude_general_purpose=True,
+        )
+        candidate_summarizer = self._resolve_summarizer(candidate_cfg)
+        if not self._reseed_pending():
+            self._clean_history_for_model(
+                candidate_agent, self.history_model or previous_cfg.model, model
+            )
+        self.cfg, self.agent, self.summarizer = candidate_cfg, candidate_agent, candidate_summarizer
         try:
             await _run_cancellable_turn(self, text)
         finally:
-            if changed:
-                await self.switch_model(previous)
+            self.cfg, self.agent, self.summarizer = previous_cfg, previous_agent, previous_summarizer
+            if previous_agent is not None:
+                self._clean_history_for_model(previous_agent, model, previous_cfg.model)
+                # A discovery/reconnect during the temporary turn may have changed
+                # plugin contributions. Rebuild the restored graph at the normal boundary.
+                self.request_rebuild()
+            else:
+                self.history_model = model
 
     async def switch_model(self, spec: str | list[str]) -> None:
         old_model = self.cfg.model
