@@ -940,7 +940,9 @@ repository instructions apply.
 
 `/export --html [path]` saves a standalone HTML transcript using the active theme
 colours. Markdown is rendered locally; tool calls and results use expandable
-cards, with added/removed diff lines highlighted. Every ledger branch is included
+cards, with added/removed lines highlighted only for unified diffs or edit/patch
+tool output. Ordinary signed numbers and bullets keep their normal colours.
+Every ledger branch is included
 in chronological order. No scripts, remote assets, or image requests are needed.
 The default filename is `<session-id>.html`; paths may contain spaces.
 As with JSONL export, existing files require `--force`, for example
@@ -1016,6 +1018,7 @@ On an interactive first launch with no user or project config and no usable
 provider, orcha opens a short setup wizard inside the existing TUI. Run
 `uv run orcha setup` or `/setup` to revisit it explicitly. Choose a theme,
 composer style, provider sign-in or API-key environment hint, then a model.
+The generic `langchain` adapter is omitted from the provider picker.
 Choose **Enter model name** for a provider without a model catalog, or configure
 it later with `/model`.
 The wizard never asks for or stores an API key; OAuth sign-in uses the existing
@@ -1049,10 +1052,20 @@ the model request and do not appear as extra conversation messages.
 Put always-active instructions in `RULES.md`, or named Markdown rules in
 `.orcha-agent/rules/*.md`. User rules live in `~/.config/orcha-agent/rules/`.
 Claude `.claude/rules/*.md` and Cursor `.cursor/rules/*.mdc` files are imported
-at project and user scope. Native project rules take precedence by filename,
-then native user rules, then imports. `/rules` lists the rulebook; the model
-reads bodies on demand through the `rule` tool with `rule://name`. Matching
-file paths automatically attach rule bodies using the skill path normalizer.
+at project and user scope. In trusted projects, native project rules take
+precedence by filename, then native user rules, then imports. Without
+`--trust-cwd` or a saved trusted directory, user roots take precedence and
+colliding untrusted rule names are skipped with a warning. Untrusted project
+rules are listed for explicit `rule://name` lookup only: `alwaysApply`, sticky
+`RULES.md`, glob attachment, and stream conditions cannot inject them
+automatically. User rules remain trusted. Explicitly loaded untrusted bodies
+are labelled as untrusted, and all rule wrappers escape embedded markup.
+
+`/rules` lists the rulebook; the model reads bodies on demand through the `rule`
+tool with `rule://name`. Matching file paths automatically attach trusted rule
+bodies using the skill path normalizer. Discovery caps rules at 256, conditions
+per rule at 8, and patterns at 512 characters. Conditions are compiled once;
+each stream chunk gets at most 50 ms of total matching work.
 
 ```markdown
 ---
@@ -1063,10 +1076,15 @@ Use explicit type annotations in Python code.
 ```
 
 A `condition` regex (or list of regexes) monitors streamed assistant text, even
-when a match spans chunks. On a match the stream closes, a durable system
-reminder is inserted, and generation retries from the pending model checkpoint
+when a match spans chunks. An interrupting match fails the model node from its
+stream callback, preventing LangGraph from committing its tool calls. A durable
+system reminder is inserted, and generation retries from the pending model checkpoint
 without replaying completed tools. The transcript shows **⚠ Injecting rule:
-<name>**. Reminders survive compaction and session reload; reset clears them.
+<name>**. The aborted partial answer is dimmed and struck through so it cannot
+be mistaken for the retry's answer. Provider-reported usage received before
+interruption is retained without counting it twice. When a provider has not yet
+sent usage, that aborted attempt's usage is unavailable and is not counted.
+Reminders survive compaction and session reload; reset clears them.
 Scopes include `text`, `thinking`, `tool`/`toolcall`, and named tools such as
 `tool:write(*.py)`; a list combines scopes. The default monitors text and tool
 arguments. `globs` also gate stream matches by tool file path. Nested agent
