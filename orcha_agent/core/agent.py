@@ -434,4 +434,8 @@ async def build_agent(
         kwargs, exclude_general_purpose=exclude_general_purpose
     )
     await bus.emit(AgentBuildAfter(graph))
+    from .usage_store import UsageCallback
+
+    if hasattr(graph, "with_config"):
+        graph = graph.with_config(callbacks=[UsageCallback(session, cfg, bus=bus)])
     return graph

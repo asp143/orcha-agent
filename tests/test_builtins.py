@@ -57,6 +57,8 @@ EXPECTED_COMMANDS = {
     "mcp",
     "mode",
     "model",
+    "models",
+    "usage",
     "new",
     "plugins",
     "providers",

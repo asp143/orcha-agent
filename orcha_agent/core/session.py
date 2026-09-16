@@ -278,6 +278,16 @@ class SessionStore:
                     self._legacy_checkpoints() if version == 0 else {}
                 )
                 self._ensure_v1_schema()
+                from .usage_store import SCHEMA
+
+                self._connection.execute(SCHEMA)
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS usage_requests_session_ts "
+                    "ON usage_requests(session, ts)"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS usage_requests_ts ON usage_requests(ts)"
+                )
                 if version == 0:
                     self._migrate_v0_to_v1(legacy_checkpoints)
                 self._connection.execute(

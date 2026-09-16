@@ -287,6 +287,8 @@ class Config:
     trust_all_cwd: bool = False
     user_config_path: Path | None = None
     command: str = "repl"
+    stats_period: str = "all"
+    stats_session: str | None = None
     login_prefix: str | None = None
     login_mode: str = "auto"
     gallery_tool: str | None = None
@@ -350,6 +352,11 @@ def _parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("repl", help="start the interactive terminal agent")
     subcommands.add_parser("sync", help="synchronize configured Turso stores")
+    stats = subcommands.add_parser("stats", help="show cumulative model usage")
+    stats.add_argument(
+        "period", nargs="?", default="all", choices=("today", "week", "session", "all")
+    )
+    stats.add_argument("--session", dest="stats_session")
     login = subcommands.add_parser("login", help="log in to a provider")
     login.add_argument("prefix")
     modes = login.add_mutually_exclusive_group()
@@ -825,6 +832,8 @@ def load_config(
         db_path=db_path,
         cwd=resolved_cwd,
         command=args.command or "repl",
+        stats_period=getattr(args, "period", "all"),
+        stats_session=getattr(args, "stats_session", None),
         login_prefix=getattr(args, "prefix", None),
         login_mode=getattr(args, "login_mode", "auto"),
         gallery_tool=getattr(args, "tool", None),

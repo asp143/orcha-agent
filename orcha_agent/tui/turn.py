@@ -136,6 +136,9 @@ def _model_name(message: BaseMessage, metadata: Any) -> str | None:
     for source in sources:
         if not isinstance(source, Mapping):
             continue
+        resolved = source.get("orcha_model")
+        if isinstance(resolved, str) and resolved:
+            return resolved
         provider = next(
             (
                 source[key]

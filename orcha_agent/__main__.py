@@ -72,6 +72,29 @@ def main() -> None:
         from .tui.gallery import run_gallery
 
         raise SystemExit(run_gallery(cfg))
+    if cfg.command == "stats":
+        from .core.persistence import open_session_store
+        from .core.usage_store import UsageStore, usage_table
+        from .tui.console import ConsoleOutput
+
+        console = ConsoleOutput()
+        with open_session_store(cfg) as store:
+            session_id = cfg.stats_session
+            if session_id:
+                try:
+                    session_id = store.resolve_session(session_id).thread_id
+                except LookupError as exc:
+                    console.error(str(exc))
+                    raise SystemExit(2) from None
+            if cfg.stats_period == "session" and not session_id:
+                console.error("Use orcha stats session --session SESSION")
+                raise SystemExit(2)
+            console.print(
+                usage_table(
+                    UsageStore(store).report(cfg.stats_period, session_id), cfg.stats_period
+                )
+            )
+        raise SystemExit(0)
     if cfg.trust_cwd:
         from dotenv import load_dotenv
 

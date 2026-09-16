@@ -141,7 +141,10 @@ async def test_registry_spawn_send_complete_and_tree_use_independent_sessions(
         assert builds[0][1]["exclude_general_purpose"] is True
         assert builds[0][1]["tool_scope"] == {"ls", "read_file", "glob", "grep"}
         assert store.get(run.session_id).parent_session == parent.thread_id
-        assert run.thread_config == {"configurable": {"thread_id": run.thread_id}}
+        assert run.thread_config == {
+            "configurable": {"thread_id": run.thread_id},
+            "metadata": {"orcha_agent_type": "scout"},
+        }
 
         await agents.send(run.id, "inspect tests")
         await _eventually(lambda: graph.inputs == ["inspect files", "inspect tests"])
