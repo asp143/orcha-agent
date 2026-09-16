@@ -22,7 +22,8 @@ async def test_model_override_builds_transient_agent_without_persisting(monkeypa
     monkeypatch.setattr("orcha_agent.tui.context._compat", lambda _name, default: default)
     cfg_seen = []
 
-    async def run(ctx, text):
+    async def run(ctx, text, *, user_origin):
+        assert user_origin is False
         assert ctx.agent is temporary_agent
         assert text == "/literal expanded body"
         cfg_seen.append(ctx.cfg.model)
