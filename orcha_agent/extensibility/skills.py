@@ -132,7 +132,11 @@ def discover_skills(
     }
     max_skills = max(0, min(4096, int(config.get("max_skills", 512))))
     candidates = 0
-    for root in skill_roots(cwd, home, config):
+    roots = skill_roots(cwd, home, config)
+    if not trust_cwd:
+        # Preserve precedence within each scope while protecting user-owned names.
+        roots.sort(key=lambda root: root not in user_roots)
+    for root in roots:
         if not _safe_path(root) or not _safe_path(root.resolve()):
             continue
         resolved_root = root.resolve()
@@ -160,6 +164,13 @@ def discover_skills(
                 )
             except (OSError, UnicodeError, ValueError) as exc:
                 warnings.append(f"Skipping skill {path}: {exc}")
+                continue
+            existing = skills.get(skill.name)
+            if existing is not None and existing.trusted and not skill.trusted:
+                warnings.append(
+                    f"Skipping untrusted skill {path}: name {skill.name!r} "
+                    f"is already defined by trusted skill {existing.path}"
+                )
                 continue
             skills.setdefault(skill.name, skill)
     return skills, warnings

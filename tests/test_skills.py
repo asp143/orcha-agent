@@ -36,7 +36,7 @@ def test_discovery_precedence_importers_and_nonrecursive(tmp_path: Path) -> None
     write(cwd / ".github/skills", "github")
     write(home / ".claude/skills", "global")
     write(native / "nested", "not-recursive")
-    found, warnings = discover_skills(cwd, home)
+    found, warnings = discover_skills(cwd, home, trust_cwd=True)
     assert not warnings
     assert set(found) == {"same", "codex", "github", "global"}
     assert found["same"].read() == "nearest native"
@@ -50,6 +50,74 @@ def test_native_user_precedes_user_import_even_beneath_home(tmp_path: Path) -> N
     write(tmp_path / ".config/orcha-agent/skills", "same", "native")
     found, _ = discover_skills(tmp_path / "project", tmp_path)
     assert found["same"].read() == "native"
+
+
+@pytest.mark.parametrize("project_root", [".orcha-agent", ".claude", ".codex", ".github"])
+@pytest.mark.parametrize("user_root", [".config/orcha-agent", ".claude", ".codex"])
+def test_untrusted_project_cannot_shadow_user_skill(
+    tmp_path: Path, project_root: str, user_root: str
+) -> None:
+    home = tmp_path / "home"
+    cwd = home / "project" / "nested"
+    user_path = write(home / user_root / "skills", "commit", "Trusted user instructions")
+    project_path = write(cwd / project_root / "skills", "commit", "Attacker instructions")
+    found, warnings = discover_skills(cwd, home, trust_cwd=False)
+    assert found["commit"].path == user_path
+    assert found["commit"].trusted
+    assert found["commit"].read() == "Trusted user instructions"
+    assert len(warnings) == 1
+    assert str(project_path) in warnings[0] and str(user_path) in warnings[0]
+    assert "Skipping untrusted skill" in warnings[0]
+
+    trusted, warnings = discover_skills(cwd, home, trust_cwd=True)
+    assert trusted["commit"].path == project_path
+    assert not warnings
+
+
+def test_untrusted_project_preserves_nearest_native_precedence(tmp_path: Path) -> None:
+    cwd = tmp_path / "project" / "nested"
+    write(cwd.parent / ".orcha-agent/skills", "local", "Ancestor")
+    write(cwd / ".claude/skills", "local", "Importer")
+    native = write(cwd / ".orcha-agent/skills", "local", "Nearest native")
+    found, warnings = discover_skills(cwd, tmp_path / "home", trust_cwd=False)
+    assert found["local"].path == native
+    assert not found["local"].trusted
+    assert not warnings
+
+
+@pytest.mark.asyncio
+async def test_skill_command_invokes_user_skill_despite_untrusted_project_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    cwd = home / "project"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    write(home / ".claude/skills", "commit", "Trusted user instructions")
+    write(cwd / ".claude/skills", "commit", "Attacker instructions")
+    registry, bus = Registry(), EventBus()
+    plugin.register(
+        PluginAPI(
+            name="skills", config={}, state={}, registry=registry, bus=bus, request_rebuild=Mock()
+        )
+    )
+    ctx = SimpleNamespace(
+        cfg=SimpleNamespace(cwd=cwd, trust_cwd=False),
+        console=Mock(),
+        submit_prompt=AsyncMock(),
+    )
+    await bus.emit(AppStart(ctx))
+    try:
+        # The general command waits for discovery, avoiding timing-dependent assertions.
+        await registry.commands["skill"].handler(ctx, "commit first")
+        await registry.commands["skill:commit"].handler(ctx, "second")
+        assert ctx.submit_prompt.call_count == 2
+        for call in ctx.submit_prompt.call_args_list:
+            assert "Trusted user instructions" in call.args[0]
+            assert "Attacker instructions" not in call.args[0]
+        assert ctx.submit_prompt.call_args.args[0].endswith("second")
+        assert "Skipping untrusted skill" in str(ctx.console.warning.call_args_list)
+    finally:
+        await bus.emit(AppExit())
 
 
 def test_frontmatter_and_progressive_prompt(tmp_path: Path) -> None:
