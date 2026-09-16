@@ -1,0 +1,6 @@
+╭─ Settings ───────────────────────────────────────────────────────────────╮
+│ Appearance | Status | Behaviour | Terminal                               │
+│  › composer           box                                                │
+│    theme              dark                                               │
+│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+╰──────────────────────────────────────────────────────────────────────────╯

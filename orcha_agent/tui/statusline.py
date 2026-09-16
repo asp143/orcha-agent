@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import socket
 import subprocess
 import threading
 from collections import deque
@@ -12,10 +14,12 @@ from time import monotonic
 from typing import Any
 
 from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.enums import EditingMode
 
 from orcha_agent.core.usage import DEFAULT_PRICING
 
 from .symbols import resolve_symbols
+from .blocks import theme_spinner
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,28 +31,27 @@ class Segment:
 
 PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "default": (
-        ("model", "mode", "path", "git", "context", "cost"),
+        ("brand", "model", "mode", "path", "git", "context", "cost"),
         ("subagents", "session"),
     ),
-    "minimal": (("model", "path"), ("context",)),
-    "compact": (("mode", "path", "git"), ("context", "time")),
+    "minimal": (("brand", "model", "path"), ("context",)),
+    "powerline": (("brand", "model", "path", "git", "pr"), ("token_rate", "usage", "context")),
+    "compact": (("brand", "mode", "path", "git"), ("context", "time")),
     "full": (
-        ("model", "mode", "path", "git", "session"),
+        ("brand", "model", "mode", "path", "git", "session"),
         ("subagents", "tokens", "cache", "cost", "context", "time"),
     ),
     "nerd": (
-        ("model", "mode", "path", "git", "session"),
+        ("brand", "model", "mode", "path", "git", "session"),
         ("subagents", "tokens", "cache", "cost", "context", "time"),
     ),
     "ascii": (
-        ("model", "mode", "path", "git"),
+        ("brand", "model", "mode", "path", "git"),
         ("subagents", "context", "cost"),
     ),
 }
 
-SEPARATORS = frozenset(
-    {"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"}
-)
+SEPARATORS = frozenset({"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"})
 
 WINDOWS = {
     "codex:gpt-5.6-sol": 272_000,
@@ -102,7 +105,9 @@ def wrap_segment(value: Segment | str | None) -> Segment | None:
         return value
     if isinstance(value, str):
         return Segment(value, "text")
-    raise TypeError(f"status segment returned {type(value).__name__}, expected Segment, str, or None")
+    raise TypeError(
+        f"status segment returned {type(value).__name__}, expected Segment, str, or None"
+    )
 
 
 def _state(ctx: Any) -> dict[str, Any]:
@@ -318,30 +323,23 @@ def agent_counts(ctx: Any) -> tuple[int, int, int]:
         legacy = getattr(getattr(ctx, "ui", None), "subagents", ())
         rows = legacy if isinstance(legacy, list) else []
         running = sum(
-            isinstance(run, Mapping)
-            and str(run.get("status", "")).casefold() == "running"
+            isinstance(run, Mapping) and str(run.get("status", "")).casefold() == "running"
             for run in rows
         )
         idle = sum(
-            isinstance(run, Mapping)
-            and str(run.get("status", "")).casefold() == "idle"
+            isinstance(run, Mapping) and str(run.get("status", "")).casefold() == "idle"
             for run in rows
         )
         outstanding = sum(
             isinstance(run, Mapping)
-            and str(run.get("status", "")).casefold()
-            not in {"done", "failed", "aborted"}
+            and str(run.get("status", "")).casefold() not in {"done", "failed", "aborted"}
             for run in rows
         )
         return running, idle, outstanding
 
     running = idle = outstanding = 0
     for run in list_runs():
-        value = (
-            run.get("status", "")
-            if isinstance(run, Mapping)
-            else getattr(run, "status", "")
-        )
+        value = run.get("status", "") if isinstance(run, Mapping) else getattr(run, "status", "")
         status = str(value).casefold()
         running += status == "running"
         idle += status == "idle"
@@ -359,22 +357,17 @@ def subagents_segment(ctx: Any) -> Segment | None:
         rows = legacy if isinstance(legacy, list) else []
         if rows:
             queued = sum(
-                isinstance(run, Mapping)
-                and str(run.get("status", "")).casefold() == "queued"
+                isinstance(run, Mapping) and str(run.get("status", "")).casefold() == "queued"
                 for run in rows
             )
             if not queued:
-                return Segment(
-                    str(len(rows)), "statusLineSubagents", "icon.subagents"
-                )
+                return Segment(str(len(rows)), "statusLineSubagents", "icon.subagents")
             running, idle, _outstanding = agent_counts(ctx)
             text = f"{running} running · {idle} idle · {queued} queued"
             return Segment(text, "statusLineSubagents", "icon.subagents")
     queued = sum(
         str(
-            run.get("status", "")
-            if isinstance(run, Mapping)
-            else getattr(run, "status", "")
+            run.get("status", "") if isinstance(run, Mapping) else getattr(run, "status", "")
         ).casefold()
         == "queued"
         for run in rows
@@ -434,7 +427,7 @@ def _window(ctx: Any, spec: str) -> int | None:
         if "haiku" in lowered:
             return 200_000
     provider = ctx.registry.providers.get(prefix)
-    return None if provider is None else provider.capabilities.max_context
+    return getattr(getattr(provider, "capabilities", None), "max_context", None)
 
 
 def context_segment(ctx: Any) -> Segment | None:
@@ -480,6 +473,102 @@ def time_segment(ctx: Any) -> Segment | None:
     return Segment(f"{elapsed:.1f}s", "muted", "icon.thinking")
 
 
+def brand_segment(ctx: Any) -> Segment:
+    state = _state(ctx)
+    ui = getattr(ctx, "ui", None)
+    theme = getattr(ui, "theme", None)
+    runtime = getattr(ui, "runtime", ui)
+    frame = int(getattr(runtime, "_spinner_frame", 0))
+    started = state.get("_turn_started")
+    if isinstance(started, (int, float)):
+        spinner = theme_spinner(theme, "spinner.status", frame, ("*",))
+        elapsed = max(0, int(monotonic() - started))
+        return Segment(f"{spinner} orcha {elapsed}s", "accent")
+    return Segment("orcha", "accent")
+
+
+def token_rate_segment(ctx: Any) -> Segment | None:
+    state = _state(ctx)
+    started = state.get("_turn_started")
+    elapsed = (
+        monotonic() - started
+        if isinstance(started, (int, float))
+        else state.get("_last_turn_elapsed", 0)
+    )
+    tokens = int(state.get("output_tokens", 0)) - int(state.get("_turn_output_start", 0))
+    if not elapsed or tokens <= 0:
+        return None
+    return Segment(f"{tokens / max(0.001, elapsed):.1f} tok/s", "muted")
+
+
+def cache_hit_segment(ctx: Any) -> Segment | None:
+    state = _state(ctx)
+    total = int(state.get("input_tokens", 0))
+    if not total or not state.get("cache_known"):
+        return None
+    percent = min(100.0, int(state.get("cache_read_tokens", 0)) / total * 100)
+    return Segment(f"cache {percent:.0f}%", "muted")
+
+
+def hostname_segment(ctx: Any) -> Segment:
+    state = _state(ctx)
+    if "_hostname" not in state:
+        state["_hostname"] = socket.gethostname().split(".", 1)[0]
+    return Segment(str(state["_hostname"]), "muted")
+
+
+def vim_segment(ctx: Any) -> Segment | None:
+    ui = getattr(ctx, "ui", None)
+    application = getattr(ui, "application", None)
+    if application is not None:
+        if application.editing_mode != EditingMode.VI:
+            return None
+        mode = application.vi_state.input_mode.value
+    else:
+        mode = getattr(ui, "vim_mode", None)
+    return Segment(str(mode).upper(), "warning") if mode else None
+
+
+def _refresh_pr(ctx: Any, state: dict[str, Any], scope: str) -> None:
+    value = None
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", "--json", "number,state"],
+            cwd=scope,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data.get("state") == "OPEN":
+                value = f"PR #{int(data['number'])}"
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError):
+        pass
+    finally:
+        with _GIT_LOCK:
+            if state.get("_pr_scope") == scope:
+                state.update(_pr_text=value, _pr_at=monotonic(), _pr_refreshing=False)
+        _notify_invalidation(ctx)
+
+
+def pr_segment(ctx: Any) -> Segment | None:
+    """Read a bounded background cache; never run gh in a terminal paint."""
+    state = _state(ctx)
+    scope = str(ctx.cfg.cwd)
+    with _GIT_LOCK:
+        if state.get("_pr_scope") != scope:
+            state.update(_pr_scope=scope, _pr_text=None, _pr_at=0, _pr_refreshing=False)
+        if monotonic() - state.get("_pr_at", 0) >= 60 and not state.get("_pr_refreshing"):
+            state["_pr_refreshing"] = True
+            threading.Thread(
+                target=_refresh_pr, args=(ctx, state, scope), daemon=True, name="orcha-status-pr"
+            ).start()
+    value = state.get("_pr_text")
+    return Segment(value, "accent") if value else None
+
+
 def record_usage(event: Any, state: dict[str, Any]) -> None:
     usage = getattr(event.chunk, "usage_metadata", None)
     if not isinstance(usage, Mapping):
@@ -523,6 +612,7 @@ def reset_accounting(state: dict[str, Any]) -> None:
 
 def record_turn_start(state: dict[str, Any]) -> None:
     state["_turn_started"] = monotonic()
+    state["_turn_output_start"] = int(state.get("output_tokens", 0))
 
 
 def record_turn_end(state: dict[str, Any]) -> None:
@@ -532,6 +622,14 @@ def record_turn_end(state: dict[str, Any]) -> None:
 
 
 BUILTIN_SEGMENTS = (
+    ("brand", brand_segment),
+    ("token_rate", token_rate_segment),
+    ("cache_hit", cache_hit_segment),
+    ("time_spent", time_segment),
+    ("hostname", hostname_segment),
+    ("vim", vim_segment),
+    ("pr", pr_segment),
+    ("usage", cost_segment),
     ("model", model_segment),
     ("mode", mode_segment),
     ("path", path_segment),
@@ -572,9 +670,7 @@ def _resolved_names(ctx: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if config.left is None and config.right is None:
         builtin_names = {name for name, _render in BUILTIN_SEGMENTS}
         custom = tuple(
-            entry.name
-            for entry in ctx.registry.status_segments
-            if entry.name not in builtin_names
+            entry.name for entry in ctx.registry.status_segments if entry.name not in builtin_names
         )
         left = (*left, *custom)
     return left, right
@@ -653,7 +749,9 @@ def _style(theme: Any, token: str, *, transparent: bool) -> str:
 def _symbols(theme: Any, ascii_mode: bool) -> Mapping[str, Any]:
     if ascii_mode:
         return resolve_symbols("ascii")
-    symbols = theme.get("symbols") if isinstance(theme, Mapping) else getattr(theme, "symbols", None)
+    symbols = (
+        theme.get("symbols") if isinstance(theme, Mapping) else getattr(theme, "symbols", None)
+    )
     return symbols if isinstance(symbols, Mapping) else resolve_symbols("unicode")
 
 
@@ -685,7 +783,12 @@ def _segment_fragments(
 ) -> list[tuple[str, str]]:
     icon = symbols.get(segment.icon_key, "") if segment.icon_key else ""
     label = f"{icon} {segment.text}" if icon else segment.text
-    return [(_style(theme, segment.token, transparent=transparent), f" {_safe_text(label, ascii_mode)} ")]
+    return [
+        (
+            _style(theme, segment.token, transparent=transparent),
+            f" {_safe_text(label, ascii_mode)} ",
+        )
+    ]
 
 
 def _separator_fragments(

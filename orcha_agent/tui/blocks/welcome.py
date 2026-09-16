@@ -49,7 +49,11 @@ def _logo(block: Block, *, compact: bool) -> Text:
     for row, line in enumerate(lines):
         row_styles = styles[row] if isinstance(styles, Sequence) and row < len(styles) else ()
         for column, character in enumerate(line):
-            style = row_styles[column] if isinstance(row_styles, Sequence) and column < len(row_styles) else None
+            style = (
+                row_styles[column]
+                if isinstance(row_styles, Sequence) and column < len(row_styles)
+                else None
+            )
             rendered.append(character, style=style)
         if row < len(lines) - 1:
             rendered.append("\n")
@@ -140,6 +144,12 @@ def _hint_lines(value: object, width: int, theme: Any) -> list[Text]:
     return [*rendered, *([Text()] * (_HINT_SLOTS - len(rendered)))]
 
 
+def _first_run(block: Block) -> bool:
+    return bool(block.data.get("first_run")) or any(
+        "provider unavailable" in str(hint) for hint in block.data.get("hints", ())
+    )
+
+
 def _right(block: Block, width: int, *, ascii_only: bool, theme: Any) -> Text:
     rule = "----" if ascii_only else "────"
     lines = [
@@ -147,8 +157,21 @@ def _right(block: Block, width: int, *, ascii_only: bool, theme: Any) -> Text:
         *(Text(session) for session in _slots(block.data.get("sessions"), _SESSION_SLOTS)),
         Text(f"{rule} Hints", style="dim"),
         *_hint_lines(block.data.get("hints"), max(1, width - 1), theme),
-        *(Text(line) for line in _tip_lines(block.data.get("tip", ""), width)),
+        *(
+            Text(line)
+            for line in _tip_lines(
+                "Configure a provider with /login, then choose /model."
+                if _first_run(block)
+                else block.data.get("tip", ""),
+                width,
+            )
+        ),
     ]
+    news = block.data.get("whats_new", "/settings customizes your UI")
+    if width < 35:
+        news = "Try /settings"
+    if news and not str(lines[4]):
+        lines[4] = Text("New: " + str(news), style=str(theme_value(theme, "accent", "cyan")))
     rendered = Text()
     for index, line in enumerate(lines):
         indented = Text(" ") if line else Text()
@@ -166,7 +189,7 @@ def _left(block: Block, width: int) -> Text:
         Text("Welcome back!", style="bold"),
         Text(),
         *logo,
-        Text(),
+        Text(str(block.data.get("git", "")), style="dim"),
         Text(str(block.data.get("model", "")), style="dim"),
         Text(str(block.data.get("mode", "")), style="dim"),
         Text(str(block.data.get("cwd", "")), style="dim"),
@@ -211,9 +234,7 @@ def render(
         content: Any = table
     else:
         content = Text()
-        content.append(
-            _logo(block, compact=_logo_width(block) > inner)
-        )
+        content.append(_logo(block, compact=_logo_width(block) > inner))
         content.append("\n" + _line("Model", block.data.get("model", ""), inner))
         content.append("\n" + _line("Mode", block.data.get("mode", ""), inner))
         content.append("\n" + _line("Cwd", block.data.get("cwd", ""), inner))

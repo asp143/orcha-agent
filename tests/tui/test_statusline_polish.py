@@ -85,7 +85,7 @@ def test_default_statusline_matches_omp_order_separator_and_colors(tmp_path: Pat
     ctx = _ctx(tmp_path)
 
     assert PRESETS["default"] == (
-        ("model", "mode", "path", "git", "context", "cost"),
+        ("brand", "model", "mode", "path", "git", "context", "cost"),
         ("subagents", "session"),
     )
     assert [name for name, _segment in visible_segments(ctx)] == [
@@ -187,7 +187,10 @@ def test_context_gauge_has_twenty_cells_and_threshold_color(
     assert plain.count("━") == filled_cells
     assert plain.count("─") == 20 - filled_cells
     assert f"{percent:g}%" in plain
-    assert sum(text.count("━") for style, text in fragments if f"class:{token}" in style) == filled_cells
+    assert (
+        sum(text.count("━") for style, text in fragments if f"class:{token}" in style)
+        == filled_cells
+    )
     assert any(f"{percent:g}%" in text and f"class:{token}" in style for style, text in fragments)
 
 

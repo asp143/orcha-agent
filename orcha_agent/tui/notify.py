@@ -49,6 +49,11 @@ class DesktopNotifier:
         self._spawn = spawn
         self._run_terminal = run_terminal
         self._last_keypress = clock()
+        self._focused: bool | None = None
+
+    def set_focused(self, focused: bool) -> None:
+        """Accept focus-reporting events; inactivity remains a fallback."""
+        self._focused = focused
 
     @property
     def last_keypress(self) -> float:
@@ -64,7 +69,9 @@ class DesktopNotifier:
     async def notify(self, title: str, message: str) -> bool:
         """Return whether a backend was invoked; backend failures are contained."""
 
-        if not self.enabled or self.idle_seconds <= _IDLE_SECONDS:
+        if not self.enabled or self._focused is True:
+            return False
+        if self._focused is None and self.idle_seconds <= _IDLE_SECONDS:
             return False
         try:
             executable = self._which("notify-send")
@@ -83,7 +90,7 @@ class DesktopNotifier:
             return False
 
         def emit() -> None:
-            self.output.write_raw(f"\x1b]9;{payload}\x07")
+            self.output.write_raw(f"\x1b]9;{payload}\x07\x07")
             self.output.flush()
 
         try:
@@ -93,7 +100,6 @@ class DesktopNotifier:
         except (Exception, KeyboardInterrupt, asyncio.CancelledError):
             return False
         return True
-
 
 
 __all__ = ["DesktopNotifier"]

@@ -13,6 +13,7 @@ from .history import HistoryOverlay
 from .model import ModelOverlay
 from .select import SelectList
 from .session import SessionOverlay
+from .settings import SettingsOverlay
 from .theme import ThemeOverlay
 from .tree import TreeOverlay
 
@@ -21,6 +22,7 @@ def register_builtin_overlays(registry: Any) -> None:
     """Claim the first-party overlay names before third-party plugins load."""
 
     factories = {
+        "settings": lambda ctx, **_payload: SettingsOverlay(ctx),
         "model": lambda ctx, **_payload: ModelOverlay(ctx),
         "session": lambda ctx, **_payload: SessionOverlay(ctx),
         "hub": lambda ctx, **_payload: HubOverlay(ctx),
@@ -48,6 +50,7 @@ __all__ = [
     "Overlay",
     "SelectList",
     "SessionOverlay",
+    "SettingsOverlay",
     "ThemeOverlay",
     "TreeOverlay",
     "register_builtin_overlays",
