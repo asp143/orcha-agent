@@ -89,6 +89,36 @@ class TmuxDriver:
         command = text.strip()
         if command in {"turn-a", "turn-b"}:
             await self.stream_turn(command[-1])
+        elif command == "turn-resize":
+            await self.stream_turn("resize")
+        elif command.startswith("paste-first"):
+            self.signal("paste-submitted:" + text.replace("\n", "|"))
+        elif command == "mouse":
+            await self.present(TurnStart(thread_id="tmux", text="mouse"))
+            await self.present(
+                ModelChunk(
+                    chunk=AIMessageChunk(content="\n".join(f"- MOUSE_{i:02d}" for i in range(80))),
+                    role="main",
+                    source_id="main",
+                )
+            )
+            self.signal("mouse-active")
+            await asyncio.sleep(2)
+            await self.present(TurnEnd(thread_id="tmux"))
+            self.signal("mouse-done")
+        elif command == "card":
+            await self.present(TurnStart(thread_id="tmux", text="card"))
+            await self.present(ToolCallStart(name="bash", id="card", args={"command": "demo"}))
+            block = next(
+                block for block in reversed(self.runtime.frame.blocks) if block.kind == "tool"
+            )
+            block.update(result={"stdout": "\n".join(f"CARD_ROW_{i:02d}" for i in range(20))})
+            self.runtime.application.invalidate()
+            self.signal("card-active")
+            await asyncio.sleep(2)
+            await self.present(ToolCallEnd(name="bash", id="card", result={"stdout": "done"}))
+            await self.present(TurnEnd(thread_id="tmux"))
+            self.signal("card-done")
         elif command == "fanout":
             await self.fanout()
 
