@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .select import SelectList
+from .select import SelectList, _fuzzy
 
 
 def _age(created: Any) -> str:
@@ -113,6 +113,7 @@ class SessionOverlay(SelectList[Any]):
     def __init__(self, ctx: Any) -> None:
         sessions = tuple(ctx.session.list())
         labels: dict[str, str] = {}
+        self._search_labels: dict[str, tuple[str, str, str]] = {}
         for session in sessions:
             session_id = str(getattr(session, "thread_id", ""))
             title = (
@@ -124,6 +125,11 @@ class SessionOverlay(SelectList[Any]):
             cwd = _shorten_path(getattr(session, "cwd", ""))
             age = _age(getattr(session, "created", None))
             labels[session_id] = f"{title} · {age} · {cwd} · {count} entries"
+            self._search_labels[session_id] = (
+                labels[session_id],
+                session_id,
+                str(getattr(session, "cwd", "")),
+            )
 
         def label(session: Any) -> str:
             return labels[str(getattr(session, "thread_id", ""))]
@@ -140,6 +146,16 @@ class SessionOverlay(SelectList[Any]):
             empty_text="No saved sessions",
             on_accept=resume,
         )
+
+    def _filtered_pairs(self) -> list[tuple[int, Any]]:
+        return [
+            (offset, session)
+            for offset, session in enumerate(self.items)
+            if any(
+                _fuzzy(self.filter.text, field)
+                for field in self._search_labels[str(getattr(session, "thread_id", ""))]
+            )
+        ]
 
 
 __all__ = ["SessionOverlay"]
