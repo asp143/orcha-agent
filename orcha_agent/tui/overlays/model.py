@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from prompt_toolkit.formatted_text import StyleAndTextTuples
-
 from .select import SelectList
 from orcha_agent.tui.statusline import _quantity
 from orcha_agent.core.catalog import get_catalog
@@ -84,36 +82,18 @@ class ModelOverlay(SelectList[str]):
             "Model catalog" if browse else "Models",
             models,
             label=labels.__getitem__,
+            group=self._model_group,
             empty_text="No models registered",
             on_accept=accept,
         )
 
-    def _fragments(self) -> StyleAndTextTuples:
-        filtered = self._filtered_pairs()
-        if not filtered:
-            return super()._fragments()
-        fragments: StyleAndTextTuples = []
-        if self._error is not None:
-            fragments.append(("class:error", f"  {self._error}\n"))
-        previous = None
-        for visible, (_original, spec) in enumerate(filtered):
-            provider = (
-                "Roles"
-                if spec.startswith("@")
-                else "Catalog"
-                if spec == "__browse__"
-                else spec.partition(":")[0]
-            )
-            if provider != previous:
-                fragments.append(("class:overlay.section", f" {provider}\n"))
-                previous = provider
-            current = visible == self.index
-            if current:
-                fragments.append(("[SetCursorPosition]", ""))
-            marker = "›" if current else " "
-            style = "class:overlay.selection" if current else "class:overlay.item"
-            fragments.append((style, f" {marker} {self.label(spec)}\n"))
-        return fragments
+    @staticmethod
+    def _model_group(spec: str) -> str:
+        if spec.startswith("@"):
+            return "Roles"
+        if spec == "__browse__":
+            return "Catalog"
+        return spec.partition(":")[0]
 
 
 __all__ = ["ModelOverlay"]

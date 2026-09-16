@@ -124,7 +124,8 @@ def test_model_browser_has_metadata_and_search(tmp_path):
     assert "anthropic:claude-sonnet-4-5" in picker.filtered_items
     assert len(picker.filtered_items) < len(picker.items)
     content = picker.list_control.create_content(160, 10)
-    assert "sonnet" in "".join(text for _, text in content.get_line(0))
+    assert "anthropic" in "".join(text for _, text in content.get_line(0))
+    assert "sonnet" in "".join(text for _, text in content.get_line(content.cursor_position.y))
 
 
 def test_invalid_context_override(tmp_path):

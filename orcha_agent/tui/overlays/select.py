@@ -43,6 +43,7 @@ class _SelectControl(FormattedTextControl):
         picker = self.picker
         pairs = picker._filtered_pairs()
         error_rows = int(picker._error is not None)
+        grouped = picker._grouped_rows()
 
         def line(index: int) -> StyleAndTextTuples:
             if error_rows and index == 0:
@@ -50,6 +51,10 @@ class _SelectControl(FormattedTextControl):
             index -= error_rows
             if not pairs:
                 return [("class:overlay.empty", f"  {picker.empty_text}")]
+            if grouped is not None:
+                index, header = grouped[0][index]
+                if header is not None:
+                    return [("class:overlay.section", f" {header}")]
             original, item = pairs[index]
             fragments = picker._item_fragments(index, original, item)
             if index == picker.index:
@@ -59,8 +64,8 @@ class _SelectControl(FormattedTextControl):
 
         return UIContent(
             get_line=line,
-            line_count=max(1, len(pairs)) + error_rows,
-            cursor_position=Point(x=0, y=picker.index + error_rows),
+            line_count=max(1, len(grouped[0]) if grouped is not None else len(pairs)) + error_rows,
+            cursor_position=Point(x=0, y=picker._item_row(picker.index) + error_rows),
             show_cursor=False,
         )
 
@@ -74,6 +79,7 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         items: Sequence[T],
         *,
         label: Callable[[T], str] = str,
+        group: Callable[[T], str] | None = None,
         multi: bool = False,
         page_size: int = 8,
         empty_text: str = "No matches",
@@ -87,6 +93,10 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         self.items = tuple(items)
         self._filter_cache: tuple[tuple[T, ...], str, list[tuple[int, T]]] | None = None
         self.label = label
+        self._group = group
+        self._group_cache: (
+            tuple[list[tuple[int, T]], list[tuple[int, str | None]], list[int]] | None
+        ) = None
         self.multi = multi
         self._init_scrolling(page_size)
         self.empty_text = empty_text
@@ -124,11 +134,9 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         if prefix is not None:
             body_parts.extend([prefix, Window(char="─", height=1, style="class:overlay.divider")])
         self.list_window = Window(
-            self.list_control, always_hide_cursor=True,
-            get_vertical_scroll=lambda window: max(
-                self.index // self.page_size * self.page_size,
-                self.index - (window.render_info.window_height if window.render_info else self.page_size) + 1,
-            ),
+            self.list_control,
+            always_hide_cursor=True,
+            get_vertical_scroll=self._vertical_scroll,
         )
         self.footer_control = FormattedTextControl(lambda: self._scroll_footer("select"))
         body_parts.extend(
@@ -256,6 +264,47 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         self._error = f"{type(exc).__name__}: {exc}"
         event.app.invalidate()
 
+    def _grouped_rows(self) -> tuple[list[tuple[int, str | None]], list[int]] | None:
+        """Map selectable indices to screen rows without formatting offscreen items."""
+        if self._group is None:
+            return None
+        pairs = self._filtered_pairs()
+        cached = self._group_cache
+        if cached is not None and cached[0] is pairs:
+            return cached[1], cached[2]
+        rows: list[tuple[int, str | None]] = []
+        item_rows: list[int] = []
+        previous = None
+        for visible, (_original, item) in enumerate(pairs):
+            group = self._group(item)
+            if group != previous:
+                rows.append((visible, group))
+                previous = group
+            item_rows.append(len(rows))
+            rows.append((visible, None))
+        self._group_cache = (pairs, rows, item_rows)
+        return rows, item_rows
+
+    def _item_row(self, index: int, *, include_header: bool = False) -> int:
+        grouped = self._grouped_rows()
+        if grouped is None or not grouped[1]:
+            return index
+        rows, item_rows = grouped
+        row = item_rows[index]
+        if include_header and row and rows[row - 1][0] == index:
+            row -= 1
+        return row
+
+    def _vertical_scroll(self, window: Window) -> int:
+        height = window.render_info.window_height if window.render_info else self.page_size
+        page_start = self._item_row(
+            self.index // self.page_size * self.page_size, include_header=True
+        )
+        error_rows = int(self._error is not None)
+        if page_start:
+            page_start += error_rows
+        return max(page_start, self._item_row(self.index) + error_rows - height + 1)
+
     def _item_fragments(self, visible: int, original: int, item: T) -> StyleAndTextTuples:
         current = visible == self.index
         marker = (
@@ -274,7 +323,13 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         if not filtered:
             fragments.append(("class:overlay.empty", f"  {self.empty_text}\n"))
             return fragments
-        for visible, (original, item) in enumerate(filtered):
+        grouped = self._grouped_rows()
+        rows = grouped[0] if grouped is not None else ((i, None) for i in range(len(filtered)))
+        for visible, header in rows:
+            if header is not None:
+                fragments.append(("class:overlay.section", f" {header}\n"))
+                continue
+            original, item = filtered[visible]
             current = visible == self.index
             if current:
                 fragments.append(("[SetCursorPosition]", ""))
