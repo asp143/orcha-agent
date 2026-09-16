@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import inspect
 import os
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import AsyncGenerator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -168,9 +169,7 @@ class PathIndex:
     def _walk(self) -> tuple[str, ...]:
         root_rules = self._read_rules(self.cwd)
         found: list[str] = []
-        stack: list[tuple[Path, str, list[_IgnoreRule]]] = [
-            (self.cwd, "", root_rules)
-        ]
+        stack: list[tuple[Path, str, list[_IgnoreRule]]] = [(self.cwd, "", root_rules)]
         while stack and len(found) < self.cap:
             directory, prefix, rules = stack.pop()
             try:
@@ -191,20 +190,17 @@ class PathIndex:
                 if not ignored:
                     found.append(relative + "/" if is_directory else relative)
                 if is_directory and (
-                    not ignored
-                    or any(rule.can_reinclude_below(relative) for rule in rules)
+                    not ignored or any(rule.can_reinclude_below(relative) for rule in rules)
                 ):
                     child = Path(entry.path)
-                    stack.append(
-                        (child, relative, [*rules, *self._read_rules(child)])
-                    )
+                    stack.append((child, relative, [*rules, *self._read_rules(child)]))
         return tuple(sorted(found))
 
     def paths(self) -> tuple[str, ...]:
         now = time.monotonic()
-        if not self._cache or now - self._cached_at >= self.ttl:
+        if not self._cached_at or now - self._cached_at >= self.ttl:
             self._cache = self._walk()
-            self._cached_at = now
+            self._cached_at = time.monotonic()
         return self._cache
 
 
@@ -236,6 +232,26 @@ class ComposerCompleter(Completer):
     def __init__(self, registry: Any, cwd: str | Path) -> None:
         self.registry = registry
         self.path_index = PathIndex(cwd)
+
+    def argument_hint(self, text: str) -> str:
+        """Use registered usage metadata when present, with core command fallbacks."""
+        if not text.startswith("/") or "\n" in text:
+            return ""
+        name = text[1:].rstrip()
+        registration = self.registry.commands.get(name)
+        if registration is None:
+            return ""
+        usage = getattr(registration, "argument_hint", "") or getattr(registration, "usage", "")
+        defaults = {
+            "model": "[provider/model]",
+            "theme": "[name]",
+            "session": "[name]",
+            "thinking": "[off|low|medium|high|max]",
+            "compact": "[instructions]",
+            "resume": "[session]",
+        }
+        hint = usage or defaults.get(name, "")
+        return ("" if text.endswith(" ") else " ") + str(hint) if hint else ""
 
     def _commands(self, document: Document) -> Iterable[Completion]:
         before = document.text_before_cursor
@@ -296,6 +312,19 @@ class ComposerCompleter(Completer):
                 continue
             for item in result or ():
                 yield item if isinstance(item, Completion) else Completion(str(item))
+
+    async def get_completions_async(
+        self,
+        document: Document,
+        complete_event: CompleteEvent,
+    ) -> AsyncGenerator[Completion, None]:
+        before = document.text_before_cursor
+        if not before.startswith("/") and ("@" in before or complete_event.completion_requested):
+            # Directory walks must not block keystrokes or streaming paints.
+            # Plugin callbacks still execute on the application thread below.
+            await asyncio.to_thread(self.path_index.paths)
+        for completion in self.get_completions(document, complete_event):
+            yield completion
 
     def get_completions(
         self,

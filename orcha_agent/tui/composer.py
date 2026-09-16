@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -9,19 +11,39 @@ from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import History
 from prompt_toolkit.layout import HSplit, VSplit, Window
-from prompt_toolkit.layout.containers import AnyContainer
+from prompt_toolkit.layout.containers import AnyContainer, DynamicContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import Margin, ScrollbarMargin
-from prompt_toolkit.layout.processors import BeforeInput, ConditionalProcessor
+from prompt_toolkit.layout.processors import AfterInput, BeforeInput, ConditionalProcessor
 from prompt_toolkit.utils import get_cwidth
 
-_SHAPES = frozenset({"box", "claude", "borderless"})
+_SHAPES = frozenset({"box", "claude", "borderless", "band", "rail"})
 _PADDING_X = 2
 _PLACEHOLDER = "Ask anything · / commands · @ files · ! shell"
+
+
+def repair_paste(text: str) -> str:
+    """Repair tmux extended-key control bytes before removing terminal controls."""
+
+    def decode(match: re.Match[str]) -> str:
+        code = int(match.group(1))
+        if 65 <= code <= 90 or 97 <= code <= 122:
+            return chr(code & 31)
+        return ""
+
+    text = re.sub(r"\x1b\[(\d+);5u", decode, text)
+    text = re.sub(r"\x1b\[27;5;(\d+)~", decode, text)
+    # A paste is data, never executable terminal styling or cursor movement.
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join(c for c in text if c in "\n\t" or (ord(c) >= 32 and not 127 <= ord(c) < 160))
 
 
 def _width(value: str) -> int:
@@ -166,6 +188,9 @@ class Composer:
     ) -> None:
         if shape not in _SHAPES:
             raise ValueError(f"unknown composer shape {shape!r}")
+        self._pastes: dict[str, str] = {}
+        self._paste_serial = 0
+        self._cleared_draft = ""
         self.shape = shape
         self.theme = theme
         self._model = model
@@ -177,13 +202,16 @@ class Composer:
             multiline=True,
             accept_handler=accept_handler,
         )
+        self.key_bindings = self._input_bindings()
         self.control = BufferControl(
             buffer=self.buffer,
+            key_bindings=self.key_bindings,
             input_processors=[
                 ConditionalProcessor(
                     BeforeInput(self.placeholder_fragments),
                     filter=Condition(lambda: not self.buffer.text),
-                )
+                ),
+                AfterInput(self.ghost_fragments),
             ],
         )
         self.input_window = Window(
@@ -200,20 +228,109 @@ class Composer:
                 else [ScrollbarMargin(display_arrows=False)]
             ),
         )
-        self.container = self._build_container()
+        self._shape_container = self._build_container()
+        # Keep the parent layout's container identity stable during live settings changes.
+        self.container = HSplit(
+            [DynamicContainer(lambda: self._shape_container)],
+            height=lambda: Dimension.exact(self.height_for_width(self._current_width())),
+        )
         self.completion_container = Window(
-            FormattedTextControl(
-                lambda: self.completion_fragments(self._current_width())
-            ),
+            FormattedTextControl(lambda: self.completion_fragments(self._current_width())),
             height=lambda: Dimension.exact(self.completion_row_count()),
             dont_extend_height=True,
         )
 
+    def set_shape(self, shape: str) -> None:
+        """Replace only chrome while retaining input, focus, undo and completion state."""
+        if shape not in _SHAPES:
+            raise ValueError(f"unknown composer shape {shape!r}")
+        if shape == self.shape:
+            return
+        self.shape = shape
+        self.input_window.left_margins = [_BoxMargin(self, left=True)] if shape == "box" else []
+        self.input_window.right_margins = (
+            [_BoxMargin(self, left=False)]
+            if shape == "box"
+            else [ScrollbarMargin(display_arrows=False)]
+        )
+        self._shape_container = self._build_container()
+        app = get_app_or_none()
+        if app is not None:
+            app.invalidate()
+
+    def insert_paste(self, text: str) -> None:
+        text = repair_paste(text)
+        lines = text.count("\n") + 1
+        if lines >= 5 or len(text) >= 1000:
+            self._paste_serial += 1
+            chip = f"[Pasted {lines} lines #{self._paste_serial}]"
+            self._pastes[chip] = text
+            text = chip
+        self.buffer.insert_text(text)
+
+    def expanded_text(self, text: str) -> str:
+        """Resolve opaque paste chips without recursively expanding pasted content."""
+        if not self._pastes:
+            return text
+        pattern = "|".join(re.escape(chip) for chip in self._pastes)
+        return re.sub(pattern, lambda match: self._pastes[match.group()], text)
+
+    def clear_draft(self) -> None:
+        if self.buffer.text:
+            self._cleared_draft = self.expanded_text(self.buffer.text)
+            self.buffer.reset()
+            self.forget_pastes()
+
+    def recall_draft(self) -> None:
+        if self._cleared_draft:
+            self.buffer.insert_text(self._cleared_draft)
+            self._cleared_draft = ""
+
+    def forget_pastes(self) -> None:
+        """Release payloads after a submission resets the buffer and undo stack."""
+        self._pastes.clear()
+
+    def configure_keys(self, effective: Mapping[str, tuple[str, ...]]) -> None:
+        self.key_bindings = self._input_bindings(effective)
+        self.control.key_bindings = self.key_bindings
+
+    def _input_bindings(
+        self, effective: Mapping[str, tuple[str, ...]] | None = None
+    ) -> KeyBindings:
+        from .keys import DEFAULT_BINDINGS
+
+        effective = DEFAULT_BINDINGS if effective is None else effective
+        bindings = KeyBindings()
+
+        @bindings.add(Keys.BracketedPaste)
+        def paste(event: Any) -> None:
+            self.insert_paste(event.data)
+
+        def clear(event: Any) -> None:
+            del event
+            self.clear_draft()
+
+        def recall(event: Any) -> None:
+            del event
+            self.recall_draft()
+
+        for action, handler in (("clear_draft", clear), ("recall_draft", recall)):
+            for keys in effective.get(action, ()):
+                bindings.add(*keys.split())(handler)
+        return bindings
+
+    def ghost_fragments(self) -> StyleAndTextTuples:
+        if self.buffer.cursor_position != len(self.buffer.text):
+            return []
+        hint = getattr(self.buffer.completer, "argument_hint", None)
+        value = hint(self.buffer.text) if hint else ""
+        return [("class:composer.placeholder", value)] if value else []
+
     @property
     def chrome_lines(self) -> int:
-        if self.shape == "borderless":
+        if self.shape in {"borderless", "rail"}:
             return 0
-        return 1 if self.shape == "box" else 2
+        return 1 if self.shape in {"box", "band"} else 2
 
     @property
     def border_style(self) -> str:
@@ -258,11 +375,10 @@ class Composer:
                 chip = _truncate(chip, max(0, available - 1))
             fill = max(0, available - _width(chip))
             return _truncate(
-                f"{top_left}{horizontal * 2}{chip}"
-                f"{horizontal * fill}{horizontal * 2}{top_right}",
+                f"{top_left}{horizontal * 2}{chip}{horizontal * fill}{horizontal * 2}{top_right}",
                 width,
             )
-        if self.shape == "claude":
+        if self.shape in {"claude", "band"}:
             chip = _truncate(chip, width)
             return f"{horizontal * max(0, width - _width(chip))}{chip}"
         return ""
@@ -286,6 +402,18 @@ class Composer:
     def _build_container(self) -> AnyContainer:
         if self.shape == "borderless":
             return self.input_window
+        if self.shape == "rail":
+            return VSplit(
+                [
+                    Window(
+                        width=1,
+                        char=self._symbol("boxRound.vertical", "│"),
+                        style=lambda: self.border_style,
+                    ),
+                    Window(width=1),
+                    self.input_window,
+                ]
+            )
         top = Window(
             FormattedTextControl(self._top_fragments),
             height=1,
@@ -309,12 +437,10 @@ class Composer:
             )
         else:
             middle = self.input_window
-        rows = [top, middle] if self.shape == "box" else [top, middle, bottom]
+        rows = [top, middle] if self.shape in {"box", "band"} else [top, middle, bottom]
         return HSplit(
             rows,
-            height=lambda: Dimension.exact(
-                self.height_for_width(self._current_width())
-            ),
+            height=lambda: Dimension.exact(self.height_for_width(self._current_width())),
         )
 
     def _current_width(self) -> int:
@@ -322,7 +448,6 @@ class Composer:
         if app is None:
             return 80
         return max(1, app.output.get_size().columns)
-
 
     def placeholder_fragments(self) -> StyleAndTextTuples:
         if self.buffer.text:
@@ -394,10 +519,11 @@ class Composer:
             if row_index < start + visible - 1:
                 rendered.append(("", "\n"))
         return rendered
+
     def _content_width(self, width: int) -> int:
         if self.shape == "box":
             return max(1, width - (_PADDING_X + 1) * 2)
-        return max(1, width - (2 if self.shape == "claude" else 0) - 1)
+        return max(1, width - (2 if self.shape in {"claude", "rail"} else 0) - 1)
 
     def render_lines(
         self,
@@ -412,12 +538,22 @@ class Composer:
         scrollbar_rows = scrollbar_rows or set()
         if self.shape == "borderless":
             return [_truncate(line, width).ljust(width) for line in content]
+        if self.shape == "rail":
+            marker = self._symbol("boxRound.vertical", "│")
+            return [
+                f"{marker} {_truncate(line, max(0, width - 2))}"[:width].ljust(width)
+                for line in content
+            ]
+        if self.shape == "band":
+            return [
+                self._top_line(width),
+                *[_truncate(line, width).ljust(width) for line in content],
+            ]
         if self.shape == "claude":
             marker = self._prompt_marker()
             horizontal = self._symbol("boxRound.horizontal", "─")
             body = [
-                f"{marker} {_truncate(line, max(1, width - 2))}".ljust(width)
-                for line in content
+                f"{marker} {_truncate(line, max(1, width - 2))}".ljust(width) for line in content
             ]
             return [self._top_line(width), *body, horizontal * width]
         horizontal = self._symbol("boxRound.horizontal", "─")
@@ -431,8 +567,7 @@ class Composer:
             last = index == len(content) - 1
             if last:
                 rows.append(
-                    f"{bottom_left}{horizontal} {text.ljust(inner)} "
-                    f"{horizontal}{bottom_right}"
+                    f"{bottom_left}{horizontal} {text.ljust(inner)} {horizontal}{bottom_right}"
                 )
             else:
                 border = self._scrollbar_marker() if index in scrollbar_rows else vertical

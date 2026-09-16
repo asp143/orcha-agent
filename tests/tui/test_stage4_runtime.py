@@ -822,7 +822,10 @@ async def test_streaming_submission_modes_and_slash_command_dispatch() -> None:
         runtime._queue_draft(event)
 
         runtime.buffer.text = "also after"
+        runtime.buffer.cursor_position = len(runtime.buffer.text)
         runtime._newline_or_followup(event)
+        assert runtime.buffer.text == "also after\n"
+        runtime._queue_draft(event)
 
         runtime.buffer.text = "/keys"
         runtime._accept(runtime.buffer)
@@ -931,6 +934,10 @@ async def test_streaming_enter_injects_at_tool_boundary_while_queue_keys_follow_
         pipe.send_text("alt follow-up")
         pipe.send_bytes(b"\x1b\r")
         await asyncio.sleep(0.05)
+        assert runtime.buffer.text == "alt follow-up\n"
+        assert len(runtime.queue.entries) == 2
+        pipe.send_bytes(b"\x11")
+        await asyncio.sleep(0.03)
         assert [(item.text, item.mode) for item in runtime.queue.entries] == [
             ("steer now", "steer"),
             ("ctrl follow-up", "follow_up"),

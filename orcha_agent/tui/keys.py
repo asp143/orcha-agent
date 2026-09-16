@@ -23,6 +23,8 @@ DEFAULT_BINDINGS: dict[str, tuple[str, ...]] = {
     "history_search": ("c-r",),
     "external_editor": ("c-g",),
     "clear_screen": ("c-l",),
+    "clear_draft": ("c-x c-k",),
+    "recall_draft": ("c-x c-r",),
     "interrupt": ("c-c",),
     "exit": ("c-d",),
     "tree": ("escape escape",),

@@ -8,6 +8,7 @@ from prompt_toolkit.completion import Completion
 from prompt_toolkit.utils import get_cwidth
 
 from orcha_agent.tui.composer import Composer
+from orcha_agent.tui.gallery_fixtures.composer import COMPOSER_LINES, PASTE_EXAMPLE, ghost_example
 from orcha_agent.tui.symbols import resolve_symbols
 
 
@@ -27,7 +28,7 @@ def _encode_trailing_spaces(value: str) -> str:
 
 
 @pytest.mark.parametrize("width", [80, 120])
-@pytest.mark.parametrize("shape", ["box", "claude"])
+@pytest.mark.parametrize("shape", ["box", "claude", "band", "rail"])
 def test_composer_chrome_golden(
     shape: str,
     width: int,
@@ -41,7 +42,7 @@ def test_composer_chrome_golden(
     actual = _encode_trailing_spaces(
         "\n".join(
             composer.render_lines(
-                ["first line", "last line"],
+                list(COMPOSER_LINES),
                 width,
                 scrollbar_rows={0},
             )
@@ -54,7 +55,7 @@ def test_composer_chrome_golden(
     assert golden.read_text() == actual
 
 
-@pytest.mark.parametrize("shape", ["box", "claude"])
+@pytest.mark.parametrize("shape", ["box", "claude", "band", "rail"])
 def test_ascii_composer_chrome_golden(
     shape: str,
     update_goldens: bool,
@@ -68,7 +69,7 @@ def test_ascii_composer_chrome_golden(
     actual = _encode_trailing_spaces(
         "\n".join(
             composer.render_lines(
-                ["first line", "last line"],
+                list(COMPOSER_LINES),
                 80,
                 scrollbar_rows={0},
             )
@@ -171,3 +172,25 @@ def test_empty_composer_uses_exact_dim_placeholder() -> None:
 
     composer.buffer.text = "x"
     assert composer.placeholder_fragments() == []
+
+
+def test_composer_paste_chip_golden(update_goldens: bool) -> None:
+    composer = Composer()
+    composer.insert_paste(PASTE_EXAMPLE)
+    actual = _encode_trailing_spaces(
+        "\n".join(composer.render_lines([composer.buffer.text], 80)) + "\n"
+    )
+    golden = GOLDEN_DIR / "composer-paste.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_composer_ghost_argument_golden(update_goldens: bool) -> None:
+    composer = Composer()
+    command, hint = ghost_example()
+    actual = _encode_trailing_spaces("\n".join(composer.render_lines([command + hint], 80)) + "\n")
+    golden = GOLDEN_DIR / "composer-ghost.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
