@@ -106,3 +106,13 @@ def test_welcome_falls_back_to_single_column_when_too_narrow() -> None:
     assert "…" not in rendered
     assert WIDE_LOGO[0].strip() in rendered
     assert "──── Recent sessions" in rendered
+
+
+def test_first_run_welcome_golden(update_goldens: bool) -> None:
+    data = {**SAMPLE, "hints": ["anthropic provider unavailable"]}
+    actual = _capture(80, data)
+    assert "Configure a provider" in actual
+    golden = GOLDEN_DIR / "welcome-first-run.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual

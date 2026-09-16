@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import shutil
 import subprocess
 import time
@@ -40,8 +41,17 @@ class DesktopNotifier:
         clock: Callable[[], float] = time.monotonic,
         which: Callable[[str], str | None] = shutil.which,
         spawn: Callable[[list[str]], Any] = _spawn,
+        osc9_supported: bool | None = None,
         run_terminal: Callable[[Callable[[], Any]], Any] = run_in_terminal,
     ) -> None:
+        self._osc9_supported = (
+            osc9_supported
+            if osc9_supported is not None
+            else (
+                bool(os.environ.get("WT_SESSION"))
+                or os.environ.get("TERM_PROGRAM", "").lower() in {"iterm.app", "wezterm", "ghostty"}
+            )
+        )
         self.enabled = enabled
         self.output = output
         self._clock = clock
@@ -49,6 +59,11 @@ class DesktopNotifier:
         self._spawn = spawn
         self._run_terminal = run_terminal
         self._last_keypress = clock()
+        self._focused: bool | None = None
+
+    def set_focused(self, focused: bool) -> None:
+        """Accept focus-reporting events; inactivity remains a fallback."""
+        self._focused = focused
 
     @property
     def last_keypress(self) -> float:
@@ -64,7 +79,9 @@ class DesktopNotifier:
     async def notify(self, title: str, message: str) -> bool:
         """Return whether a backend was invoked; backend failures are contained."""
 
-        if not self.enabled or self.idle_seconds <= _IDLE_SECONDS:
+        if not self.enabled or self._focused is True:
+            return False
+        if self._focused is None and self.idle_seconds <= _IDLE_SECONDS:
             return False
         try:
             executable = self._which("notify-send")
@@ -83,7 +100,7 @@ class DesktopNotifier:
             return False
 
         def emit() -> None:
-            self.output.write_raw(f"\x1b]9;{payload}\x07")
+            self.output.write_raw(f"\x1b]9;{payload}\x1b\\" if self._osc9_supported else "\x07")
             self.output.flush()
 
         try:
@@ -93,7 +110,6 @@ class DesktopNotifier:
         except (Exception, KeyboardInterrupt, asyncio.CancelledError):
             return False
         return True
-
 
 
 __all__ = ["DesktopNotifier"]

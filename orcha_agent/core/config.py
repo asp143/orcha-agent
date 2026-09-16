@@ -18,11 +18,21 @@ DEFAULT_MODEL = "anthropic:claude-opus-5"
 DEFAULT_MEMORY = ("AGENTS.md", "CLAUDE.md")
 
 STATUSLINE_PRESETS = frozenset(
-    {"default", "minimal", "compact", "full", "nerd", "ascii"}
+    {"default", "minimal", "compact", "full", "nerd", "ascii", "powerline"}
 )
 STATUSLINE_SEPARATORS = frozenset(
     {"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"}
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TuiConfig:
+    hyperlinks: bool = True
+    vim: bool = False
+    mouse: str = "scroll"
+    colorblind: bool = False
+    synchronized_output: bool = True
+    resize: str = "preserve"
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +302,7 @@ class Config:
     theme: str = "dark"
     symbols: str | None = None
     composer: str = "box"
+    tui: TuiConfig = field(default_factory=TuiConfig)
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
     model_roles: dict[str, str | list[str]] = field(default_factory=dict)
     agents: AgentsConfig = field(default_factory=AgentsConfig)
@@ -706,6 +717,26 @@ def load_config(
     providers = values.get("providers", {})
     plugins = values.get("plugins", {})
     ui = values.get("ui", {})
+    tui_values = values.get("tui", {})
+    if not isinstance(tui_values, dict):
+        parser.error("[tui] must be a TOML table")
+    tui_options = {}
+    for key, default in (("hyperlinks", True), ("vim", False), ("colorblind", False), ("synchronized_output", True)):
+        value = tui_values.get(key, default)
+        if not isinstance(value, bool):
+            parser.error(f"[tui] {key} must be true or false")
+        tui_options[key] = value
+    mouse = tui_values.get("mouse", "scroll")
+    if isinstance(mouse, bool):
+        mouse = "full" if mouse else "off"
+    if not isinstance(mouse, str) or mouse not in {"scroll", "full", "off"}:
+        parser.error("[tui] mouse must be scroll, full, or off")
+    resize = tui_values.get("resize", "preserve")
+    if not isinstance(resize, str) or resize not in {"preserve", "rebuild"}:
+        parser.error("[tui] resize must be preserve or rebuild")
+    tui_config = TuiConfig(**tui_options, mouse=mouse, resize=resize)
+    if isinstance(ui, dict):
+        ui = {**ui, **{key: value for key, value in tui_values.items() if key not in {*tui_options, "mouse", "resize"}}}
     pricing = values.get("pricing", {})
     agents = values.get("agents", {})
     advisor = values.get("advisor", {})
@@ -739,19 +770,22 @@ def load_config(
         symbols = None if bool(ui.get("icons", True)) else "ascii"
     elif isinstance(explicit_symbols, str) and explicit_symbols in {
         "unicode",
+        "colorblind",
         "nerd",
         "ascii",
     }:
         symbols = explicit_symbols
     else:
-        parser.error("[ui] symbols must be unicode, nerd, or ascii")
+        parser.error("[ui] symbols must be unicode, nerd, ascii, or colorblind")
     composer = ui.get("composer", "box")
     if not isinstance(composer, str) or composer not in {
         "box",
         "claude",
         "borderless",
+        "band",
+        "rail",
     }:
-        parser.error("[ui] composer must be box, claude, or borderless")
+        parser.error("[ui] composer must be box, claude, borderless, band, or rail")
     statusline = _statusline_config(ui.get("statusline", {}), parser)
     if "banner" in ui and not isinstance(ui["banner"], bool):
         parser.error("[ui] banner must be true or false")
@@ -787,6 +821,7 @@ def load_config(
         theme=theme,
         symbols=symbols,
         composer=composer,
+        tui=tui_config,
         statusline=statusline,
         model_roles=model_roles,
         agents=agent_config,

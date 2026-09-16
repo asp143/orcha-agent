@@ -1101,6 +1101,7 @@ dependencies = [
     { name = "langgraph-checkpoint-sqlite" },
     { name = "mcp" },
     { name = "prompt-toolkit" },
+    { name = "pyte" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1146,6 +1147,7 @@ requires-dist = [
     { name = "libsql", marker = "extra == 'turso'", specifier = ">=0.1.11,<0.2" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.53" },
+    { name = "pyte", specifier = ">=0.8.2,<0.9" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=15.0.0" },
@@ -1436,6 +1438,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/7e/ab/265f7dc69d28113ebba19092e57b075f41543b2ed048429c5f56e2b88eac/pyright-1.1.411.tar.gz", hash = "sha256:d885a0551f2e763b089a02702174e7f4ba77548cddabc972ab86d1f7f1b0f998", size = 4112861, upload-time = "2026-06-25T02:14:06.37Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0a/49/385be530a6a5b78d1cbcd5c2e38debc8959a2fc6bdb716f4e581002979fc/pyright-1.1.411-py3-none-any.whl", hash = "sha256:dc7c72a8e2700c55baa127554040e067041ea53ccfd50bf96308cc4291c7d5d9", size = 6181526, upload-time = "2026-06-25T02:14:04.691Z" },
+]
+
+[[package]]
+name = "pyte"
+version = "0.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/ab/b599762933eba04de7dc5b31ae083112a6c9a9db15b01d3109ad797559d9/pyte-0.8.2.tar.gz", hash = "sha256:5af970e843fa96a97149d64e170c984721f20e52227a2f57f0a54207f08f083f", size = 92301, upload-time = "2023-11-12T09:33:43.217Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/d0/bb522283b90853afbf506cd5b71c650cf708829914efd0003d615cf426cd/pyte-0.8.2-py3-none-any.whl", hash = "sha256:85db42a35798a5aafa96ac4d8da78b090b2c933248819157fc0e6f78876a0135", size = 31627, upload-time = "2023-11-12T09:33:41.096Z" },
 ]
 
 [[package]]

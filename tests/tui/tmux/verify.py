@@ -22,6 +22,7 @@ class TmuxHarness:
         os.close(descriptor)
         self.state_path = Path(state)
         self.state_path.unlink()
+        self.frames: dict[str, str] = {}
 
     def tmux(self, *args: str, check: bool = True) -> str:
         result = subprocess.run(
@@ -193,6 +194,68 @@ class TmuxHarness:
             raise AssertionError(f"resize left multiple visible frames: {frames}")
         return frames
 
+    def verify_paste(self) -> dict[str, Any]:
+        self.frames["before_paste"] = self.capture()
+        payload = "paste-first\npaste-second\npaste-third\nfour\nfive\nsix"
+        self.tmux("set-buffer", "--", payload)
+        self.tmux("paste-buffer", "-p", "-t", self.session)
+        self.wait_until(lambda: "Pasted" in self.capture(), "collapsed paste")
+        self.frames["after_paste"] = self.capture()
+        if any(state.startswith("paste-submitted:") for state in self.states()):
+            raise AssertionError("paste submitted without Enter")
+        self.tmux("send-keys", "-t", self.session, "Enter")
+        expected = "paste-submitted:" + payload.replace("\n", "|")
+        self.wait_until(lambda: expected in self.states(), "whole paste submission")
+        return {"lines": 6, "submitted_before_enter": False, "payload_intact": True}
+
+    def verify_stream_resize(self) -> dict[str, Any]:
+        self.send("turn-resize")
+        self.wait_until(lambda: "turn-resize-active" in self.states(), "resize stream")
+        self.frames["before_stream_resize"] = self.capture()
+        for columns, rows in ((80, 24), (120, 40)):
+            self.tmux("resize-window", "-t", self.session, "-x", str(columns), "-y", str(rows))
+            time.sleep(0.15)
+        self.frames["during_stream_resize"] = self.capture()
+        self.wait_until(lambda: "turn-resize-done" in self.states(), "resized turn commit")
+        capture = self.capture(history=True)
+        counts = {
+            f"TMUX_RESIZE_{index:02d}": capture.count(f"TMUX_RESIZE_{index:02d}")
+            for index in range(1, 31)
+        }
+        if set(counts.values()) != {1}:
+            raise AssertionError(f"resize duplicated or lost stream markers: {counts}")
+        self.frames["after_stream_resize"] = self.capture()
+        return {"markers_each": 1, "final_terminal": "120x40"}
+
+    def verify_mouse(self) -> dict[str, bool]:
+        self.send("mouse")
+        self.wait_until(lambda: "mouse-active" in self.states(), "mouse stream")
+        self.wait_until(lambda: "MOUSE_79" in self.capture(), "viewport tail")
+        self.frames["before_wheel"] = self.capture()
+        self.tmux("send-keys", "-t", self.session, "-l", "\x1b[<64;10;20M")
+        self.wait_until(lambda: "MOUSE_79" not in self.capture(), "wheel scroll up")
+        self.frames["after_wheel"] = self.capture()
+        self.tmux("send-keys", "-t", self.session, "-l", "\x1b[<65;10;20M")
+        self.wait_until(lambda: "MOUSE_79" in self.capture(), "wheel scroll down")
+        self.wait_until(lambda: "mouse-done" in self.states(), "mouse turn commit")
+        return {"sgr_wheel_up": True, "sgr_wheel_down": True}
+
+    def verify_expand(self) -> dict[str, Any]:
+        self.send("card")
+        self.wait_until(lambda: "card-active" in self.states(), "bash card")
+        self.wait_until(lambda: "demo" in self.capture(), "bash preview")
+        self.frames["before_expand"] = self.capture()
+        collapsed = self.capture().count("CARD_ROW")
+        self.tmux("send-keys", "-t", self.session, "C-o")
+        self.wait_until(lambda: self.capture().count("CARD_ROW") > collapsed, "expanded card")
+        self.frames["after_expand"] = self.capture()
+        expanded = self.capture().count("CARD_ROW")
+        self.tmux("send-keys", "-t", self.session, "C-o")
+        self.wait_until(lambda: self.capture().count("CARD_ROW") == collapsed, "collapsed card")
+        self.frames["after_collapse"] = self.capture()
+        self.wait_until(lambda: "card-done" in self.states(), "card completion")
+        return {"collapsed_rows": collapsed, "expanded_rows": expanded}
+
     def run(self) -> dict[str, Any]:
         self.start()
         startup_history = self.history_size()
@@ -200,13 +263,22 @@ class TmuxHarness:
             raise AssertionError(
                 f"fixed-height startup did not reserve rows once: {startup_history=}"
             )
+        paste = self.verify_paste()
         first = self.measure_turn("a")
         second = self.measure_turn("b")
         self.verify_markers()
         fanout = self.measure_fanout()
         resize_frames = self.verify_resize()
+        stream_resize = self.verify_stream_resize()
+        mouse = self.verify_mouse()
+        expand = self.verify_expand()
         return {
             "terminal": "100x30",
+            "paste": paste,
+            "mouse": mouse,
+            "stream_resize": stream_resize,
+            "expand": expand,
+            "frames": self.frames,
             "startup_reservation": startup_history,
             "turn_a": first,
             "turn_b": second,

@@ -99,6 +99,45 @@ def test_native_shell_truncation_notice_survives_raw_artifact() -> None:
     assert "Output limited" in output and "read output:201+100" in output
 
 
+def test_native_shell_replay_preserves_notices_without_literal_escape_sequences() -> None:
+    output = card(
+        "bash",
+        {"command": "progress"},
+        "done\n[Output limited: read output:201+100.]\nCommand timed out",
+        artifact={"raw_output": "working\r\x1b[2K\x1b[32mdone\x1b[0m", "exit_code": 1},
+    )
+    assert "done" in output and "working" not in output
+    assert "Output limited" in output and "Command timed out" in output
+    assert "\x1b" not in output
+
+
+def test_grouped_native_reads_keep_one_selector_and_syntax_preview() -> None:
+    from orcha_agent.tui.blocks.tool import _read_rows
+
+    block = Block(
+        id="grouped-native",
+        kind="tool",
+        data={
+            "name": "read",
+            "calls": [
+                {
+                    "args": {"path": "app.py:40+2"},
+                    "result": "    40  def main():\n    41      return 1",
+                },
+                {
+                    "args": {"path": "other.py:5-6"},
+                    "result": "     5  def other():\n     6      return 2",
+                },
+            ],
+        },
+    )
+    title, rows = _read_rows(block, {}, expanded=False, theme=DEFAULT_THEME)
+    assert title == "• Read (2)"
+    assert rows[0] == "├─ app.py:40-41"
+    assert rows[3] == "└─ other.py:5-6"
+    assert getattr(rows[1], "spans", ())
+
+
 def test_native_read_home_path_and_collapse() -> None:
     output = card(
         "read",

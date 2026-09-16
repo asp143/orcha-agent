@@ -91,7 +91,9 @@ The same modes are available in the REPL:
 
 Precedence is CLI, `ORCHA_*` environment variables,
 `./.orcha-agent/config.toml`, `~/.config/orcha-agent/config.toml`, then
-defaults. Example:
+defaults. Core behavior uses `[core]`, native tools use `[tools]`, terminal
+settings use `[tui]`, and orchestration uses `[agents]`. Plugin-specific options
+use `[plugins.<name>]`; the examples below can share one `config.toml`. Example:
 
 ```toml
 [core]
@@ -128,7 +130,7 @@ advisor = "fast"
 [advisor]
 enabled = false
 model = "@advisor"
-tools = ["read_file", "grep", "glob"]
+tools = ["read", "grep", "glob"]
 immune_turns = 3
 timeout_s = 30
 ```
@@ -173,7 +175,8 @@ shell_env_passthrough = []  # explicitly inherit these parent environment names
 
 Set `native = false` to use the original deepagents filesystem tools
 (`read_file`, `write_file`, `edit_file`, `execute`, `grep`, `glob`, and `ls`).
-The native set replaces those names rather than exposing duplicate tools;
+Legacy tool names in configured scopes are mapped to native names when native
+tools are enabled. The native set replaces those names rather than exposing duplicate tools;
 `delete` remains available from the contained local backend. Tools retain the selected mode's
 approval rules: `ask` approves edits, writes, deletion, and shell execution;
 `edit` approves shell execution; `yolo` auto-approves; `plan` allows only reads.
@@ -397,18 +400,18 @@ orcha, so do not trust repositories you have not reviewed.
 The TUI runs inline rather than taking over the alternate screen. Settled
 messages and tool output are committed to native terminal scrollback; only the
 active transcript blocks, HUD, composer, and status line are redrawn. The
-composer grows to eight wrapped rows and has three shapes: `box` (closed
-frame), `claude` (open prompt rail), and `borderless` (text only).
+composer grows to eight wrapped rows and supports five presets: `box`, `claude`,
+`borderless`, `band`, and `rail`.
 
 Provider fallback retries currently run inside LangChain middleware without
 scheduling events, so the TUI cannot show a retry countdown for them.
 
 ### UI configuration
 
-These are all supported UI keys and their defaults:
+Terminal settings and their defaults:
 
 ```toml
-[ui]
+[tui]
 theme = "dark"
 symbols = "nerd"
 icons = true
@@ -417,37 +420,56 @@ composer = "box"
 banner = true
 notify = false
 statusbar = true
+hyperlinks = true
+vim = false
+colorblind = false
+mouse = "scroll"
+synchronized_output = true
+resize = "preserve"
 
-[ui.statusline]
+[tui.statusline]
 preset = "default"
 separator = "powerline-thin"
 transparent = false
 # left and right are omitted by default; lists override the preset groups.
 ```
 
-`theme` is a theme name or `auto`; `symbols` is `nerd`, `unicode`, or `ascii`;
-`thinking` is `summary`, `off`, or `all`; and `composer` is `box`, `claude`,
-or `borderless`. `icons` is retained for compatibility: when `symbols` is
-omitted, `icons=false` selects `ascii` and `icons=true` selects `nerd`.
+`theme` is a theme name or `auto`; `symbols` is `nerd`, `unicode`, `ascii`,
+or `colorblind`; `thinking` is `summary`, `off`, or `all`; and `composer` is
+`box`, `claude`, `borderless`, `band`, or `rail`. `icons` is retained for
+compatibility: when `symbols` is omitted, `icons=false` selects `ascii` and `icons=true` selects `nerd`.
 Disable the welcome with `banner=false` or `ORCHA_NO_BANNER=1`.
+
+The legacy `[ui]` and `[ui.statusline]` tables remain supported for shared
+appearance settings. `[tui]` overrides matching `[ui]` keys; when both specify
+status-line settings, the entire `[tui.statusline]` table takes precedence.
+`/settings` preserves the section supplying an existing setting. The newer
+`hyperlinks`, `vim`, `colorblind`, `mouse`, `synchronized_output`, and `resize`
+options belong in `[tui]`.
+
+`vim=true` enables Vim editing in the composer. `hyperlinks=false` disables
+terminal hyperlinks. Synchronized output groups terminal paint operations;
+`resize="preserve"` preserves scrollback, while `resize="rebuild"` rebuilds the
+visible display on resize.
 
 The status line presets and their left/right groups are:
 
-- `default`: `model mode path git context cost` / `subagents session`
-- `ascii`: `model mode path git` / `subagents context cost`
-- `minimal`: `model path` / `context`
-- `compact`: `mode path git` / `context time`
-- `full` and `nerd`: `model mode path git session` /
+- `default`: `brand model mode path git context cost` / `subagents session`
+- `ascii`: `brand model mode path git` / `subagents context cost`
+- `minimal`: `brand model path` / `context`
+- `powerline`: `brand model path git pr` / `token_rate usage context`
+- `compact`: `brand mode path git` / `context time`
+- `full` and `nerd`: `brand model mode path git session` /
   `subagents tokens cache cost context time`
 
-Available built-in segments are `model`, `mode`, `path`, `git`, `session`,
-`subagents`, `tokens`, `cache`, `cost`, `context`, and `time`; plugins may add
-more. Separators are `powerline`, `powerline-thin`, `slash`, `pipe`, `block`,
+Available built-in segments are `brand`, `model`, `mode`, `path`, `git`, `pr`,
+`session`, `subagents`, `tokens`, `cache`, `cost`, `context`, `time`, `token_rate`,
+`cache_hit`, `time_spent`, `hostname`, `vim`, and `usage`; plugins may add more. Separators are `powerline`, `powerline-thin`, `slash`, `pipe`, `block`,
 `none`, and `ascii`; the `ascii` preset also forces ASCII-safe output.
 Override either group, remove status backgrounds, or both:
 
 ```toml
-[ui.statusline]
+[tui.statusline]
 preset = "compact"
 separator = "pipe"
 left = ["model", "mode", "path", "git"]
@@ -483,12 +505,27 @@ or redirected output. Fixtures live in `orcha_agent/tui/gallery_fixtures/`.
 
 ### Themes and symbols
 
-Built-in themes are `dark`, `light`, `ansi`, `dracula`, `nord`, and
-`gruvbox`. `theme="auto"` chooses light or dark from `COLORFGBG`, defaulting
-to dark when the terminal background cannot be determined. User themes are
-JSON files in `~/.config/orcha-agent/themes/`. Project themes in
-`./.orcha-agent/themes/` load only for a trusted working directory and take
-precedence over user themes with the same filename.
+Built-in themes include `dark`, `light`, `ansi`, Catppuccin (latte, frappe,
+macchiato, mocha), Dracula, Nord, Gruvbox, Tokyo Night, Solarized, One,
+GitHub, Rosé Pine, Kanagawa and Everforest. Family variants use names such as
+`gruvbox-dark`, `github-light`, `tokyo-night-day`, and `catppuccin-mocha`.
+Earlier `dark-*` / `light-*` names remain accepted aliases. The original
+Dracula/Nord palettes remain `dracula` / `nord`; imported variants are
+`dracula-omp` / `nord-omp`. The duplicate `dark-catppuccin` palette now aliases
+`catppuccin-mocha` and appears only once in the picker.
+
+`theme="auto"` chooses light or dark from terminal background detection or
+`COLORFGBG`, defaulting to dark when unavailable. User themes are JSON files in
+`~/.config/orcha-agent/themes/`. Project themes in `./.orcha-agent/themes/` load
+only for a trusted working directory and take precedence over user themes
+with the same filename.
+
+`mouse="scroll"` preserves native text selection by leaving button tracking off
+outside overlays. The terminal wheel scrolls native scrollback; forwarded SGR
+wheel reports also scroll the viewport. `mouse="full"` opts into application
+wheel tracking and composer click focus; `mouse="off"` ignores viewport wheel
+reports. Overlays retain their own mouse support. `symbols="colorblind"` changes
+only glyphs; use `colorblind=true` to change palette colors.
 
 A theme can define variables, any subset of color tokens, and symbol
 overrides:
@@ -517,7 +554,7 @@ Colors accept `#rrggbb`, palette indexes `0` through `255`, `$variable`
 references, or `""` for the terminal default. Missing color tokens produce a
 warning and inherit from `dark`; unknown tokens or invalid files are skipped
 with a warning. Theme files may choose a `symbols.preset`; an explicit
-`[ui] symbols` value (`nerd`, `unicode`, or `ascii`) overrides it. Setting
+`[tui] symbols` value (`nerd`, `unicode`, `ascii`, or `colorblind`) overrides it. Setting
 `icons=false` without an explicit preset forces the ASCII compatibility
 preset. Theme `symbols.overrides` still apply when the terminal can encode
 them; non-UTF output falls back to safe `ascii` symbols.
@@ -546,6 +583,9 @@ cycle_model = "c-p"
 history_search = "c-r"
 external_editor = "c-g"
 clear_screen = "c-l"
+clear_draft = "c-x c-k"
+recall_draft = "c-x c-r"
+peek_paste = "c-x c-p"
 interrupt = "c-c"
 exit = "c-d"
 tree = "escape escape"
@@ -565,6 +605,11 @@ the effective map, including plugin actions and conflict resolution.
 `.` submits `keep going`. In bash mode, a prompt beginning with `!` runs the
 remainder through the local shell in the working directory with a 60-second
 timeout. `Ctrl+G` edits the current draft with `$VISUAL` or `$EDITOR`.
+
+Bracketed pastes of at least five lines or 1,000 characters appear as compact
+paste chips; submission expands each chip to its original text. `Ctrl+X Ctrl+P`
+previews a paste, `Ctrl+X Ctrl+K` clears the draft, and `Ctrl+X Ctrl+R` recalls it.
+Terminal control sequences are removed from pasted text.
 
 Prompt history is stored in `~/.local/share/orcha-agent/history.db` with
 SQLite FTS5 search and is rebound to the active working directory and session
@@ -601,6 +646,7 @@ to select, and `Esc` to cancel.
 | Model | `/model` or `escape p` | Shows registered models and provider availability, then switches to the selection. |
 | Session | `/sessions` or `/resume` | Shows saved-session age, directory, and entry count, then resumes the selection. |
 | Tree | `/tree`, double `Esc`, or `Shift+Esc` | Shows the ledger hierarchy and branches at the selected entry. |
+| Settings | `/settings` | Changes terminal appearance and interaction settings. |
 | Theme | `/theme` | Live-previews themes and persists the accepted selection; cancellation rolls back. |
 | Approval | A tool approval interrupt | Previews shell commands, edits, or arguments and returns `approve`, `reject`, or `always` (`Y`, `N`, or `A`). |
 | Ask | A plugin calls `await ctx.ui.ask(questions)` | Returns `{"kind":"submit","results":[...]}` with each answer's `id`, `selectedOptions`, and optional `customInput`. |
@@ -614,10 +660,10 @@ turn, a compact HUD above the composer shows up to seven todo items, running
 subagents, and queued prompts. The terminal title tracks the session and adds
 a spinner while working or a waiting marker for approval.
 
-With `[ui] notify=true`, turn completion and approval requests notify only
-after more than five seconds without a keypress. The TUI prefers
-`notify-send` and falls back to terminal OSC 9 notifications; failures never
-interrupt the session.
+With `[tui] notify=true`, turn completion and approval requests notify when
+the terminal is unfocused. Without focus reporting, five seconds of keyboard
+inactivity is the fallback. The TUI prefers `notify-send`, then OSC 9 on
+supported terminals, otherwise a bell; failures never interrupt the session.
 
 ### Agent orchestration
 
@@ -659,7 +705,7 @@ See `examples/plugins/hello.py` for a complete external plugin.
 
 ## Commands
 
-Interactive pickers are used by `/help`, `/theme`, `/model`, `/sessions`,
+Interactive pickers are used by `/help`, `/settings`, `/theme`, `/model`, `/sessions`,
 `/resume`, and `/tree` when no explicit argument is supplied. Direct forms
 remain available:
 
@@ -667,10 +713,12 @@ remain available:
   `/tree [--all]`, `/branch [--exact] <id-prefix>`, `/fork`, `/compact`,
   `/export [--force] [path]`, `/sync`, and `/memory ...`
 - model and UI: `/model [provider:model[,provider:model...]]`, `/mode <name>`,
-  `/thinking on|off`, `/theme [name]`, `/keys`, and `/status`
+  `/thinking on|off`, `/theme [name]`, `/settings`, `/keys`, and `/status`
 - providers and runtime: `/providers [prefix]`, `/plugins`,
   `/login <prefix> [browser|device|paste]`, `/logout <prefix>`, `/help`,
   and `/exit`
+- extensions: `/skills`, `/skill <name> [args]`, `/skill:<name> [args]`, and
+  `/mcp list|test|resources|prompts|add|remove|enable|disable|reload|reconnect`
 - orchestration: `/agents` and
   `/review [<base-ref>|--uncommitted|<commit>] [--fix]`
 
@@ -760,6 +808,15 @@ Set `enabled`, `import_claude`, `import_codex`, or `import_github` to `false` un
 `[plugins.skills]` to disable discovery or individual importers.
 
 ## MCP servers
+
+MCP plugin options belong in `config.toml` under `[plugins.mcp]`; a top-level
+`[mcp]` table is not supported. Server definitions live in the separate JSON file:
+
+```toml
+[plugins.mcp]
+import_claude = true
+import_codex = true
+```
 
 Configure `~/.config/orcha-agent/mcp.json` or trusted-project
 `.orcha-agent/mcp.json`:

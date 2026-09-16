@@ -3,7 +3,7 @@
 │Welcome back! │ • first (2h ago)                                                                  │
 │              │ • second (1d ago)                                                                 │
 │ ████████████ │                                                                                   │
-│    ██  ██    │                                                                                   │
+│    ██  ██    │ New: /settings customizes your UI                                                 │
 │    ██  ██    │ ──── Hints                                                                        │
 │    ▒▒  ██    │ ✓ Trusted folder                                                                  │
 │        ██    │ 3 plugins loaded                                                                  │

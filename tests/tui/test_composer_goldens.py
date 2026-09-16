@@ -8,6 +8,7 @@ from prompt_toolkit.completion import Completion
 from prompt_toolkit.utils import get_cwidth
 
 from orcha_agent.tui.composer import Composer
+from orcha_agent.tui.gallery_fixtures.composer import COMPOSER_LINES, PASTE_EXAMPLE, ghost_example
 from orcha_agent.tui.symbols import resolve_symbols
 
 
@@ -27,7 +28,7 @@ def _encode_trailing_spaces(value: str) -> str:
 
 
 @pytest.mark.parametrize("width", [80, 120])
-@pytest.mark.parametrize("shape", ["box", "claude"])
+@pytest.mark.parametrize("shape", ["box", "claude", "band", "rail"])
 def test_composer_chrome_golden(
     shape: str,
     width: int,
@@ -41,7 +42,7 @@ def test_composer_chrome_golden(
     actual = _encode_trailing_spaces(
         "\n".join(
             composer.render_lines(
-                ["first line", "last line"],
+                list(COMPOSER_LINES),
                 width,
                 scrollbar_rows={0},
             )
@@ -54,7 +55,7 @@ def test_composer_chrome_golden(
     assert golden.read_text() == actual
 
 
-@pytest.mark.parametrize("shape", ["box", "claude"])
+@pytest.mark.parametrize("shape", ["box", "claude", "band", "rail"])
 def test_ascii_composer_chrome_golden(
     shape: str,
     update_goldens: bool,
@@ -68,7 +69,7 @@ def test_ascii_composer_chrome_golden(
     actual = _encode_trailing_spaces(
         "\n".join(
             composer.render_lines(
-                ["first line", "last line"],
+                list(COMPOSER_LINES),
                 80,
                 scrollbar_rows={0},
             )
@@ -171,3 +172,79 @@ def test_empty_composer_uses_exact_dim_placeholder() -> None:
 
     composer.buffer.text = "x"
     assert composer.placeholder_fragments() == []
+
+
+def test_composer_paste_chip_golden(update_goldens: bool) -> None:
+    composer = Composer()
+    composer.insert_paste(PASTE_EXAMPLE)
+    actual = _encode_trailing_spaces(
+        "\n".join(composer.render_lines([composer.buffer.text], 80)) + "\n"
+    )
+    golden = GOLDEN_DIR / "composer-paste.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_composer_ghost_argument_golden(update_goldens: bool) -> None:
+    composer = Composer()
+    command, hint = ghost_example()
+    actual = _encode_trailing_spaces("\n".join(composer.render_lines([command + hint], 80)) + "\n")
+    golden = GOLDEN_DIR / "composer-ghost.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_paste_peek_overlay_golden(update_goldens: bool) -> None:
+    from orcha_agent.tui.overlays.paste import PasteOverlay
+
+    overlay = PasteOverlay(PASTE_EXAMPLE)
+    rows = ["".join(text for _, text in row) for row in overlay.rows]
+    actual = "\n".join(overlay.render_lines("Pasted text", rows, width=76, height=8)) + "\n"
+    golden = GOLDEN_DIR / "composer-paste-peek.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_paste_chip_style_golden(update_goldens: bool) -> None:
+    from prompt_toolkit.layout.processors import TransformationInput
+    from orcha_agent.tui.composer import PasteChipProcessor
+
+    composer = Composer()
+    composer.buffer.insert_text("Explain ")
+    composer.insert_paste(PASTE_EXAMPLE)
+    ti = TransformationInput(
+        composer.control,
+        composer.buffer.document,
+        0,
+        lambda x: x,
+        [("", composer.buffer.text)],
+        80,
+        3,
+    )
+    fragments = PasteChipProcessor(composer).apply_transformation(ti).fragments
+    # Group styles so the golden makes the chip's exact styled extent reviewable.
+    from itertools import groupby
+
+    actual = (
+        "\n".join(
+            f"{style or 'default'}: {''.join(fragment[1] for fragment in group)!r}"
+            for style, group in groupby(fragments, key=lambda fragment: fragment[0])
+        )
+        + "\n"
+    )
+    golden = GOLDEN_DIR / "composer-paste-style.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_help_documents_context_sensitive_alt_enter_and_peek() -> None:
+    from orcha_agent.tui.keys import DEFAULT_BINDINGS
+    from orcha_agent.tui.overlays.help import KeyBindingsCard
+
+    text = KeyBindingsCard(DEFAULT_BINDINGS).text
+    assert "newline; queue follow-up while streaming" in text
+    assert "peek paste" in text

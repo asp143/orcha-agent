@@ -82,7 +82,9 @@ def test_welcome_has_fixed_slots_static_gradient_and_width_cap(tmp_path: Path) -
     assert len(first["sessions"]) == len(first["hints"]) == 4
     assert first["logo_styles"] == second["logo_styles"]
     text = _plain(
-        render_welcome(Block("welcome", "welcome", BlockState.ACTIVE, data=first), None, 140, 100, False),
+        render_welcome(
+            Block("welcome", "welcome", BlockState.ACTIVE, data=first), None, 140, 100, False
+        ),
         140,
     )
     assert max(map(len, text.splitlines())) <= 100
@@ -139,6 +141,7 @@ async def test_notification_obeys_idle_threshold_and_safe_fallback() -> None:
         output=output,
         clock=lambda: now[0],
         which=missing,
+        osc9_supported=True,
         spawn=lambda command: commands.append(command),
         run_terminal=lambda callback: callback(),
     )
@@ -147,7 +150,7 @@ async def test_notification_obeys_idle_threshold_and_safe_fallback() -> None:
     now[0] = 5.001
     assert await notifier.notify("Orcha", "Turn complete") is True
     assert commands == []
-    assert output.raw == ["\x1b]9;Turn complete\x07"]
+    assert output.raw == ["\x1b]9;Turn complete\x1b\\"]
 
     notifier.record_keypress()
     now[0] = 9.0
@@ -228,7 +231,6 @@ async def test_runtime_hud_tracks_todos_queue_without_subagent_card() -> None:
     await runtime.scheduler.aclose()
 
 
-
 @pytest.mark.asyncio
 async def test_hud_clips_each_section_to_eight_rendered_rows(
     monkeypatch: pytest.MonkeyPatch,
@@ -250,15 +252,11 @@ async def test_hud_clips_each_section_to_eight_rendered_rows(
             plugin_states={},
         ),
     )
-    runtime.set_todos(
-        [{"content": "a very long todo label " * 20, "status": "pending"}]
-    )
+    runtime.set_todos([{"content": "a very long todo label " * 20, "status": "pending"}])
     monkeypatch.setattr(
         runtime,
         "_capture_block",
-        lambda *_args, **_kwargs: "\n".join(
-            f"visual row {index}" for index in range(12)
-        ),
+        lambda *_args, **_kwargs: "\n".join(f"visual row {index}" for index in range(12)),
     )
 
     rendered = runtime._hud_text().value
@@ -266,7 +264,6 @@ async def test_hud_clips_each_section_to_eight_rendered_rows(
     assert len(rendered.splitlines()) <= 8
     assert runtime._hud_height() == len(rendered.splitlines())
     await runtime.scheduler.aclose()
-
 
 
 @pytest.mark.asyncio
@@ -374,7 +371,6 @@ async def test_runtime_notification_triggers_cover_turn_end_and_approval() -> No
     await runtime.scheduler.aclose()
 
 
-
 @pytest.mark.asyncio
 async def test_streamed_todo_state_updates_the_hud_before_turn_completion() -> None:
     seen: list[list[dict[str, str]]] = []
@@ -391,6 +387,7 @@ async def test_streamed_todo_state_updates_the_hud_before_turn_completion() -> N
 
     assert result is None
     assert seen == [[{"content": "ship", "status": "in_progress"}]]
+
 
 @pytest.mark.asyncio
 async def test_runtime_tracks_actual_keypress_and_turn_title_headlessly(

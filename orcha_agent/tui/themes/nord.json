@@ -9,6 +9,7 @@
     "thinkingText": "$muted", "selectedBg": "$surface2", "userMessageBg": "$surface", "customMessageBg": "$surface", "toolPendingBg": "", "toolSuccessBg": "", "toolErrorBg": "", "statusLineBg": "$surface",
     "userMessageText": "$fg", "toolTitle": "$accent", "toolOutput": "$fg", "mdHeading": "$purple", "mdLink": "$blue", "mdLinkUrl": "$accent", "mdCode": "$yellow", "mdCodeBlock": "$fg", "mdCodeBlockBorder": "$surface2",
     "mdQuote": "$muted", "mdQuoteBorder": "$blue", "mdHr": "$surface2", "mdListBullet": "$accent", "toolDiffAdded": "$green", "toolDiffRemoved": "$red", "toolDiffContext": "$muted",
+    "toolDiffAddedBg": "#22222a", "toolDiffRemovedBg": "#22222a",
     "syntaxComment": "$muted", "syntaxKeyword": "$purple", "syntaxFunction": "$blue", "syntaxVariable": "$fg", "syntaxString": "$green", "syntaxNumber": "$yellow", "syntaxType": "$accent", "syntaxOperator": "$red", "syntaxPunctuation": "$muted",
     "thinkingOff": "$muted", "thinkingLow": "$accent", "thinkingMedium": "$blue", "thinkingHigh": "$purple", "thinkingMax": "$red", "bashMode": "$yellow", "statusLineSep": "$surface2", "statusLineModel": "$blue", "statusLinePath": "$accent",
     "statusLineGitClean": "$green", "statusLineGitDirty": "$yellow", "statusLineContext": "$purple", "statusLineCost": "$green", "statusLineSubagents": "$accent"

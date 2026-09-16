@@ -1,0 +1,14 @@
+╭─ Settings ───────────────────────────────────────────────────────────────╮
+│ Appearance | Status | Behaviour | Terminal                               │
+│  › composer           box                                                │
+│    theme              dark                                               │
+│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+│ Terminal                                                                 │
+│  › vim                False                                              │
+│    hyperlinks         True                                               │
+│    mouse              scroll                                             │
+│    colorblind         False                                              │
+│    synchronized output True                                              │
+│    resize             preserve                                           │
+│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+╰──────────────────────────────────────────────────────────────────────────╯

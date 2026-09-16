@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import socket
 import subprocess
 import threading
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.enums import EditingMode
 
 from orcha_agent.core.usage import DEFAULT_PRICING
 
 from .symbols import resolve_symbols
+from .blocks import theme_spinner
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,21 +33,22 @@ class Segment:
 
 PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "default": (
-        ("model", "mode", "path", "git", "context", "cost"),
+        ("brand", "model", "mode", "path", "git", "context", "cost"),
         ("subagents", "session"),
     ),
-    "minimal": (("model", "path"), ("context",)),
-    "compact": (("mode", "path", "git"), ("context", "time")),
+    "minimal": (("brand", "model", "path"), ("context",)),
+    "powerline": (("brand", "model", "path", "git", "pr"), ("token_rate", "usage", "context")),
+    "compact": (("brand", "mode", "path", "git"), ("context", "time")),
     "full": (
-        ("model", "mode", "path", "git", "session"),
+        ("brand", "model", "mode", "path", "git", "session"),
         ("subagents", "tokens", "cache", "cost", "context", "time"),
     ),
     "nerd": (
-        ("model", "mode", "path", "git", "session"),
+        ("brand", "model", "mode", "path", "git", "session"),
         ("subagents", "tokens", "cache", "cost", "context", "time"),
     ),
     "ascii": (
-        ("model", "mode", "path", "git"),
+        ("brand", "model", "mode", "path", "git"),
         ("subagents", "context", "cost"),
     ),
 }
@@ -516,7 +522,7 @@ def _window(ctx: Any, spec: str) -> int | None:
         if "haiku" in lowered:
             return 200_000
     provider = ctx.registry.providers.get(prefix)
-    return None if provider is None else provider.capabilities.max_context
+    return getattr(getattr(provider, "capabilities", None), "max_context", None)
 
 
 def context_segment(ctx: Any) -> Segment | None:
@@ -562,6 +568,116 @@ def time_segment(ctx: Any) -> Segment | None:
     return Segment(f"{elapsed:.1f}s", "muted", "icon.thinking")
 
 
+def brand_segment(ctx: Any) -> Segment:
+    state = _state(ctx)
+    ui = getattr(ctx, "ui", None)
+    theme = getattr(ui, "theme", None)
+    runtime = getattr(ui, "runtime", ui)
+    frame = int(getattr(runtime, "_spinner_frame", 0))
+    started = state.get("_turn_started")
+    if isinstance(started, (int, float)):
+        spinner = theme_spinner(theme, "spinner.status", frame, ("*",))
+        elapsed = max(0, int(monotonic() - started))
+        activity = ""
+        frame = getattr(runtime, "frame", None)
+        for block in reversed(getattr(frame, "blocks", ())):
+            if getattr(block.state, "value", block.state) != "active":
+                continue
+            if block.kind == "tool":
+                activity = str(block.data.get("name", block.data.get("tool", "tool")))
+                break
+            if block.kind == "thinking":
+                activity = "thinking"
+                break
+        suffix = f" · {activity}" if activity else ""
+        return Segment(f"{spinner} orcha {elapsed}s{suffix}", "accent")
+    return Segment("orcha", "accent")
+
+
+def token_rate_segment(ctx: Any) -> Segment | None:
+    state = _state(ctx)
+    started = state.get("_turn_started")
+    elapsed = (
+        monotonic() - started
+        if isinstance(started, (int, float))
+        else state.get("_last_turn_elapsed", 0)
+    )
+    tokens = int(state.get("output_tokens", 0)) - int(state.get("_turn_output_start", 0))
+    if not elapsed or tokens <= 0:
+        return None
+    return Segment(f"{tokens / max(0.001, elapsed):.1f} tok/s", "muted")
+
+
+def cache_hit_segment(ctx: Any) -> Segment | None:
+    state = _state(ctx)
+    total = int(state.get("input_tokens", 0))
+    if not total or not state.get("cache_known"):
+        return None
+    percent = min(100.0, int(state.get("cache_read_tokens", 0)) / total * 100)
+    return Segment(f"cache {percent:.0f}%", "muted")
+
+
+@lru_cache(maxsize=1)
+def _hostname() -> str:
+    return socket.gethostname().split(".", 1)[0]
+
+
+def hostname_segment(ctx: Any) -> Segment:
+    return Segment(_hostname(), "muted")
+
+
+def vim_segment(ctx: Any) -> Segment | None:
+    ui = getattr(ctx, "ui", None)
+    application = getattr(ui, "application", None)
+    if application is not None:
+        if application.editing_mode != EditingMode.VI:
+            return None
+        mode = application.vi_state.input_mode.value
+    else:
+        mode = getattr(ui, "vim_mode", None)
+    return Segment(str(mode).upper(), "warning") if mode else None
+
+
+def _refresh_pr(ctx: Any, state: dict[str, Any], scope: str) -> None:
+    value = None
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", "--json", "number,state"],
+            cwd=scope,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data.get("state") == "OPEN":
+                value = f"PR #{int(data['number'])}"
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError):
+        pass
+    finally:
+        with _GIT_LOCK:
+            if state.get("_pr_scope") == scope:
+                state.update(_pr_text=value, _pr_at=monotonic(), _pr_refreshing=False)
+        _notify_invalidation(ctx)
+
+
+def pr_segment(ctx: Any) -> Segment | None:
+    """Read a bounded background cache; never run gh in a terminal paint."""
+    state = _state(ctx)
+    scope = str(ctx.cfg.cwd)
+    with _GIT_LOCK:
+        if state.get("_pr_scope") != scope:
+            state.update(_pr_scope=scope, _pr_text=None, _pr_at=0, _pr_refreshing=False)
+        if monotonic() - state.get("_pr_at", 0) >= 60 and not state.get("_pr_refreshing"):
+            state["_pr_refreshing"] = True
+            threading.Thread(
+                target=_refresh_pr, args=(ctx, state, scope), daemon=True, name="orcha-status-pr"
+            ).start()
+    value = state.get("_pr_text")
+    return Segment(value, "accent") if value else None
+
+
 def record_usage(event: Any, state: dict[str, Any]) -> None:
     usage = getattr(event.chunk, "usage_metadata", None)
     if not isinstance(usage, Mapping):
@@ -605,6 +721,7 @@ def reset_accounting(state: dict[str, Any]) -> None:
 
 def record_turn_start(state: dict[str, Any]) -> None:
     state["_turn_started"] = monotonic()
+    state["_turn_output_start"] = int(state.get("output_tokens", 0))
 
 
 def record_turn_end(state: dict[str, Any]) -> None:
@@ -614,6 +731,14 @@ def record_turn_end(state: dict[str, Any]) -> None:
 
 
 BUILTIN_SEGMENTS = (
+    ("brand", brand_segment),
+    ("token_rate", token_rate_segment),
+    ("cache_hit", cache_hit_segment),
+    ("time_spent", time_segment),
+    ("hostname", hostname_segment),
+    ("vim", vim_segment),
+    ("pr", pr_segment),
+    ("usage", cost_segment),
     ("model", model_segment),
     ("mode", mode_segment),
     ("path", path_segment),

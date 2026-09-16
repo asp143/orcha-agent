@@ -1,0 +1,8 @@
+╭─ Help ───────────────────────────────────────────────────────────────────╮
+│ Commands                                                                 │
+│ /help           Show help                                                │
+│                                                                          │
+│ Keybindings                                                              │
+│ Alt+Enter newline; queue follow-up while streaming                       │
+│ Vim insert: Esc leaves insert mode; Esc Esc aborts; Esc×3 opens tree.    │
+╰──────────────────────────────────────────────────────────────────────────╯

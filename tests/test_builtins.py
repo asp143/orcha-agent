@@ -184,6 +184,7 @@ def test_loading_builtins_registers_expected_plugins_and_features(
         "assistant",
         "banner",
         "diff",
+        "image",
         "marker",
         "queue",
         "thinking",

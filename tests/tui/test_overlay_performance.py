@@ -109,3 +109,28 @@ def test_session_filter_matches_unicode_first_prompt(tmp_path: Path) -> None:
         overlay.filter.text = "änderung"
         assert len(overlay.items) == 1
         assert "Änderung planen" in overlay.render_text()
+
+
+def test_bounded_session_search_reaches_hidden_id_and_full_path(tmp_path: Path) -> None:
+    with SessionStore(tmp_path / "sessions.db") as store:
+        target_id = "older-session-unique-id"
+        full_path = "/repo/long-component-hidden-from-label/packages/target"
+        target = store.create(cwd=full_path, model="test:model", thread_id=target_id)
+        store.set_title(target.thread_id, "Parser repair")
+        for i in range(205):
+            store.create(cwd=str(tmp_path), model="test:model", thread_id=f"recent-{i:03}")
+        overlay = SessionOverlay(SimpleNamespace(session=store, ledger=Ledger(store)))
+        assert len(overlay.items) == 200
+        assert target_id not in {item.thread_id for item in overlay.items}
+        for query in (target_id, "long-component-hidden-from-label", full_path):
+            overlay.filter.text = query
+            assert [item.thread_id for item in overlay.items] == [target_id]
+            label = overlay.label(overlay.items[0])
+            assert target_id not in label
+            assert "long-component-hidden-from-label" not in label
+            statements: list[str] = []
+            store._connection.set_trace_callback(statements.append)
+            overlay.render_text()
+            overlay.render_text()
+            assert statements == []
+            store._connection.set_trace_callback(None)

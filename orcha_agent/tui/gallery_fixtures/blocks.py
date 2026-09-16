@@ -79,6 +79,12 @@ TOOL_GALLERY_FIXTURES: dict[
     str,
     dict[GalleryState, GalleryBlockFixture],
 ] = {
+    "bash_jobs": _tool_states(
+        "bash_jobs",
+        args={"action": "list"},
+        result={"jobs": [{"id": "build-1", "status": "running", "command": "npm run build"}]},
+        error="job not found",
+    ),
     "execute": _tool_states(
         "execute",
         args={"command": "uv run pytest -q tests/tui"},
@@ -101,7 +107,9 @@ TOOL_GALLERY_FIXTURES: dict[
     "read_file": _tool_states(
         "read_file",
         args={"path": "orcha_agent/tui/blocks/tool.py", "offset": 40},
-        result="\n".join(f"{line:>2}  source line {line}" for line in range(41, 56)),
+        result="\n".join(
+            f'{line:>2}  return "value {line}"  # highlighted preview' for line in range(41, 56)
+        ),
         error="file is not readable",
     ),
     "write_file": _tool_states(
@@ -301,7 +309,10 @@ GALLERY_FIXTURES: dict[
     "todo": {
         "streaming": _active(items=[{"text": "render fixtures"}, {"text": "inspect output"}]),
         "progress": _active(
-            items=[{"text": "render fixtures", "done": True}, {"text": "inspect output"}]
+            items=[
+                {"text": "render fixtures", "done": True, "completion_progress": 0.5},
+                {"text": "inspect output"},
+            ]
         ),
         "success": _settled(
             items=[
@@ -321,6 +332,15 @@ GALLERY_FIXTURES: dict[
         "success": _settled(message="Turn completed.", spinner_frame=7),
         "error": _settled(message="Retry failed.", spinner_frame=9, level="warning"),
     },
+    "image": {
+        state: _settled(
+            image={
+                "mime_type": "image/png",
+                "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+            }
+        )
+        for state in GALLERY_STATES
+    },
     "queue": {
         "streaming": _active(prompts=["finish renderer fixtures"]),
         "progress": _active(prompts=["finish renderer fixtures", "run focused tests"]),
@@ -331,7 +351,7 @@ GALLERY_FIXTURES: dict[
         "streaming": _active(**_WELCOME, tip="Gallery fixtures are loading."),
         "progress": _active(**_WELCOME, tip="Use --tool to focus one renderer."),
         "success": _settled(**_WELCOME, tip="Use --plain when redirecting output."),
-        "error": _settled(**_WELCOME, tip="Use --state error to inspect failures."),
+        "error": _settled(**_WELCOME, first_run=True, tip="Use --state error to inspect failures."),
     },
 }
 

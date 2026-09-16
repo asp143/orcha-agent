@@ -87,6 +87,13 @@ SYMBOL_PRESETS: dict[str, dict[str, str]] = {
 }
 
 
+# Shapes and labels remain distinct independently of hue perception.
+SYMBOL_PRESETS["colorblind"] = {
+    **SYMBOL_PRESETS["unicode"],
+    "status.success": "+", "status.error": "x", "status.pending": "o",
+    "status.warning": "!", "status.info": "i",
+}
+
 def _supports_unicode(encoding: str | None) -> bool:
     if encoding is None:
         return True

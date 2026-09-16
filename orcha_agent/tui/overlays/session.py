@@ -171,7 +171,7 @@ class SessionOverlay(SelectList[Any]):
                     session = row.session
                     prompt = _message_text(row.first_message)
                     label = SessionOverlay._label_text(session, row.count, prompt)
-                    if query and not _fuzzy(query, label):
+                    if query and not SessionOverlay._matches(query, session, label):
                         continue
                     if query and skipped < page_offset:
                         skipped += 1
@@ -187,7 +187,13 @@ class SessionOverlay(SelectList[Any]):
         else:
             # Preserve the public duck-typed context protocol used by plugins.
             snapshots = [
-                (session, ctx.ledger.count(session.thread_id), _first_prompt(ctx, session))
+                (
+                    session,
+                    ctx.ledger.count(session.thread_id),
+                    ""
+                    if _clean_text(getattr(session, "title", None))
+                    else _first_prompt(ctx, session),
+                )
                 for session in ctx.session.list()
             ]
         for session, count, prompt in snapshots:
@@ -264,6 +270,13 @@ class SessionOverlay(SelectList[Any]):
         age = _age(getattr(session, "created", None))
         return f"{title} · {age} · {cwd} · {count} entries"
 
+    @staticmethod
+    def _matches(query: str, session: Any, label: str) -> bool:
+        return any(
+            _fuzzy(query, field)
+            for field in (label, str(session.thread_id), str(getattr(session, "cwd", "")))
+        )
+
     def _filter_changed(self, buffer: Buffer) -> None:
         if isinstance(self._ctx.session, SessionStore):
             self._page_offset = 0
@@ -273,7 +286,11 @@ class SessionOverlay(SelectList[Any]):
     def _filtered_pairs(self) -> list[tuple[int, Any]]:
         if isinstance(self._ctx.session, SessionStore):
             return list(enumerate(self.items))
-        return super()._filtered_pairs()
+        return [
+            (offset, session)
+            for offset, session in enumerate(self.items)
+            if self._matches(self.filter.text, session, self._labels[str(session.thread_id)])
+        ]
 
     def _move(self, delta: int) -> None:
         if isinstance(self._ctx.session, SessionStore):

@@ -109,7 +109,8 @@ def test_missing_tokens_fall_back_with_exactly_one_warning(tmp_path: Path) -> No
 def test_all_packaged_themes_have_complete_color_and_symbol_surfaces() -> None:
     themes = load_themes(home=Path("/nonexistent"), cwd=Path("/nonexistent"))
 
-    assert set(themes) == {"dark", "light", "ansi", "dracula", "nord", "gruvbox"}
+    assert {"dark", "light", "ansi", "dracula", "nord", "gruvbox"} <= set(themes)
+    assert len(themes) >= 26
     for theme in themes.values():
         assert set(theme.colors) == set(COLOR_TOKENS)
         assert theme.symbols["status.success"]

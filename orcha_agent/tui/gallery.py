@@ -10,9 +10,15 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from rich.console import Console
+from rich.text import Text
 
 from .blocks import DEFAULT_RENDERERS
+from .composer import Composer
 from .frame import Block
+from .gallery_fixtures.composer import COMPOSER_LINES, COMPOSER_SHAPES, PASTE_EXAMPLE, ghost_example
+from .gallery_fixtures.surfaces import surface_fixtures
+from .gallery_fixtures.palette import light_colorblind_fixture
+from .overlays.base import Overlay
 from .gallery_fixtures import GALLERY_FIXTURES, GALLERY_STATES, GalleryState
 from .gallery_fixtures.blocks import TOOL_GALLERY_FIXTURES
 from .theme import Theme, load_themes, select_theme
@@ -160,6 +166,52 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
                 )
                 if renderable is not None:
                     console.print(renderable)
+    if selected is None:
+        console.rule("composer", style=theme.colors.get("accent", "cyan"))
+        for shape in COMPOSER_SHAPES:
+            console.print(f"  · {shape}", style="dim")
+            composer = Composer(
+                shape=shape, theme=theme, model=lambda: "claude-sonnet-4", thinking=lambda: "high"
+            )
+            for line in composer.render_lines(list(COMPOSER_LINES), width):
+                console.print(line, markup=False, highlight=False)
+        composer = Composer(theme=theme)
+        composer.insert_paste(PASTE_EXAMPLE)
+        console.print("  · collapsed paste", style="dim")
+        for line in composer.render_lines([composer.buffer.text], width):
+            rendered = Text(line)
+            start = line.find(composer.buffer.text)
+            if start >= 0:
+                rendered.stylize("dim", start, start + len(composer.buffer.text))
+            console.print(rendered)
+        console.print("  · paste peek (Ctrl+X Ctrl+P)", style="dim")
+        console.print(
+            Text(
+                "\n".join(
+                    Overlay.render_lines(
+                        "Pasted text",
+                        PASTE_EXAMPLE.split("\n"),
+                        width=min(76, width),
+                        height=8,
+                    )
+                )
+            )
+        )
+        console.print("  · slash argument hint", style="dim")
+        command, hint = ghost_example()
+        console.print(command, end="", markup=False)
+        console.print(hint, style=theme.colors.get("dim", "dim"), markup=False)
+        console.rule("Light colorblind diff colors")
+        console.print(light_colorblind_fixture())
+        for name, rows in surface_fixtures().items():
+            console.rule(name, style=theme.colors.get("accent", "cyan"))
+            console.print(
+                Text(
+                    "\n".join(
+                        Overlay.render_lines(name, rows, width=min(76, width), height=len(rows) + 2)
+                    )
+                )
+            )
     return 0
 
 

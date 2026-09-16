@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import signal
 import shlex
 import subprocess
@@ -20,10 +21,13 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, vi_mode, vi_navigation_mode
 from prompt_toolkit.key_binding import DynamicKeyBindings, KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
@@ -58,6 +62,8 @@ from orcha_agent.core.persistence import TursoPersistenceError, open_session_sto
 from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
+from .blocks.image import image_protocol
+from .blocks.terminal import clear_terminal_cache
 from .blocks import (
     BlockRendererDispatcher,
     DEFAULT_RENDERERS,
@@ -86,12 +92,303 @@ from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
 from .statusline import agent_counts, render_statusline
-from .theme import Theme, load_themes, select_theme
+from .theme import Theme, ThemeWatcher, apply_colorblind, load_themes, select_theme, theme_from_background
 from .title import TerminalTitle
 from .turn import _run_cancellable_turn
 from .overlays import HubOverlay, KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
+from .overlays.paste import PasteOverlay
 from .overlays.hub import ledger_transcript_frame
+
+
+class StdoutStallWatchdog:
+    """Track drain progress, rather than rejecting a large healthy frame."""
+
+    def __init__(self, arm_bytes: int = 262144, clear_bytes: int = 65536,
+                 stall_seconds: float = 1.0) -> None:
+        self.arm_bytes = arm_bytes
+        self.clear_bytes = clear_bytes
+        self.stall_seconds = stall_seconds
+        self.armed = False
+        self.low_water = 0
+        self.since = 0.0
+
+    def sample(self, pending: int, now: float) -> bool:
+        if pending <= self.clear_bytes:
+            self.armed = False
+        elif not self.armed and pending > self.arm_bytes:
+            self.armed = True
+            self.low_water, self.since = pending, now
+        elif self.armed and pending < self.low_water:
+            self.low_water, self.since = pending, now
+        return self.armed and now - self.since >= self.stall_seconds
+
+
+class _TerminalPump:
+    """One ordered writer keeps a stalled PTY off the application event loop."""
+
+    def __init__(self, stream: Any) -> None:
+        import queue
+        import threading
+
+        self.stream = stream
+        self.encoding = getattr(stream, "encoding", "utf-8") or "utf-8"
+        self.pending = 0
+        self.error: Exception | None = None
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._write, name="orcha-terminal", daemon=True)
+        self._thread.start()
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, data: str) -> int:
+        if self.error is not None:
+            return len(data)
+        with self._lock:
+            self.pending += len(data.encode(self.encoding, "replace"))
+        self._queue.put(data)
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+    def _write(self) -> None:
+        while (data := self._queue.get()) is not None:
+            try:
+                # Small chunks expose ongoing progress even for a large frame.
+                for offset in range(0, len(data), 1024):
+                    chunk = data[offset:offset + 1024]
+                    self.stream.write(chunk)
+                    self.stream.flush()
+                    with self._lock:
+                        self.pending -= len(chunk.encode(self.encoding, "replace"))
+            except Exception as exc:
+                self.error = exc
+                with self._lock:
+                    self.pending = 0
+
+    def close(self) -> None:
+        self._queue.put(None)
+
+
+class _TerminalReplies:
+    """Remove fragmented terminal reports before PT's keyboard/paste parser."""
+
+    def __init__(self, feed: Callable[[str], None], report: Callable[[str], None]) -> None:
+        self.feed = feed
+        self.report = report
+        self.pending = ""
+        self.pasting = False
+
+    def __call__(self, text: str) -> None:
+        import re
+
+        text = self.pending + text
+        self.pending = ""
+        while text:
+            if not text.startswith("\x1b"):
+                boundary = text.find("\x1b")
+                if boundary < 0:
+                    self.feed(text)
+                    return
+                self.feed(text[:boundary])
+                text = text[boundary:]
+            if self.pasting and "\x1b[201~".startswith(text):
+                if text != "\x1b[201~":
+                    self.pending = text
+                    return
+            if text.startswith("\x1b[200~"):
+                self.pasting = True
+                self.feed(text[:6])
+                text = text[6:]
+                continue
+            if text.startswith("\x1b[201~"):
+                self.pasting = False
+                self.feed(text[:6])
+                text = text[6:]
+                continue
+            if not self.pasting:
+                if text.startswith(("\x1b[I", "\x1b[O")):
+                    self.report(text[:3])
+                    text = text[3:]
+                    continue
+                match = re.match(r"\x1b\[\?2026;[0-4]\$y|\x1b\]11;[^\x07\x1b]*(?:\x07|\x1b\\)", text)
+                if match:
+                    self.report(match[0])
+                    text = text[len(match[0]):]
+                    continue
+                prefixes = ("\x1b[?2026;", "\x1b]11;", "\x1b[200~", "\x1b[201~", "\x1b[I", "\x1b[O")
+                if any(prefix.startswith(text) for prefix in prefixes) or (
+                    text.startswith(("\x1b[?2026;", "\x1b]11;")) and len(text) < 128
+                ):
+                    self.pending = text
+                    return
+            self.feed(text[0])
+            text = text[1:]
+
+    def flush(self) -> None:
+        if self.pasting:
+            return
+        if self.pending:
+            pending, self.pending = self.pending, ""
+            self.feed(pending)
+
+
+class _PaintOutput:
+    """Synchronized flushes, bounded repaint backlog and a loop-lag probe."""
+
+    def __init__(self, application: Any, *, enabled: bool = True) -> None:
+        import logging
+        from prompt_toolkit.output.vt100 import Vt100_Output
+
+        self.application = application
+        self.output = application.output
+        self.logger = logging.getLogger("orcha.tui.output")
+        self.watchdog = StdoutStallWatchdog()
+        self.pump: _TerminalPump | None = None
+        self._probe_task: asyncio.Task[Any] | None = None
+        self._degraded = False
+        self._redraw_skipped = False
+        self._sync_depth = 0
+        self._sync_open = False
+        self._closed = False
+        self.background: str | None = None
+        self.focus_changed: Callable[[bool], None] = lambda _focused: None
+        terminal = os.environ.get("TERM", "").lower()
+        program = os.environ.get("TERM_PROGRAM", "").lower()
+        override = os.environ.get("ORCHA_SYNC_OUTPUT", "").lower()
+        self._detected_synchronized = (
+            override in {"1", "true"} or (override not in {"0", "false"} and (
+                any(name in terminal for name in ("kitty", "foot", "wezterm", "ghostty"))
+                or program in {"wezterm", "ghostty", "iterm.app", "vscode"}
+            ))
+        )
+        self.synchronized = enabled and self._detected_synchronized
+        self._enabled = enabled
+        self._original_flush = self.output.flush
+        self._original_redraw = application._redraw
+        self._parser: Any = None
+        self._original_feed: Any = None
+        self._original_parser_flush: Any = None
+        if isinstance(self.output, Vt100_Output) and self.output.stdout.isatty():
+            self.pump = _TerminalPump(self.output.stdout)
+            self.output.flush = self.flush
+            application._redraw = self.redraw
+            parser = getattr(application.input, "vt100_parser", None)
+            if parser is not None:
+                self._parser = parser
+                self._original_feed = parser.feed
+                self._original_parser_flush = parser.flush
+                replies = _TerminalReplies(parser.feed, self.report)
+                parser.feed = replies
+                def flush_parser() -> None:
+                    replies.flush()
+                    self._original_parser_flush()
+                parser.flush = flush_parser
+
+    def report(self, value: str) -> None:
+        if value in {"\x1b[I", "\x1b[O"}:
+            self.focus_changed(value == "\x1b[I")
+        if value.startswith("\x1b[?2026;"):
+            self._detected_synchronized = value[-3] in "12"
+            self.synchronized = self._enabled and self._detected_synchronized
+        elif value.startswith("\x1b]11;"):
+            self.background = value[5:].rstrip("\x07\x1b\\")
+
+    def begin_frame(self) -> None:
+        """Keep erase, settled output and redraw in one terminal transaction."""
+        if self._sync_depth == 0 and self.pump is not None:
+            self.flush()
+            self._sync_open = self.synchronized
+            if self._sync_open:
+                self.pump.write("\x1b[?2026h")
+        self._sync_depth += 1
+
+    def end_frame(self) -> None:
+        if self._sync_depth <= 0:
+            return
+        if self._sync_depth == 1 and self.pump is not None:
+            self.flush()
+            if self._sync_open:
+                self.pump.write("\x1b[?2026l")
+            self._sync_open = False
+        self._sync_depth -= 1
+
+    def flush(self) -> None:
+        data = "".join(self.output._buffer)
+        self.output._buffer.clear()
+        if data and self.pump is not None:
+            if self.synchronized and self._sync_depth == 0:
+                data = "\x1b[?2026h" + data + "\x1b[?2026l"
+            self.pump.write(data)
+
+    def redraw(self, render_as_done: bool = False) -> None:
+        if not render_as_done and self.pump is not None and self.pump.pending > 262144:
+            # Skip before PT advances its differential screen. Never drop bytes
+            # from an already-rendered frame or enqueue another invalidation.
+            self._redraw_skipped = True
+            return
+        self._redraw_skipped = False
+        self._original_redraw(render_as_done)
+
+    def start(self) -> None:
+        if self.pump is None or self._probe_task is not None:
+            return
+        self.output.write_raw("\x1b[?2026$p\x1b]11;?\x07\x1b[?1004h")
+        self.output.flush()
+        self._probe_task = asyncio.create_task(self._probe())
+
+    async def _probe(self) -> None:
+        previous = time.monotonic()
+        while True:
+            await asyncio.sleep(0.25)
+            now = time.monotonic()
+            lag = max(0.0, now - previous - 0.25)
+            previous = now
+            if not self._sample_output(now=now, lag=lag):
+                return
+
+    def _sample_output(self, *, now: float, lag: float) -> bool:
+        pending = self.pump.pending if self.pump is not None else 0
+        stalled = self.watchdog.sample(pending, now)
+        if self.pump is not None and self.pump.error is not None:
+            self.logger.error("Terminal output failed: %s", type(self.pump.error).__name__)
+            if self.application.is_running:
+                self.application.exit(exception=OSError("terminal output disconnected"))
+            return False
+        degraded = stalled or lag > 0.25
+        transitioned = degraded != self._degraded
+        if degraded and transitioned:
+            self.logger.warning("Terminal repaint degraded: pending=%d loop_lag=%.3fs", pending, lag)
+        self.application.min_redraw_interval = 0.1 if degraded else 1 / 60
+        self._degraded = degraded
+        # FrameScheduler owns activity ticks. An idle watchdog must not paint.
+        if transitioned or (self._redraw_skipped and pending < 65536):
+            self.application.invalidate()
+        return True
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._probe_task is not None:
+            self._probe_task.cancel()
+            await asyncio.gather(self._probe_task, return_exceptions=True)
+        if self.pump is not None:
+            self.output.write_raw("\x1b[?1004l\x1b[?2026l")
+            self.flush()
+        if self.pump is not None:
+            deadline = time.monotonic() + 1.0
+            while self.pump.pending and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            self.pump.close()
+        self.output.flush = self._original_flush
+        self.application._redraw = self._original_redraw
+        if self._parser is not None:
+            self._parser.feed = self._original_feed
+            self._parser.flush = self._original_parser_flush
 
 
 def _completion_style(theme: Any) -> Any:
@@ -322,7 +619,18 @@ class ApplicationRuntime:
             _ensure_agent_command(registry)
         completion_registry = registry or Registry()
         self.frame = Frame()
+        self._tui_config = getattr(getattr(ctx, "cfg", None), "tui", None)
+        self._base_theme = theme
+        if isinstance(theme, Theme):
+            theme = replace(apply_colorblind(theme, getattr(self._tui_config, "colorblind", False)), hyperlinks=getattr(self._tui_config, "hyperlinks", True))
         self.theme: Any = theme
+        self._render_theme_revision = 0
+        self._viewport_scroll = 0
+        self._turn_started = 0.0
+        self._todo_completed_at: dict[str, float] = {}
+        self._expanded_tool_id: str | None = None
+        self._last_tool_card: Block | None = None
+        self._theme_poll_task: asyncio.Task[Any] | None = None
         self.composer_shape = composer_shape
         self._themes = dict(themes or {})
         current_theme_id = str(
@@ -330,7 +638,7 @@ class ApplicationRuntime:
                 theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default"
             )
         )
-        self._themes.setdefault(current_theme_id, theme)
+        self._themes.setdefault(current_theme_id, self._base_theme)
         if registry is None:
             block_renderers: Any = {
                 **DEFAULT_RENDERERS,
@@ -352,6 +660,7 @@ class ApplicationRuntime:
             set_theme=self._set_theme,
         )
         self.ui.theme = theme
+        self.ui.frame = self.frame
         self.ui.active_agent = None
         self.ui.themes = self._themes
         self.ui.history = history
@@ -359,6 +668,7 @@ class ApplicationRuntime:
         self._pending: set[asyncio.Future[Any]] = set()
         self._terminal_pending: set[asyncio.Future[Any]] = set()
         self._submit_lock = asyncio.Lock()
+        self._commit_lock = asyncio.Lock()
         self._early_notifications: list[str] = []
         self._scrollback = console or Console()
         self.queue = PromptQueue()
@@ -406,6 +716,7 @@ class ApplicationRuntime:
             completer=completer,
             accept_handler=self._accept,
         )
+        self.composer.on_paste_peek = lambda text: self._track(self.ui.show(PasteOverlay(text)))
         self.buffer = self.composer.buffer
         self._restore_draft()
         effective = load_keybindings(
@@ -413,6 +724,7 @@ class ApplicationRuntime:
             registry=completion_registry,
             warn=self._notify,
         )
+        self.composer.configure_keys(effective)
         self._effective_keys = effective
         self.ui.effective_keys = effective
         self.ui.prepare_session_switch = self.prepare_session_switch
@@ -424,7 +736,7 @@ class ApplicationRuntime:
 
         @core_bindings.add(
             "escape",
-            filter=Condition(lambda: self._active_overlay is None),
+            filter=Condition(lambda: self._active_overlay is None) & (~vi_mode | vi_navigation_mode),
         )
         def _escape(event: Any) -> None:
             self._escape_ladder(event)
@@ -474,7 +786,7 @@ class ApplicationRuntime:
                 [
                     Window(height=Dimension(weight=1)),
                     Window(
-                        FormattedTextControl(self._viewport_text),
+                        FormattedTextControl(self._viewport_fragments),
                         height=Dimension(min=0),
                         dont_extend_height=True,
                     ),
@@ -507,9 +819,28 @@ class ApplicationRuntime:
             layout=Layout(root, focused_element=self.buffer),
             key_bindings=bindings,
             full_screen=False,
-            mouse_support=Condition(lambda: self._active_overlay is not None),
+            min_redraw_interval=1 / 60,
+            max_render_postpone_time=0.05,
+            mouse_support=Condition(lambda: self._active_overlay is not None or self._mouse_mode() == "full"),
+            editing_mode=EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS,
+            cursor=ModalCursorShapeConfig(),
             **kwargs,
         )
+        self._paint_output = _PaintOutput(self.application, enabled=getattr(self._tui_config, "synchronized_output", True))
+        self.ui.apply_settings = self._apply_settings
+        self.ui.application = self.application
+        self._original_scrollback_file = self._scrollback.file
+        if self._paint_output.pump is not None:
+            # Production passes an existing Rich console; it must use the same
+            # ordered writer as PT so commits cannot race differential frames.
+            self._scrollback.file = self._paint_output.pump
+        original_resize = self.application._on_resize
+        def resize() -> None:
+            if getattr(self._tui_config, "resize", "preserve") == "rebuild":
+                self._block_dispatcher.clear_cache()
+                self._viewport_scroll = 0
+            original_resize()
+        self.application._on_resize = resize
         self.application.ttimeoutlen = 0.1
         self.application.timeoutlen = 0.1
         self.ui.invalidate = self.application.invalidate
@@ -526,6 +857,7 @@ class ApplicationRuntime:
             enabled=bool(getattr(getattr(ctx, "cfg", None), "notify", False)),
             output=self.application.output,
         )
+        self._paint_output.focus_changed = self.notifier.set_focused
         self._outstanding_agents = agent_counts(ctx)[2] if ctx is not None else 0
         self.application.key_processor.before_key_press += self._record_keypress
         self._refresh_title()
@@ -678,15 +1010,24 @@ class ApplicationRuntime:
 
     def _has_spinner_activity(self) -> bool:
         outstanding = agent_counts(self.ctx)[2] if self.ctx is not None else 0
-        return self._turn_active or outstanding > 0
+        return self._turn_active or outstanding > 0 or any(time.monotonic() - value < 0.3 for value in self._todo_completed_at.values())
 
     def _spinner_tick(self, frame: int) -> None:
         self._spinner_frame = frame
+        self.ui._spinner_frame = frame
         spinner = theme_spinner(self.theme, "spinner.status", frame, ("✻",))
         self.title.set_spinner(spinner)
 
     def set_todos(self, todos: Any) -> None:
+        previous = {str(item.get("content", item.get("text", ""))): item.get("status") for item in self.ui.todos if isinstance(item, Mapping)}
         self.ui.set_todos(todos)
+        current = {str(item.get("content", item.get("text", ""))): item for item in self.ui.todos if isinstance(item, Mapping)}
+        self._todo_completed_at = {key: value for key, value in self._todo_completed_at.items() if key in current}
+        for key, item in current.items():
+            if item.get("status") == "completed" and previous.get(key) != "completed":
+                self._todo_completed_at[key] = time.monotonic()
+        if self._todo_completed_at:
+            self.scheduler.start_spinner()
         self.application.invalidate()
 
     def _hud_block(self, kind: str, data: Mapping[str, Any]) -> Block:
@@ -700,7 +1041,15 @@ class ApplicationRuntime:
     def _hud_blocks(self) -> list[Block]:
         blocks: list[Block] = []
         if self.ui.todos:
-            blocks.append(self._hud_block("todo", {"items": self.ui.todos[:7]}))
+            items = []
+            for item in self.ui.todos[:7]:
+                if isinstance(item, Mapping):
+                    item = dict(item)
+                    key = str(item.get("content", item.get("text", "")))
+                    if key in self._todo_completed_at:
+                        item["completion_progress"] = min(1.0, (time.monotonic() - self._todo_completed_at[key]) / 0.25)
+                items.append(item)
+            blocks.append(self._hud_block("todo", {"items": items}))
         if self.queue:
             blocks.append(
                 self._hud_block(
@@ -787,6 +1136,9 @@ class ApplicationRuntime:
 
         if isinstance(event, TurnStart) and source_id == "main":
             self._turn_active = True
+            self._turn_started = time.monotonic()
+            self._viewport_scroll = 0
+            self._expanded_tool_id = None
             self._refresh_title()
             spinner = theme_spinner(self.theme, "spinner.status", self._spinner_frame, ("✻",))
             self.title.set_turn(True, spinner=spinner)
@@ -908,8 +1260,12 @@ class ApplicationRuntime:
         return value[0] if isinstance(value, list) and value else str(value)
 
     def _status_text(self) -> Any:
+        self.ui.vim_mode = (str(self.application.vi_state.input_mode.value) if self.application.editing_mode == EditingMode.VI else None)
         if self.ctx is None:
-            return []
+            if self._turn_active:
+                elapsed = int(time.monotonic() - self._turn_started)
+                return [("class:accent", f"{self.title.spinner} orcha · {elapsed}s")]
+            return [("class:accent", "orcha")]
         return render_statusline(
             self.ctx,
             self.theme,
@@ -949,7 +1305,7 @@ class ApplicationRuntime:
         """Copy the outgoing editor state into the current session state."""
 
         state = self._composer_state()
-        draft = self.buffer.text
+        draft = self.composer.expanded_text(self.buffer.text)
         if draft:
             state["draft"] = draft
         else:
@@ -964,6 +1320,10 @@ class ApplicationRuntime:
         """Restore editor-local state after AppContext activates a session."""
 
         self.buffer.reset(append_to_history=False)
+        self.composer.forget_pastes()
+        clear_terminal_cache()
+        self._last_tool_card = None
+        self._expanded_tool_id = None
         self.queue.clear()
         self.thinking_level = self._restore_thinking_level()
         self.ui.thinking_level = self.thinking_level
@@ -985,7 +1345,7 @@ class ApplicationRuntime:
             persist()
 
     def _accept(self, buffer: Any) -> bool:
-        raw = buffer.text
+        raw = self.composer.expanded_text(buffer.text)
         text = raw.strip()
         if not text:
             if self.streaming and self.queue:
@@ -993,7 +1353,9 @@ class ApplicationRuntime:
                 self._abort_turn()
             return False
         self.transcript.dismiss_error()
+        buffer.text = raw
         buffer.reset(append_to_history=True)
+        self.composer.forget_pastes()
         if text == ".":
             text = "keep going"
         if self.streaming and text.startswith("/"):
@@ -1025,7 +1387,7 @@ class ApplicationRuntime:
             "dequeue": self._dequeue,
             "toggle_thinking": lambda _event: self._toggle_thinking(),
             "cycle_thinking_level": lambda _event: self._track(self._cycle_thinking_level()),
-            "expand_tools": lambda _event: self.ui.expand_tools(not self.ui.tools_expanded),
+            "expand_tools": lambda _event: self._toggle_last_tool(),
             "model_picker": lambda _event: self._track(self.ui.show("model")),
             "cycle_model": lambda _event: self._track(self._cycle_model()),
             "history_search": lambda _event: self._track(self._history_search()),
@@ -1051,6 +1413,14 @@ class ApplicationRuntime:
             handlers[action] = invoke
         return handlers
 
+    def _toggle_last_tool(self) -> None:
+        frame = self._drilled_frame or self.frame
+        last = next((block for block in reversed(frame.blocks) if block.kind == "tool"), self._last_tool_card)
+        if last is not None:
+            self._expanded_tool_id = None if self._expanded_tool_id == last.id else last.id
+        self.ui.expand_tools(not self.ui.tools_expanded)
+        self.application.invalidate()
+
     def _submit_action(self, event: Any) -> None:
         buffer = event.current_buffer
         if buffer.text.endswith("\\"):
@@ -1062,17 +1432,18 @@ class ApplicationRuntime:
     def _queue_draft(self, event: Any) -> None:
         if not self.streaming:
             return
-        text = event.current_buffer.text.strip()
+        text = self.composer.expanded_text(event.current_buffer.text).strip()
         if text:
             self.queue.extend(split_submission(text), mode="follow_up")
             event.current_buffer.reset(append_to_history=False)
+            self.composer.forget_pastes()
             event.app.invalidate()
 
     def _newline_or_followup(self, event: Any) -> None:
         if self.streaming:
             self._queue_draft(event)
-            return
-        event.current_buffer.insert_text("\n")
+        else:
+            event.current_buffer.insert_text("\n")
 
     def _dequeue(self, event: Any) -> None:
         text = self.queue.pop_last()
@@ -1116,6 +1487,7 @@ class ApplicationRuntime:
     def _interrupt(self, event: Any) -> None:
         buffer = event.current_buffer
         if buffer.text:
+            self.composer.clear_draft()
             buffer.reset(append_to_history=False)
             self._last_interrupt = 0.0
             return
@@ -1132,7 +1504,7 @@ class ApplicationRuntime:
     def _exit(self, event: Any) -> None:
         self._shutting_down = True
         state = self._composer_state()
-        text = event.current_buffer.text
+        text = self.composer.expanded_text(event.current_buffer.text)
         if text:
             state["draft"] = text
         if self.queue:
@@ -1229,7 +1601,7 @@ class ApplicationRuntime:
         if not self._custom_editor and not (os.environ.get("VISUAL") or os.environ.get("EDITOR")):
             self.ui.notify("Set $VISUAL or $EDITOR to edit the draft externally.")
             return
-        original = self.buffer.text
+        original = self.composer.expanded_text(self.buffer.text)
         try:
             edited = await run_in_terminal(lambda: self._editor_runner(original))
         except (OSError, subprocess.SubprocessError) as exc:
@@ -1342,6 +1714,9 @@ class ApplicationRuntime:
         self._shell_process = None
 
     async def _dispatch_submission(self, text: str) -> None:
+        if text.strip() == "/settings":
+            await self.ui.show("settings")
+            return
         if text.startswith("!"):
             await self._run_shell(text[1:].strip())
         else:
@@ -1495,7 +1870,25 @@ class ApplicationRuntime:
         self._early_notifications.clear()
         self.application.invalidate()
 
+    def _apply_settings(self, cfg: Any) -> None:
+        self.ctx.cfg = cfg
+        self._tui_config = getattr(cfg, "tui", None)
+        self.notifier.enabled = cfg.notify
+        self.composer.set_shape(cfg.composer)
+        self.composer_shape = cfg.composer
+        self.application.editing_mode = EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS
+        self._paint_output._enabled = getattr(self._tui_config, "synchronized_output", True)
+        self._paint_output.synchronized = self._paint_output._enabled and self._paint_output._detected_synchronized
+        self._apply_theme(self._base_theme)
+
     def _apply_theme(self, selected: Any) -> Any:
+        selected = self._themes.get(getattr(selected, "id", None), selected)
+        self._base_theme = selected
+        if isinstance(selected, Theme):
+            selected = replace(apply_colorblind(selected, getattr(self._tui_config, "colorblind", False)), hyperlinks=getattr(self._tui_config, "hyperlinks", True))
+        self._render_theme_revision += 1
+        self.composer.theme = selected
+        self._block_dispatcher.clear_cache()
         self.theme = selected
         self.ui.theme = selected
         prompt_style = _completion_style(selected)
@@ -1530,7 +1923,7 @@ class ApplicationRuntime:
             self.theme,
             width,
             rows,
-            self.ui.tools_expanded,
+            block.id == self._expanded_tool_id if self._expanded_tool_id is not None else False,
         )
 
     def _composer_height(self, width: int) -> int:
@@ -1581,7 +1974,8 @@ class ApplicationRuntime:
             rows,
             force_terminal,
             theme_id(self.theme),
-            self.ui.tools_expanded,
+            self._render_theme_revision,
+            block.id == self._expanded_tool_id,
         )
         if key in block._rendered_rows:
             return block._rendered_rows[key]
@@ -1596,7 +1990,9 @@ class ApplicationRuntime:
             theme=getattr(self.theme, "rich", None),
         )
         self._print_block(console, block, width, rows, viewport=True)
-        value = stream.getvalue()
+        # PT's ANSI parser understands SGR but not OSC 8. Cache sanitized
+        # viewport rows; native scrollback retains its hyperlink wrappers.
+        value = re.sub(r"\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)", "", stream.getvalue())
         if len(block._rendered_rows) >= 4:
             block._rendered_rows.pop(next(iter(block._rendered_rows)))
         block._rendered_rows[key] = value
@@ -1618,6 +2014,28 @@ class ApplicationRuntime:
         lines = rendered.splitlines()
         return max(1, len(lines))
 
+    def _mouse_mode(self) -> str:
+        value = getattr(self._tui_config, "mouse", "scroll")
+        return ("full" if value else "off") if isinstance(value, bool) else value
+
+    def _viewport_mouse(self, event: Any) -> Any:
+        mode = self._mouse_mode()
+        if mode == "off":
+            return NotImplemented
+        if event.event_type == MouseEventType.SCROLL_UP:
+            self._viewport_scroll += 3
+        elif event.event_type == MouseEventType.SCROLL_DOWN:
+            self._viewport_scroll = max(0, self._viewport_scroll - 3)
+        elif event.event_type == MouseEventType.MOUSE_UP and mode == "full":
+            self.application.layout.focus(self.buffer)
+        else:
+            return NotImplemented
+        self.application.invalidate()
+        return None
+
+    def _viewport_fragments(self) -> Any:
+        return [(style, text, self._viewport_mouse) for style, text, *_ in self._viewport_text().__pt_formatted_text__()]
+
     def _viewport_text(self) -> Any:
         size = self.application.output.get_size()
         width = max(1, size.columns)
@@ -1633,8 +2051,19 @@ class ApplicationRuntime:
         frame = self._drilled_frame if self._drilled_run_id is not None else self.frame
         if frame is None:
             return ANSI("")
+        # Working activity is represented by the status brand; retain retry
+        # information as a distinct card and leave transcript accumulation alone.
+        visible_frame = Frame()
+        visible_frame.blocks = [block for block in frame.blocks if block.kind != "working" or "retry_deadline" in block.data]
+        if self._last_tool_card is not None and self._last_tool_card.id == self._expanded_tool_id and not any(block.id == self._expanded_tool_id for block in visible_frame.blocks):
+            visible_frame.blocks.append(replace(self._last_tool_card, state=BlockState.SETTLED))
+        if self._viewport_scroll or self._expanded_tool_id is not None:
+            all_lines = "\n".join(self._capture_block(block, width, 10000, force_terminal=True) for block in visible_frame.blocks).splitlines(keepends=True)
+            self._viewport_scroll = min(self._viewport_scroll, max(0, len(all_lines) - budget))
+            end = len(all_lines) - self._viewport_scroll
+            return ANSI("".join(all_lines[max(0, end - budget):end]))
         rendered: list[str] = []
-        plan = frame.viewport_plan(
+        plan = visible_frame.viewport_plan(
             budget,
             width=width,
             measure=self._measure_block,
@@ -1678,6 +2107,8 @@ class ApplicationRuntime:
     def _write_blocks(self, blocks: list[Block]) -> None:
         width = max(1, self.application.output.get_size().columns)
         for index, block in enumerate(blocks):
+            if block.kind == "tool":
+                self._last_tool_card = block
             if index and block.kind not in LEADING_SPACER_KINDS:
                 self._scrollback.print()
             self._print_block(
@@ -1687,6 +2118,10 @@ class ApplicationRuntime:
                 10_000,
                 viewport=False,
             )
+            if self._paint_output.pump is not None:
+                protocol = image_protocol(block)
+                if protocol:
+                    self._paint_output.pump.write(protocol + "\n")
 
     async def _run_in_app_terminal(self, func: Callable[[], Any]) -> Any:
         """Run a terminal callback bound to this prompt-toolkit application."""
@@ -1705,10 +2140,22 @@ class ApplicationRuntime:
             self.transcript.release_committed(blocks)
             self.frame.prune_committed(blocks)
             self._block_dispatcher.evict(blocks)
+            if any(block.id == self._expanded_tool_id for block in blocks):
+                self._expanded_tool_id = None
 
         async def write_and_release() -> None:
-            await self._run_in_app_terminal(write_and_prune)
-            self.application.invalidate()
+            pump = self._paint_output.pump
+            while pump is not None and pump.pending > 262144 and pump.error is None:
+                if self._shutting_down:
+                    return
+                await asyncio.sleep(0.05)
+            async with self._commit_lock:
+                self._paint_output.begin_frame()
+                try:
+                    await self._run_in_app_terminal(write_and_prune)
+                finally:
+                    # run_in_terminal's context exit has already repainted PT.
+                    self._paint_output.end_frame()
 
         self._track(write_and_release(), terminal=True)
 
@@ -1720,6 +2167,9 @@ class ApplicationRuntime:
             terminal=True,
         )
         self.transcript.clear()
+        clear_terminal_cache()
+        self._last_tool_card = None
+        self._expanded_tool_id = None
         self.application.invalidate()
 
     async def _drain(self, pending: set[asyncio.Future[Any]]) -> None:
@@ -1729,14 +2179,42 @@ class ApplicationRuntime:
     async def _drain_pending(self) -> None:
         await self._drain(self._pending)
 
+    async def _poll_themes(self) -> None:
+        watcher = ThemeWatcher(Path.home() / ".config/orcha-agent/themes")
+        last_background = None
+        while True:
+            await asyncio.sleep(0.25)
+            cfg = getattr(self.ctx, "cfg", None)
+            if cfg is None:
+                continue
+            background = self._paint_output.background
+            if background != last_background:
+                last_background = background
+                selected = theme_from_background("\x1b]11;" + background) if background else None
+                if cfg.theme == "auto" and selected in self._themes:
+                    self._apply_theme(self._themes[selected])
+            if await asyncio.to_thread(watcher.changed, time.monotonic()):
+                warnings: list[str] = []
+                themes = await asyncio.to_thread(load_themes, cwd=cfg.cwd, trusted=cfg.trust_cwd,
+                                                 symbols=cfg.symbols, warn=warnings.append)
+                for warning in warnings:
+                    self._notify(warning)
+                selected = themes.get(getattr(self.theme, "id", "dark"), themes["dark"])
+                self.replace_themes(themes, selected)
+
     async def run(self) -> None:
         self._track(self._submit_serially(None))
+        self.application.after_render += lambda _app: self._paint_output.start()
+        self._theme_poll_task = asyncio.create_task(self._poll_themes())
         try:
             await self.application.run_async()
         except EOFError:
             pass
         finally:
             self._shutting_down = True
+            if self._theme_poll_task is not None:
+                self._theme_poll_task.cancel()
+                await asyncio.gather(self._theme_poll_task, return_exceptions=True)
             if self._active_overlay is not None:
                 self._active_overlay.cancel()
             if self.advisor is not None:
@@ -1745,6 +2223,9 @@ class ApplicationRuntime:
             self.scheduler.commit_now()
             await self._drain_pending()
             await self.scheduler.aclose()
+            self.title.set_turn(False)
+            await self._paint_output.close()
+            self._scrollback.file = self._original_scrollback_file
 
 
 def _register_theme_refresh(

@@ -12,6 +12,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1",
     "mcp>=2.2.0",
     "prompt-toolkit>=3.0.53",
+    "pyte>=0.8.2,<0.9",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",

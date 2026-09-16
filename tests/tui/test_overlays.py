@@ -155,7 +155,7 @@ async def test_approval_overlay_shortcuts(wait_until) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None:
+async def test_runtime_serializes_overlays_and_restores_native_selection(wait_until) -> None:
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()

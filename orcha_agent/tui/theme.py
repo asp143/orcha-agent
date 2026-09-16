@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,8 @@ COLOR_TOKENS = (
     "toolDiffAdded",
     "toolDiffRemoved",
     "toolDiffContext",
+    "toolDiffAddedBg",
+    "toolDiffRemovedBg",
     "syntaxComment",
     "syntaxKeyword",
     "syntaxFunction",
@@ -76,7 +78,65 @@ COLOR_TOKENS = (
 )
 
 _THEMES_DIR = Path(__file__).with_name("themes")
-_BUILTIN_NAMES = ("dark", "light", "ansi", "dracula", "nord", "gruvbox")
+_BUILTIN_NAMES = (
+    "dark",
+    "light",
+    "ansi",
+    "dracula",
+    "nord",
+    "gruvbox",
+    "catppuccin-latte",
+    "catppuccin-frappe",
+    "catppuccin-macchiato",
+    "catppuccin-mocha",
+    "rose-pine",
+    "rose-pine-moon",
+    "rose-pine-dawn",
+    "tokyo-night-storm",
+    "kanagawa",
+    "everforest",
+    "catppuccin-latte-legacy",
+    "dracula-omp",
+    "nord-omp",
+    "gruvbox-dark",
+    "gruvbox-light",
+    "tokyo-night",
+    "tokyo-night-day",
+    "solarized-dark",
+    "solarized-light",
+    "one-dark",
+    "one-light",
+    "github-dark",
+    "github-light",
+    "rose-pine-legacy",
+    "forest-dark",
+    "forest-light",
+    "monokai-dark",
+    "ocean-dark",
+    "paper-light",
+)
+_THEME_ALIASES = {
+    "dark-catppuccin": "catppuccin-mocha",
+    "light-catppuccin": "catppuccin-latte-legacy",
+    "dark-dracula": "dracula-omp",
+    "dark-nord": "nord-omp",
+    "dark-gruvbox": "gruvbox-dark",
+    "light-gruvbox": "gruvbox-light",
+    "dark-tokyo-night": "tokyo-night",
+    "light-tokyo-night": "tokyo-night-day",
+    "dark-solarized": "solarized-dark",
+    "light-solarized": "solarized-light",
+    "dark-one": "one-dark",
+    "light-one": "one-light",
+    "dark-github": "github-dark",
+    "light-github": "github-light",
+    "dark-rose-pine": "rose-pine-legacy",
+    "dark-forest": "forest-dark",
+    "light-forest": "forest-light",
+    "dark-monokai": "monokai-dark",
+    "dark-ocean": "ocean-dark",
+    "light-paper": "paper-light",
+}
 Warn = Callable[[str], None]
 
 
@@ -86,10 +146,22 @@ def _warn_stderr(message: str) -> None:
 
 def _palette_rgb(index: int) -> tuple[int, int, int]:
     base = (
-        (0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0),
-        (0, 0, 128), (128, 0, 128), (0, 128, 128), (192, 192, 192),
-        (128, 128, 128), (255, 0, 0), (0, 255, 0), (255, 255, 0),
-        (0, 0, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
     )
     if index < 16:
         return base[index]
@@ -139,7 +211,7 @@ def _resolve_variables(values: Mapping[str, object]) -> dict[str, str]:
         if name not in values:
             raise ValueError(f"unknown variable ${name}")
         if name in resolving:
-            cycle = " -> ".join((*resolving[resolving.index(name):], name))
+            cycle = " -> ".join((*resolving[resolving.index(name) :], name))
             raise ValueError(f"theme variable cycle: {cycle}")
         resolving.append(name)
         value = values[name]
@@ -183,6 +255,7 @@ class Theme:
     name: str
     colors: Mapping[str, str]
     symbols: Mapping[str, Any]
+    hyperlinks: bool = True
     rich: RichTheme = field(init=False, repr=False, compare=False)
     pt: PromptToolkitStyle = field(init=False, repr=False, compare=False)
 
@@ -247,10 +320,7 @@ def load_theme_file(
     unknown = sorted(set(raw_colors) - set(COLOR_TOKENS))
     if unknown:
         raise ValueError(f"theme {identifier} has unknown color tokens: {', '.join(unknown)}")
-    colors = {
-        token: _resolve_color(value, variables, token)
-        for token, value in raw_colors.items()
-    }
+    colors = {token: _resolve_color(value, variables, token) for token, value in raw_colors.items()}
     missing = [token for token in COLOR_TOKENS if token not in colors]
     if missing:
         if fallback is None:
@@ -287,6 +357,37 @@ def load_theme_file(
             encoding=encoding,
             warn=warn,
         ),
+    )
+
+
+def apply_colorblind(theme: Theme, enabled: bool = True) -> Theme:
+    """Apply an explicit palette option independently of the symbol preset."""
+    if not enabled:
+        return theme
+    background = (
+        _prompt_color(theme.color("toolSuccessBg"))
+        or _prompt_color(theme.color("userMessageBg"))
+        or "#181820"
+    )
+
+    def tint(color: str) -> str:
+        return "#" + "".join(
+            f"{round(int(background[i : i + 2], 16) * 0.9 + int(color[i : i + 2], 16) * 0.1):02x}"
+            for i in (1, 3, 5)
+        )
+
+    return replace(
+        theme,
+        colors={
+            **theme.colors,
+            "success": "#56b4e9",
+            "error": "#e69f00",
+            "toolDiffAdded": "#56b4e9",
+            "toolDiffRemoved": "#e69f00",
+            "toolDiffAddedBg": tint("#56b4e9"),
+            "toolDiffRemovedBg": tint("#e69f00"),
+            "warning": "#cc79a7",
+        },
     )
 
 
@@ -391,14 +492,65 @@ def select_theme(
 
     selected = _auto_theme(os.environ if environ is None else environ) if name == "auto" else name
     if selected not in themes:
+        selected = _THEME_ALIASES.get(selected, selected)
+    if selected not in themes:
         raise KeyError(selected)
     return themes[selected]
 
 
 __all__ = [
+    "apply_colorblind",
     "COLOR_TOKENS",
     "Theme",
     "load_theme_file",
     "load_themes",
     "select_theme",
 ]
+
+
+def theme_from_background(response: str) -> str | None:
+    """Decode an OSC 11 rgb reply without reading from the application input."""
+    import re
+
+    match = re.search(
+        r"(?:\x1b\]11;|\]11;)rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})", response
+    )
+    if match is None:
+        return None
+    channels = [int(value, 16) / (16 ** len(value) - 1) for value in match.groups()]
+    return (
+        "light"
+        if sum(value * weight for value, weight in zip(channels, (0.2126, 0.7152, 0.0722))) >= 0.5
+        else "dark"
+    )
+
+
+class ThemeWatcher:
+    """Cheap directory polling with debounce; invoke outside the paint path."""
+
+    def __init__(self, directory: Path, debounce: float = 0.2) -> None:
+        self.directory = directory
+        self.debounce = debounce
+        self._signature = self._scan()
+        self._pending: float | None = None
+
+    def _scan(self) -> tuple[tuple[str, int, int], ...]:
+        result: list[tuple[str, int, int]] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                stat = path.stat()
+                result.append((path.name, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                continue
+        return tuple(result)
+
+    def changed(self, now: float) -> bool:
+        signature = self._scan()
+        if signature != self._signature:
+            self._signature = signature
+            self._pending = now
+            return False
+        if self._pending is not None and now - self._pending >= self.debounce:
+            self._pending = None
+            return True
+        return False

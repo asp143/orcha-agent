@@ -164,21 +164,22 @@ def test_segment_protocol_wraps_legacy_strings_and_preserves_explicit_segments()
 def test_preset_groups_are_stable() -> None:
     assert PRESETS == {
         "default": (
-            ("model", "mode", "path", "git", "context", "cost"),
+            ("brand", "model", "mode", "path", "git", "context", "cost"),
             ("subagents", "session"),
         ),
-        "minimal": (("model", "path"), ("context",)),
-        "compact": (("mode", "path", "git"), ("context", "time")),
+        "minimal": (("brand", "model", "path"), ("context",)),
+        "powerline": (("brand", "model", "path", "git", "pr"), ("token_rate", "usage", "context")),
+        "compact": (("brand", "mode", "path", "git"), ("context", "time")),
         "full": (
-            ("model", "mode", "path", "git", "session"),
+            ("brand", "model", "mode", "path", "git", "session"),
             ("subagents", "tokens", "cache", "cost", "context", "time"),
         ),
         "nerd": (
-            ("model", "mode", "path", "git", "session"),
+            ("brand", "model", "mode", "path", "git", "session"),
             ("subagents", "tokens", "cache", "cost", "context", "time"),
         ),
         "ascii": (
-            ("model", "mode", "path", "git"),
+            ("brand", "model", "mode", "path", "git"),
             ("subagents", "context", "cost"),
         ),
     }
