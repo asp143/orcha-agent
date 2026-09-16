@@ -300,6 +300,7 @@ class TursoSessionStore(SessionStore):
     ) -> None:
         secret = _SecretValue(auth_token)
         del auth_token
+        self._initialize_ledger_cache()
         self.db_path = Path(db_path)
         self._closed = False
         self._sync_on_close = sync_on_close
@@ -421,29 +422,30 @@ class TursoSessionStore(SessionStore):
     def close(self) -> None:
         """Optionally synchronize, then close, sanitizing any SDK error."""
 
-        if self._closed:
-            return
+        with self.saver.lock:
+            if self._closed:
+                return
 
-        sync_failed = False
-        if self._sync_on_close:
+            sync_failed = False
+            if self._sync_on_close:
+                try:
+                    self.sync()
+                except TursoPersistenceError:
+                    sync_failed = True
+
+            close_failed = False
             try:
-                self.sync()
-            except TursoPersistenceError:
-                sync_failed = True
+                self._connection.close()
+            except Exception:
+                close_failed = True
 
-        close_failed = False
-        try:
-            self._connection.close()
-        except Exception:
-            close_failed = True
-
-        if close_failed:
-            raise TursoPersistenceError("Could not close the Turso embedded replica")
-        self._closed = True
-        if sync_failed:
-            raise TursoPersistenceError(
-                "Could not synchronize the Turso embedded replica before closing it"
-            )
+            if close_failed:
+                raise TursoPersistenceError("Could not close the Turso embedded replica")
+            self._closed = True
+            if sync_failed:
+                raise TursoPersistenceError(
+                    "Could not synchronize the Turso embedded replica before closing it"
+                )
 
 
 def open_session_store(

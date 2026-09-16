@@ -3,7 +3,7 @@
 from __future__ import annotations
 import os
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, TypeAlias
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -37,6 +37,7 @@ class ModelResolver:
             return
 
         from deepagents import register_harness_profile
+
         for prefix, profile in profiles:
             key = (prefix, id(profile))
             if key in _REGISTERED_HARNESS_PROFILES:
@@ -46,28 +47,33 @@ class ModelResolver:
 
     def resolve(self, spec: ModelSpec, role: str) -> BaseChatModel:
         """Resolve the primary available chat model for a role."""
-        return self.resolve_chain(spec, role)[0]
+        return next(self._iter_available(spec, role))
 
     def resolve_chain(self, spec: ModelSpec, role: str) -> list[BaseChatModel]:
         """Resolve available models in fallback order without wrapping them."""
+        return list(self._iter_available(spec, role))
+
+    def _iter_available(self, spec: ModelSpec, role: str) -> Iterator[BaseChatModel]:
         expanded = self._expand_aliases(spec, role=role)
         if not expanded:
             raise ValueError(f"Model fallback chain for role {role!r} cannot be empty")
 
-        resolved: list[BaseChatModel] = []
+        resolved = False
         unavailable: list[str] = []
         for model_spec in expanded:
             try:
-                resolved.append(self._resolve_one(model_spec, role))
+                model = self._resolve_one(model_spec, role)
             except RuntimeError as exc:
                 unavailable.append(str(exc))
+                continue
+            resolved = True
+            yield model
 
         if not resolved:
             details = "; ".join(unavailable)
             raise RuntimeError(
                 f"No model in the fallback chain for role {role!r} is available: {details}"
             )
-        return resolved
 
     def resolve_roles(self) -> dict[str, ResolvedModel]:
         """Construct independent model objects for each built-in role."""
@@ -97,8 +103,7 @@ class ModelResolver:
             return expanded
         if not isinstance(spec, str) or not spec:
             raise ValueError(
-                f"Model specification for role {role!r} must be a non-empty string "
-                "or fallback list"
+                f"Model specification for role {role!r} must be a non-empty string or fallback list"
             )
 
         target = self._config.models.get(spec)
@@ -130,13 +135,9 @@ class ModelResolver:
             raise RuntimeError(
                 f"Model provider {prefix!r} is unavailable for role {role!r}. {hint}"
             )
-        if registration.env_keys and not any(
-            os.environ.get(key) for key in registration.env_keys
-        ):
+        if registration.env_keys and not any(os.environ.get(key) for key in registration.env_keys):
             accepted = ", ".join(registration.env_keys)
-            raise RuntimeError(
-                f"Model provider {prefix!r} requires one of: {accepted}"
-            )
+            raise RuntimeError(f"Model provider {prefix!r} requires one of: {accepted}")
 
         provider_config = dict(self._config.providers.get(prefix, {}))
         if not registration.capabilities.thinking:
@@ -187,10 +188,7 @@ def filter_foreign_blocks(
             content = [
                 dict(block) if isinstance(block, Mapping) else block
                 for block in content
-                if not (
-                    isinstance(block, Mapping)
-                    and block.get("type") in private_types
-                )
+                if not (isinstance(block, Mapping) and block.get("type") in private_types)
             ]
         additional_kwargs = {
             key: value

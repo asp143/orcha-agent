@@ -7,11 +7,12 @@ from collections.abc import Callable, Sequence
 from typing import Any, Generic, TypeVar
 
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import HSplit, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 
 from .base import Anchor, Overlay, ScrollableContent
 
@@ -29,6 +30,35 @@ def _fuzzy(query: str, text: str) -> bool:
             if current is None:
                 return True
     return False
+
+
+class _SelectControl(FormattedTextControl):
+    """Let the window request visible rows without formatting the whole list."""
+
+    def __init__(self, picker: Any, *, focusable: bool) -> None:
+        super().__init__(focusable=focusable)
+        self.picker = picker
+
+    def create_content(self, width: int, height: int | None) -> UIContent:
+        picker = self.picker
+        pairs = picker._filtered_pairs()
+        error_rows = int(picker._error is not None)
+
+        def line(index: int) -> StyleAndTextTuples:
+            if error_rows and index == 0:
+                return [("class:error", f"  {picker._error}")]
+            index -= error_rows
+            if not pairs:
+                return [("class:overlay.empty", f"  {picker.empty_text}")]
+            original, item = pairs[index]
+            return picker._item_fragments(index, original, item)
+
+        return UIContent(
+            get_line=line,
+            line_count=max(1, len(pairs)) + error_rows,
+            cursor_position=Point(x=0, y=picker.index + error_rows),
+            show_cursor=False,
+        )
 
 
 class SelectList(ScrollableContent, Overlay, Generic[T]):
@@ -51,6 +81,7 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         show_filter: bool = True,
     ) -> None:
         self.items = tuple(items)
+        self._filter_cache: tuple[tuple[T, ...], str, list[tuple[int, T]]] | None = None
         self.label = label
         self.multi = multi
         self._init_scrolling(page_size)
@@ -63,8 +94,8 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         self.filter = Buffer(multiline=False)
         self.filter.on_text_changed += self._filter_changed
         self._show_filter = show_filter
-        self.list_control = FormattedTextControl(
-            self._fragments,
+        self.list_control = _SelectControl(
+            self,
             focusable=not show_filter,
         )
         self.filter_control = BufferControl(buffer=self.filter)
@@ -79,9 +110,7 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         if prefix is not None:
             body_parts.extend([prefix, Window(char="─", height=1, style="class:overlay.divider")])
         self.list_window = Window(self.list_control, always_hide_cursor=True)
-        self.footer_control = FormattedTextControl(
-            lambda: self._scroll_footer("select")
-        )
+        self.footer_control = FormattedTextControl(lambda: self._scroll_footer("select"))
         body_parts.extend(
             [
                 self.list_window,
@@ -141,11 +170,16 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
 
     def _filtered_pairs(self) -> list[tuple[int, T]]:
         query = self.filter.text
-        return [
+        cached = self._filter_cache
+        if cached is not None and cached[0] is self.items and cached[1] == query:
+            return cached[2]
+        pairs = [
             (offset, item)
             for offset, item in enumerate(self.items)
-            if _fuzzy(query, self.label(item))
+            if not query or _fuzzy(query, self.label(item))
         ]
+        self._filter_cache = (self.items, query, pairs)
+        return pairs
 
     @property
     def filtered_items(self) -> tuple[T, ...]:
@@ -202,6 +236,16 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         self._error = f"{type(exc).__name__}: {exc}"
         event.app.invalidate()
 
+    def _item_fragments(self, visible: int, original: int, item: T) -> StyleAndTextTuples:
+        current = visible == self.index
+        marker = (
+            ("◉" if original in self._selected else "○")
+            if self.multi
+            else ("›" if current else " ")
+        )
+        style = "class:overlay.selection" if current else "class:overlay.item"
+        return [(style, f" {marker} {self.label(item)}")]
+
     def _fragments(self) -> StyleAndTextTuples:
         filtered = self._filtered_pairs()
         fragments: StyleAndTextTuples = []
@@ -214,12 +258,8 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
             current = visible == self.index
             if current:
                 fragments.append(("[SetCursorPosition]", ""))
-            if self.multi:
-                marker = "◉" if original in self._selected else "○"
-            else:
-                marker = "›" if current else " "
-            style = "class:overlay.selection" if current else "class:overlay.item"
-            fragments.append((style, f" {marker} {self.label(item)}\n"))
+            fragments.extend(self._item_fragments(visible, original, item))
+            fragments.append(("", "\n"))
         return fragments
 
     def render_text(self) -> str:

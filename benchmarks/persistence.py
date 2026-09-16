@@ -126,8 +126,30 @@ def run_ledger(config: RunConfig) -> dict[str, Any]:
                     abandoned_entries=abandoned_entries,
                 )
                 fixture_sizes = database_file_bytes(database)
+                first_load_samples: list[float] = []
+                for _ in range(config.repetitions):
+                    # A new connection and empty decoded cache for every sample.
+                    # Store setup is excluded; path decoding/validation is timed.
+                    with SessionStore(database) as fresh_store:
+                        started = perf_counter_ns()
+                        resolved = Ledger(fresh_store).path(source.thread_id)
+                        first_load_samples.append((perf_counter_ns() - started) / 1_000_000_000)
+                        if len(resolved) != active_entries:
+                            raise AssertionError("first ledger load lost active fixture messages")
+
                 active_path = Ledger(store).path(source.thread_id)
                 ledger = Ledger(store)
+
+                cold_path_samples: list[float] = []
+                for _ in range(config.repetitions):
+                    with store._ledger_message_cache_lock:
+                        store._ledger_message_cache.clear()
+                        store._ledger_message_cache_bytes = 0
+                    started = perf_counter_ns()
+                    resolved = ledger.path(source.thread_id)
+                    cold_path_samples.append((perf_counter_ns() - started) / 1_000_000_000)
+                    if len(resolved) != active_entries:
+                        raise AssertionError("cold ledger path lost active fixture messages")
 
                 path_samples: list[float] = []
                 for _ in range(config.repetitions):
@@ -160,8 +182,13 @@ def run_ledger(config: RunConfig) -> dict[str, Any]:
                             "active_entries": active_entries,
                             "abandoned_entries": abandoned_entries,
                             "fixture_population_timed": False,
+                            "first_load_store_setup_timed": False,
+                            "first_load_store": "fresh SessionStore per iteration",
+                            "path_cache": "warm; cold_path_wall clears decoded message cache",
                         },
                         "measurements": {
+                            "first_load_wall": measurement(first_load_samples, "seconds"),
+                            "cold_path_wall": measurement(cold_path_samples, "seconds"),
                             "path_wall": measurement(path_samples, "seconds"),
                             "fork_wall": measurement(fork_samples, "seconds"),
                             "build_context_wall": measurement(context_samples, "seconds"),
@@ -206,7 +233,7 @@ def _capture_case(
                     "files": files,
                 }
                 graph = _CaptureGraph(values)
-                cfg: Any = SimpleNamespace()
+                cfg: Any = SimpleNamespace(agents=SimpleNamespace(max_concurrency=4))
                 bus: Any = object()
                 console: Any = _CaptureConsole()
                 context = AppContext(
@@ -311,7 +338,7 @@ def run_history_load(config: RunConfig) -> dict[str, Any]:
                 started = perf_counter_ns()
                 loaded = list(history.load_history_strings())
                 load_samples.append((perf_counter_ns() - started) / 1_000_000_000)
-                if len(loaded) != rows:
+                if len(loaded) != min(rows, history.load_limit):
                     raise AssertionError("history loader returned the wrong fixture size")
                 del loaded
                 gc.collect()
@@ -322,7 +349,7 @@ def run_history_load(config: RunConfig) -> dict[str, Any]:
                 started = perf_counter_ns()
                 overlay = HistoryOverlay(context)
                 overlay_samples.append((perf_counter_ns() - started) / 1_000_000_000)
-                if len(overlay.items) != rows:
+                if len(overlay.items) != min(rows, history.load_limit):
                     raise AssertionError("history overlay returned the wrong fixture size")
                 del overlay
                 gc.collect()
@@ -333,6 +360,7 @@ def run_history_load(config: RunConfig) -> dict[str, Any]:
                     "parameters": {
                         "rows": rows,
                         "prompt_bytes": len("prompt 000000 deterministic fixture text"),
+                        "load_limit": history.load_limit,
                         "fixture_population_timed": False,
                     },
                     "measurements": {
@@ -423,7 +451,7 @@ def run_session_overlay_load(config: RunConfig) -> dict[str, Any]:
                     started = perf_counter_ns()
                     overlay = SessionOverlay(context)
                     overlay_samples.append((perf_counter_ns() - started) / 1_000_000_000)
-                    if len(overlay.items) != rows:
+                    if len(overlay.items) != min(rows, 200):
                         raise AssertionError("session overlay returned the wrong fixture size")
                     del overlay
                     gc.collect()
@@ -434,7 +462,8 @@ def run_session_overlay_load(config: RunConfig) -> dict[str, Any]:
                         "parameters": {
                             "rows": rows,
                             "fixture_population_timed": False,
-                            "overlay_scope": "constructor data load only",
+                            "overlay_scope": "bounded recent page with precomputed labels",
+                            "overlay_limit": 200,
                         },
                         "measurements": {
                             "session_store_list_wall": measurement(list_samples, "seconds"),

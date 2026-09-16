@@ -4,20 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from dotenv import load_dotenv
 
-from .core.events import EventBus
-from .core.loader import load_plugins
-from .core.persistence import open_session_store
-from .core.registry import Registry
-from .tui.console import ConsoleOutput
 from .core.config import load_config
-from .tui.app import run_app
-from .tui.gallery import run_gallery
 
 
 def _run_sync(cfg: object) -> int:
     """Synchronize the configured Turso replica without starting the TUI."""
+
+    from .core.persistence import open_session_store
+    from .tui.console import ConsoleOutput
 
     console = ConsoleOutput()
     try:
@@ -38,6 +33,11 @@ def _run_sync(cfg: object) -> int:
 
 
 async def _run_login(cfg: object) -> int:
+    from .core.events import EventBus
+    from .core.loader import load_plugins
+    from .core.registry import Registry
+    from .tui.console import ConsoleOutput
+
     registry = Registry()
     bus = EventBus()
     load_plugins(registry, bus, cfg)
@@ -69,13 +69,19 @@ def main() -> None:
 
     cfg = load_config()
     if cfg.command == "gallery":
+        from .tui.gallery import run_gallery
+
         raise SystemExit(run_gallery(cfg))
     if cfg.trust_cwd:
+        from dotenv import load_dotenv
+
         load_dotenv(cfg.cwd / ".env", override=False)
     if cfg.command == "login":
         raise SystemExit(asyncio.run(_run_login(cfg)))
     if cfg.command == "sync":
         raise SystemExit(_run_sync(cfg))
+    from .tui.app import run_app
+
     raise SystemExit(asyncio.run(run_app(cfg)))
 
 

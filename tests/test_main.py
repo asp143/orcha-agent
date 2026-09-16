@@ -32,8 +32,8 @@ def test_main_loads_dotenv_only_from_trusted_cwd(
         assert cfg.cwd == tmp_path.resolve()
         return 0
 
-    monkeypatch.setattr(entrypoint, "load_dotenv", fake_load_dotenv)
-    monkeypatch.setattr(entrypoint, "run_app", fake_run_app)
+    monkeypatch.setattr("dotenv.load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr("orcha_agent.tui.app.run_app", fake_run_app)
     argv = ["orcha", "--cwd", str(tmp_path)]
     if trusted:
         argv.append("--trust-cwd")
@@ -104,8 +104,8 @@ def test_main_login_passes_mode_to_auth_plugin_without_starting_repl(
         raise AssertionError("login command must not create an Application")
 
     monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
-    monkeypatch.setattr(entrypoint, "load_plugins", fake_load_plugins)
-    monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
+    monkeypatch.setattr("orcha_agent.core.loader.load_plugins", fake_load_plugins)
+    monkeypatch.setattr("orcha_agent.tui.app.run_app", unexpected_run_app)
     monkeypatch.setattr(tui_runtime, "Application", unexpected_application)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -144,12 +144,12 @@ def test_sync_command_opens_store_without_starting_repl(
         store.sync()
         return store
 
-    monkeypatch.setattr(entrypoint, "open_session_store", open_store)
+    monkeypatch.setattr("orcha_agent.core.persistence.open_session_store", open_store)
 
     async def unexpected_run_app(_cfg: object) -> int:
         raise AssertionError("sync must not start the TUI")
 
-    monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
+    monkeypatch.setattr("orcha_agent.tui.app.run_app", unexpected_run_app)
     monkeypatch.setattr(sys, "argv", ["orcha", "sync"])
 
     with pytest.raises(SystemExit) as exc_info:
@@ -175,13 +175,11 @@ def test_sync_command_reports_close_failure_without_raising(
             raise RuntimeError("sanitized close failure")
 
     monkeypatch.setattr(
-        entrypoint,
-        "open_session_store",
+        "orcha_agent.core.persistence.open_session_store",
         lambda *_args, **_kwargs: Store(),
     )
     monkeypatch.setattr(
-        entrypoint,
-        "ConsoleOutput",
+        "orcha_agent.tui.console.ConsoleOutput",
         lambda: SimpleNamespace(error=errors.append, print=lambda *_args: None),
     )
 
@@ -241,13 +239,12 @@ def test_main_login_reports_auth_failure_without_starting_repl(
         raise AssertionError("failed login must not create an Application")
 
     monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
-    monkeypatch.setattr(entrypoint, "load_plugins", fake_load_plugins)
+    monkeypatch.setattr("orcha_agent.core.loader.load_plugins", fake_load_plugins)
     monkeypatch.setattr(
-        entrypoint,
-        "ConsoleOutput",
+        "orcha_agent.tui.console.ConsoleOutput",
         lambda: SimpleNamespace(error=error_messages.append),
     )
-    monkeypatch.setattr(entrypoint, "run_app", unexpected_run_app)
+    monkeypatch.setattr("orcha_agent.tui.app.run_app", unexpected_run_app)
     monkeypatch.setattr(tui_runtime, "Application", unexpected_application)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -257,3 +254,28 @@ def test_main_login_reports_auth_failure_without_starting_repl(
     assert error_messages == ["authentication failed"]
     assert len(login_calls) == 1
     assert login_calls[0][1] == "auto"
+
+
+@pytest.mark.parametrize("arguments", [["--help"], ["login", "--help"]])
+def test_help_does_not_import_runtime_dependencies(arguments: list[str]) -> None:
+    import subprocess
+
+    script = """
+import runpy
+import sys
+sys.argv = ['orcha', *sys.argv[1:]]
+try:
+    runpy.run_module('orcha_agent', run_name='__main__')
+except SystemExit as exc:
+    assert exc.code == 0
+for name in ('orcha_agent.tui.app', 'orcha_agent.tui.gallery',
+             'orcha_agent.core.loader', 'orcha_agent.core.persistence',
+             'langchain_core', 'prompt_toolkit', 'rich'):
+    assert name not in sys.modules, name
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

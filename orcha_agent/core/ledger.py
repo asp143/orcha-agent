@@ -20,6 +20,7 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 
+from .capture_cursor import CaptureBatch
 from .models import filter_foreign_blocks
 
 if TYPE_CHECKING:
@@ -37,7 +38,14 @@ class Entry:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MessageEntry(Entry):
+    """Immutable ledger snapshot, including its payload and cached message.
+
+    Context reconstruction shares the decoded message. Consumers that change a
+    message must copy it first rather than mutating this snapshot in place.
+    """
+
     message: dict[str, Any]
+    _validated_message: BaseMessage | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,6 +60,12 @@ class ModeChangeEntry(Entry):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompactionEntry(Entry):
+    """Summary plus retained suffix boundary.
+
+    first_kept_id names the preceding entry; None discards the old messages,
+    while an empty string denotes the virtual root and retains the full path.
+    """
+
     summary: str
     first_kept_id: str | None = None
     tokens_before: int | None = None
@@ -174,8 +188,12 @@ def _decode_entry(
         if not isinstance(message, Mapping):
             raise TypeError("Message entry message must be an object")
         serialized_message = dict(message)
-        messages_from_dict([serialized_message])
-        return MessageEntry(message=serialized_message, **common)
+        validated_message = messages_from_dict([serialized_message])[0]
+        return MessageEntry(
+            message=serialized_message,
+            _validated_message=validated_message,
+            **common
+        )
     if entry_type == "model_change":
         model = payload["model"]
         if not (
@@ -279,6 +297,37 @@ class Ledger:
 
     def __init__(self, store: SessionStore) -> None:
         self.store = store
+
+    def _cached_entry_from_row(self, row: sqlite3.Row) -> Entry:
+        # Repeated active-path reads otherwise allocate enough Pydantic objects
+        # to trigger expensive full-heap collections during interactive use.
+        # Only immutable messages are shared; full row keys detect external edits.
+        if row["type"] != "message":
+            return _entry_from_row(row)
+        key = tuple(row)
+        cache = self.store._ledger_message_cache
+        with self.store._ledger_message_cache_lock:
+            cached = cache.get(key)
+            if cached is not None:
+                cache.move_to_end(key)
+                return cached[0]
+        entry = _entry_from_row(row)
+        if not isinstance(entry, MessageEntry):
+            return entry
+        payload = row["payload"]
+        payload_size = len(payload.encode("utf-8") if isinstance(payload, str) else payload)
+        if payload_size <= 64 * 1024:
+            with self.store._ledger_message_cache_lock:
+                if key not in cache:
+                    cache[key] = entry, payload_size
+                    self.store._ledger_message_cache_bytes += payload_size
+                while (
+                    len(cache) > 2048
+                    or self.store._ledger_message_cache_bytes > 8 * 1024 * 1024
+                ):
+                    _, (_, evicted_size) = cache.popitem(last=False)
+                    self.store._ledger_message_cache_bytes -= evicted_size
+        return entry
 
     def _new_id(self, session_id: str, reserved: set[str]) -> str:
         while True:
@@ -509,7 +558,10 @@ class Ledger:
         if captured < 0:
             raise ValueError("captured must be non-negative")
         message_ids = tuple(captured_message_ids)
-        encoded_message_ids = self.store._encode_captured_message_ids(message_ids)
+        encoded_message_ids = (
+            "[]" if isinstance(entries, CaptureBatch)
+            else self.store._encode_captured_message_ids(message_ids)
+        )
         batch = list(entries)
         with self.store.saver.lock:
             connection = self.store._connection
@@ -531,6 +583,28 @@ class Ledger:
                 )
                 if cursor.rowcount != 1:
                     raise EntryNotFound(thread_id)
+                if isinstance(entries, CaptureBatch):
+                    connection.execute(
+                        "DELETE FROM capture_messages WHERE thread_id = ? AND position >= ?",
+                        (thread_id, captured),
+                    )
+                    connection.executemany(
+                        """
+                        INSERT INTO capture_messages(thread_id, position, message_id, digest)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(thread_id, position) DO UPDATE SET
+                            message_id = excluded.message_id, digest = excluded.digest
+                        """,
+                        [(thread_id, *update) for update in entries.updates],
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO capture_state(thread_id, digest) VALUES (?, ?)
+                        ON CONFLICT(thread_id) DO UPDATE SET digest = excluded.digest
+                        WHERE digest != excluded.digest
+                        """,
+                        (thread_id, entries.state),
+                    )
                 connection.commit()
             except BaseException:
                 connection.rollback()
@@ -600,9 +674,8 @@ class Ledger:
             raise AmbiguousEntry(prefix, (row["id"] for row in rows))
         return _entry_from_row(rows[0])
 
-    @staticmethod
     def _path_from_rows(
-        rows: Iterable[sqlite3.Row], leaf_id: str | None
+        self, rows: Iterable[sqlite3.Row], leaf_id: str | None
     ) -> list[Entry]:
         if leaf_id is None:
             return []
@@ -617,10 +690,32 @@ class Ledger:
             row = by_id.get(current)
             if row is None:
                 raise EntryNotFound(current)
-            reverse_path.append(_entry_from_row(row))
+            reverse_path.append(self._cached_entry_from_row(row))
             current = row["parent_id"]
         reverse_path.reverse()
         return reverse_path
+
+    def _active_rows(self, session_id: str, leaf_id: str | None) -> list[sqlite3.Row]:
+        # UNION (not UNION ALL) terminates corrupt cycles; the Python walker
+        # still reports both cycles and missing parents explicitly. Recurse on
+        # IDs only so abandoned payloads never cross the storage boundary.
+        return self.store._connection.execute(
+            """
+            WITH RECURSIVE ancestors(id, parent_id) AS (
+                SELECT id, parent_id FROM entries
+                WHERE session_id = ? AND id = ?
+                UNION
+                SELECT parent.id, parent.parent_id FROM entries AS parent
+                JOIN ancestors AS child ON parent.id = child.parent_id
+                WHERE parent.session_id = ?
+            )
+            SELECT entry.session_id, entry.id, entry.parent_id,
+                   entry.type, entry.ts, entry.payload
+            FROM ancestors CROSS JOIN entries AS entry
+            WHERE entry.id = ancestors.id AND entry.session_id = ?
+            """,
+            (session_id, leaf_id, session_id, session_id),
+        ).fetchall()
 
     def path(self, session_id: str, leaf: str | None = None) -> list[Entry]:
         with self.store.saver.lock:
@@ -632,14 +727,9 @@ class Ledger:
                 leaf_id = None if session is None else session["leaf_id"]
             else:
                 leaf_id = leaf
-            rows = connection.execute(
-                """
-                SELECT session_id, id, parent_id, type, ts, payload
-                FROM entries WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchall()
+            rows = self._active_rows(session_id, leaf_id)
         return self._path_from_rows(rows, leaf_id)
+
     def latest_custom(
         self,
         session_id: str,
@@ -688,13 +778,7 @@ class Ledger:
                     raise EntryNotFound(session_id)
                 if target is None:
                     raise EntryNotFound(new_session_id)
-                rows = connection.execute(
-                    """
-                    SELECT session_id, id, parent_id, type, ts, payload
-                    FROM entries WHERE session_id = ?
-                    """,
-                    (session_id,),
-                ).fetchall()
+                rows = self._active_rows(session_id, source["leaf_id"])
                 active_path = self._path_from_rows(rows, source["leaf_id"])
                 for seq, entry in enumerate(active_path):
                     entry_type, payload = _encode_payload(entry)
@@ -734,10 +818,19 @@ class Ledger:
 
 def _after_last_reset(path: list[Entry]) -> list[Entry]:
     reset_at = -1
+    state: CustomEntry | None = None
+    retained_state: CustomEntry | None = None
     for index, entry in enumerate(path):
         if isinstance(entry, ResetBoundaryEntry):
             reset_at = index
-    return path[reset_at + 1 :]
+            state = retained_state = None
+        elif isinstance(entry, CustomEntry):
+            if entry.custom_type == "turn_state":
+                state = entry
+            elif entry.custom_type == "checkpoint_reset":
+                reset_at = index
+                retained_state = state
+    return ([retained_state] if retained_state is not None else []) + path[reset_at + 1:]
 
 
 def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
@@ -747,6 +840,8 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
             continue
         if entry.first_kept_id is None:
             return path[compact_at + 1 :], entry.summary
+        if entry.first_kept_id == "":
+            return path, entry.summary
         marker_at = next(
             (
                 index
@@ -762,6 +857,8 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
 
 
 def _message_from_entry(entry: MessageEntry) -> BaseMessage:
+    if entry._validated_message is not None:
+        return entry._validated_message
     return messages_from_dict([entry.message])[0]
 
 
@@ -829,11 +926,17 @@ def build_context(
     messages: list[BaseMessage] = []
     if summary is not None:
         messages.append(HumanMessage(content=f"[Conversation summary]\n{summary}"))
-    messages.extend(
-        _message_from_entry(entry)
-        for entry in message_entries
-        if isinstance(entry, MessageEntry)
-    )
+    positions: dict[str, int] = {}
+    for entry in message_entries:
+        if isinstance(entry, MessageEntry):
+            message = _message_from_entry(entry)
+            if isinstance(message.id, str):
+                positions[message.id] = len(messages)
+            messages.append(message)
+        elif isinstance(entry, CustomEntry) and entry.custom_type == "message_replaced":
+            for message in messages_from_dict(entry.data["messages"]):
+                if message.id in positions:
+                    messages[positions[message.id]] = message
     if strip:
         messages = filter_foreign_blocks(messages, strip)
     messages, dangling = _remove_dangling_tools(messages)

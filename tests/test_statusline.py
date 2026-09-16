@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gc
 import subprocess
 import threading
@@ -127,7 +128,9 @@ def _ctx(tmp_path: Path, **values: Any) -> SimpleNamespace:
     return ctx
 
 
-def _api(registry: Registry, bus: EventBus, state: dict[str, Any], *, enabled: bool = True) -> PluginAPI:
+def _api(
+    registry: Registry, bus: EventBus, state: dict[str, Any], *, enabled: bool = True
+) -> PluginAPI:
     return PluginAPI(
         name="statusbar",
         config={"statusbar": enabled},
@@ -219,7 +222,9 @@ def test_every_separator_renders_without_exceeding_width(
     registry._add_status_segment("test", "one", lambda _ctx: Segment("one", "text"))
     registry._add_status_segment("test", "two", lambda _ctx: Segment("two", "text"))
     cfg = _cfg(tmp_path, separator=separator, left=("one", "two"), right=())
-    rendered = _plain(render_statusline(_ctx(tmp_path, registry=registry, cfg=cfg), _Theme(), width=24))
+    rendered = _plain(
+        render_statusline(_ctx(tmp_path, registry=registry, cfg=cfg), _Theme(), width=24)
+    )
     between = rendered.split("one", 1)[1].split("two", 1)[0]
     assert between.strip() == marker
     assert len(rendered) == 24
@@ -252,7 +257,9 @@ def test_explicit_groups_are_ordered_and_failures_are_isolated(tmp_path: Path) -
     registry._add_status_segment("test", "broken", lambda _ctx: 1 / 0)
     registry._add_status_segment("test", "omega", lambda _ctx: Segment("Z", "text"))
     cfg = _cfg(tmp_path, separator="pipe", left=("omega", "broken"), right=("alpha",))
-    rendered = _plain(render_statusline(_ctx(tmp_path, registry=registry, cfg=cfg), _Theme(), width=30))
+    rendered = _plain(
+        render_statusline(_ctx(tmp_path, registry=registry, cfg=cfg), _Theme(), width=30)
+    )
     assert rendered.index("Z") < rendered.index("!broken") < rendered.index("A")
 
 
@@ -265,15 +272,17 @@ def test_each_omitted_group_falls_back_to_its_preset_default(tmp_path: Path) -> 
         lambda _ctx: Segment("25.0%/100k", "statusLineContext"),
     )
     cfg = _cfg(tmp_path, preset="minimal", left=("custom",), right=None)
-    assert [name for name, _value in visible_segments(
-        _ctx(tmp_path, registry=registry, cfg=cfg)
-    )] == ["custom", "context"]
+    assert [
+        name for name, _value in visible_segments(_ctx(tmp_path, registry=registry, cfg=cfg))
+    ] == ["custom", "context"]
 
 
 def test_box_context_uses_gap_gauge_while_other_shapes_use_segment(tmp_path: Path) -> None:
     registry = Registry()
     registry._add_status_segment("test", "left", lambda _ctx: Segment("LEFT", "text"))
-    registry._add_status_segment("test", "context", lambda _ctx: Segment("50.0%/100k", "statusLineContext"))
+    registry._add_status_segment(
+        "test", "context", lambda _ctx: Segment("50.0%/100k", "statusLineContext")
+    )
     registry._add_status_segment("test", "right", lambda _ctx: Segment("RIGHT", "text"))
     cfg = _cfg(tmp_path, separator="none", left=("left",), right=("context", "right"))
     ctx = _ctx(tmp_path, registry=registry, cfg=cfg)
@@ -290,7 +299,9 @@ def test_box_context_uses_gap_gauge_while_other_shapes_use_segment(tmp_path: Pat
 
 def test_non_utf_output_is_ascii_safe(tmp_path: Path) -> None:
     registry = Registry()
-    registry._add_status_segment("test", "unicode", lambda _ctx: Segment("café ✓", "text", "icon.model"))
+    registry._add_status_segment(
+        "test", "unicode", lambda _ctx: Segment("café ✓", "text", "icon.model")
+    )
     ctx = _ctx(
         tmp_path,
         registry=registry,
@@ -298,6 +309,7 @@ def test_non_utf_output_is_ascii_safe(tmp_path: Path) -> None:
         console=_Console(encoding="ascii"),
     )
     assert _plain(render_statusline(ctx, _Theme(), width=30)).isascii()
+
 
 def test_ascii_output_preserves_explicit_slash_separator(tmp_path: Path) -> None:
     registry = Registry()
@@ -314,17 +326,19 @@ def test_ascii_output_preserves_explicit_slash_separator(tmp_path: Path) -> None
     assert rendered.split("one", 1)[1].split("two", 1)[0].strip() == "/"
 
 
-
 def test_git_parser_counts_staged_unstaged_and_untracked_exactly() -> None:
-    assert _parse_git(
-        "## feat/status...origin/feat/status [ahead 2]\n"
-        "A  staged.py\n"
-        " M unstaged.py\n"
-        "MM both.py\n"
-        "?? one.txt\n"
-        "?? two.txt\n"
-        "!! ignored.txt\n"
-    ) == "feat/status *2 !2 ?2"
+    assert (
+        _parse_git(
+            "## feat/status...origin/feat/status [ahead 2]\n"
+            "A  staged.py\n"
+            " M unstaged.py\n"
+            "MM both.py\n"
+            "?? one.txt\n"
+            "?? two.txt\n"
+            "!! ignored.txt\n"
+        )
+        == "feat/status *2 !2 ?2"
+    )
     assert _parse_git("fatal: not a repository\n") is None
 
 
@@ -380,7 +394,9 @@ def test_git_refresh_is_nonblocking_cached_and_no_more_frequent_than_two_seconds
         calls.append(object())
         started.set()
         release.wait(1)
-        return SimpleNamespace(returncode=0, stdout="## main\nA  staged.py\n M dirty.py\n?? new.py\n")
+        return SimpleNamespace(
+            returncode=0, stdout="## main\nA  staged.py\n M dirty.py\n?? new.py\n"
+        )
 
     monkeypatch.setattr("orcha_agent.tui.statusline.subprocess.run", slow_run)
     now = [100.0]
@@ -403,7 +419,6 @@ def test_git_refresh_is_nonblocking_cached_and_no_more_frequent_than_two_seconds
     now[0] = 101.999
     assert git_segment(ctx).text == "main *1 !1 ?1"
     assert len(calls) == 1
-
 
 
 def test_git_worker_discards_old_session_and_counts_all_untracked_files(
@@ -471,7 +486,8 @@ def test_git_segment_stays_hidden_outside_repository(
     assert len(calls) == 1
 
 
-def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     registry = Registry()
     _register_provider(registry)
     cwd = tmp_path / "parent" / "project"
@@ -496,6 +512,11 @@ def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     assert mode_segment(ctx).text == "ask"
     assert path_segment(ctx).text == "project"
     assert git_segment(ctx).text == "main"
+    ready = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    ctx.ui.invalidate = lambda: loop.call_soon_threadsafe(ready.set)
+    session_segment(ctx)
+    await asyncio.wait_for(ready.wait(), 2)
     assert session_segment(ctx).text == "Status line session"
     assert subagents_segment(ctx).text == "1"
     assert tokens_segment(ctx).text == "136k in 12k out"
@@ -503,7 +524,6 @@ def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     assert cost_segment(ctx).text == "$1.02"
     assert context_segment(ctx).text == "50.0%/272k"
     assert time_segment(ctx).text == "3.2s"
-
 
 
 @pytest.mark.asyncio
@@ -566,9 +586,7 @@ async def test_accounting_counts_main_and_subagent_once_resets_and_resumes(tmp_p
             "input_token_details": {"cache_read": 10, "cache_creation": 5},
         }
     )
-    subagent_chunk = SimpleNamespace(
-        usage_metadata={"input_tokens": 40, "output_tokens": 8}
-    )
+    subagent_chunk = SimpleNamespace(usage_metadata={"input_tokens": 40, "output_tokens": 8})
     main = ModelChunk(main_chunk, role="main", source_id="main")
     subagent = ModelChunk(subagent_chunk, role="subagent", source_id="worker")
     await bus.emit(main)
@@ -595,7 +613,9 @@ async def test_accounting_counts_main_and_subagent_once_resets_and_resumes(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_turn_time_tracks_active_and_last_elapsed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_turn_time_tracks_active_and_last_elapsed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     registry = Registry()
     bus = EventBus()
     state: dict[str, Any] = {}

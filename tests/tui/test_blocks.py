@@ -627,3 +627,32 @@ def test_subagent_assistant_is_dim_and_indented_two_columns() -> None:
     assert isinstance(content.renderable, Markdown)
     assert "dim" in str(content.renderable.style)
     assert plain(rendered).startswith("\n  subagent answer")
+
+
+def test_dispatcher_render_and_evict_never_scan_unrelated_blocks() -> None:
+    class IndexedOnly(dict):
+        def __iter__(self):
+            raise AssertionError("must not scan all cached blocks")
+
+        def items(self):
+            raise AssertionError("must not scan all cached blocks")
+
+        def values(self):
+            raise AssertionError("must not scan all cached blocks")
+
+    dispatcher = BlockRendererDispatcher({"assistant": lambda *_args: "rendered"})
+    for index in range(1000):
+        unrelated = Block(id=f"other-{index}", kind="assistant", data={})
+        dispatcher.render(unrelated, THEME, 80, 3, False)
+    dispatcher._cache = IndexedOnly(dispatcher._cache)
+    target = Block(id="target", kind="assistant", data={})
+    for rows in range(20):
+        assert dispatcher.render(target, THEME, 80, rows, False) == "rendered"
+    assert len(dispatcher._cache[target.id]) == 4
+    target.update(text="new revision")
+    dispatcher.render(target, THEME, 80, 3, False)
+    assert len(dispatcher._cache[target.id]) == 1
+    dispatcher.evict([target, "other-1", "missing"])
+    assert target.id not in dispatcher._cache
+    assert "other-1" not in dispatcher._cache
+    assert len(dispatcher._cache) == 999

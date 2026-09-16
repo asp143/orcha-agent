@@ -105,8 +105,8 @@ class BlockRendererDispatcher:
         self._renderers.setdefault("advisory", render_advisory)
         self._renderers.setdefault("review", render_review)
         self._cache: dict[
-            tuple[str, str, int],
-            dict[tuple[int, int, bool, str], Any],
+            str,
+            dict[tuple[str, int], dict[tuple[int, int, bool, str], Any]],
         ] = {}
 
     def clear_cache(self) -> None:
@@ -116,12 +116,8 @@ class BlockRendererDispatcher:
         """Drop every cached rendering owned by the supplied blocks."""
 
         block_ids = {block if isinstance(block, str) else block.id for block in blocks}
-        if block_ids:
-            self._cache = {
-                partition: entries
-                for partition, entries in self._cache.items()
-                if partition[0] not in block_ids
-            }
+        for block_id in block_ids:
+            self._cache.pop(block_id, None)
 
     def render(
         self,
@@ -136,9 +132,17 @@ class BlockRendererDispatcher:
             if block.kind == "raw":
                 return block.data.get("renderable", "")
             return block.data.get("text", block.data.get("message", str(block.data)))
-        partition = (block.id, block.kind, budget_rows)
+        owned = self._cache.setdefault(block.id, {})
+        partition = (block.kind, budget_rows)
         key = (block.revision, width, expanded, theme_id(theme))
-        cache = self._cache.setdefault(partition, {})
+        # Row allocations fluctuate while streaming/resizing. Keep only a
+        # bounded number of variants, and never retain an older revision.
+        for previous in list(owned):
+            if any(cached[0] != block.revision for cached in owned[previous]):
+                del owned[previous]
+        if partition not in owned and len(owned) >= 4:
+            del owned[next(iter(owned))]
+        cache = owned.setdefault(partition, {})
         if key not in cache:
             cache.clear()
             try:

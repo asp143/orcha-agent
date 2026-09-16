@@ -168,3 +168,113 @@ async def test_run_turn_records_cancelled_hosts_that_satisfy_the_protocol() -> N
     assert host.captured == 1
     assert host.exits == ["signal"]
     assert host.console.warnings == ["interrupted"]
+
+
+@pytest.mark.asyncio
+async def test_capture_keeps_event_loop_responsive_and_joins_after_cancellation() -> None:
+    import asyncio
+    import threading
+
+    host = _Host()
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    captured = threading.Event()
+    capture_threads: list[int] = []
+
+    def capture() -> None:
+        capture_threads.append(threading.get_ident())
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5), "event loop did not release capture"
+        captured.set()
+
+    host.capture_turn = capture
+    turn = asyncio.create_task(run_turn(host, "hello"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert len(capture_threads) == 1
+        assert capture_threads[0] != threading.get_ident()
+        # The event loop must keep progressing while the persistence worker waits.
+        for _ in range(3):
+            turn.cancel()
+            await asyncio.sleep(0)
+            assert not turn.done()
+            assert not captured.is_set()
+            assert not any(isinstance(event, TurnEnd) for event in host.bus.events)
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(turn, timeout=2)
+
+    assert captured.is_set()
+    assert isinstance(host.bus.events[-1], TurnEnd)
+
+
+@pytest.mark.asyncio
+async def test_capture_failure_still_emits_turn_end() -> None:
+    host = _Host()
+
+    def capture() -> None:
+        raise RuntimeError("capture failed")
+
+    host.capture_turn = capture
+    with pytest.raises(RuntimeError, match="capture failed"):
+        await run_turn(host, "hello")
+    assert isinstance(host.bus.events[-1], TurnEnd)
+
+
+@pytest.mark.asyncio
+async def test_capture_storage_error_reports_on_ui_loop_with_real_scheduler(tmp_path: Any) -> None:
+    import threading
+
+    from langchain_core.messages import HumanMessage
+
+    from orcha_agent.core.capture import capture_graph_values
+    from orcha_agent.core.session import SessionStore
+    from orcha_agent.tui.console import ConsoleOutput
+    from orcha_agent.tui.frame import Frame, FrameScheduler
+    from orcha_agent.tui.transcript import Transcript
+    from orcha_agent.tui.turn import _capture_turn
+
+    frame = Frame()
+    scheduler = FrameScheduler(frame, commit=lambda _: None, invalidate=lambda: None)
+    console = ConsoleOutput(transcript=Transcript(frame, scheduler=scheduler))
+    ui_thread = threading.get_ident()
+    report_threads: list[int] = []
+    capture_threads: list[int] = []
+
+    def report(message: str) -> None:
+        report_threads.append(threading.get_ident())
+        console.error(message)
+
+    with SessionStore(tmp_path / "capture-error.db") as store:
+        session = store.create(tmp_path, "fake:model")
+        store._connection.execute(
+            "CREATE TRIGGER fail_capture BEFORE UPDATE ON threads "
+            "BEGIN SELECT RAISE(FAIL, 'original-storage-error'); END"
+        )
+
+        def capture() -> None:
+            capture_threads.append(threading.get_ident())
+            capture_graph_values(
+                store,
+                session.thread_id,
+                session.current_thread or "",
+                {"messages": [HumanMessage(content="test", id="test")]},
+                only_if_new=False,
+                report_error=report,
+            )
+
+        host: Any = SimpleNamespace(capture_turn=capture)
+        try:
+            with pytest.raises(RuntimeError, match="original-storage-error") as failure:
+                await _capture_turn(host, cancelled=False)
+            assert failure.value.__cause__ is not None
+            assert "original-storage-error" in str(failure.value.__cause__)
+            assert capture_threads and capture_threads[0] != ui_thread
+            assert report_threads == [ui_thread]
+            assert frame.blocks[-1].kind == "banner"
+            assert "original-storage-error" in frame.blocks[-1].data["message"]
+            assert scheduler._commit_task is not None
+        finally:
+            await scheduler.aclose()

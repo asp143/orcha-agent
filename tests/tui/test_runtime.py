@@ -6,6 +6,7 @@ import re
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from langchain.agents import create_agent
@@ -775,3 +776,33 @@ def test_runtime_owns_themed_statusline_and_keeps_inline_application(tmp_path: P
     assert len(rendered) == runtime.application.output.get_size().columns
     assert ctx.ui.invalidate == runtime.application.invalidate
     assert runtime.application.full_screen is False
+
+
+@pytest.mark.asyncio
+async def test_captured_rows_use_stable_theme_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0),
+            theme=SimpleNamespace(id="one"),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        block = Block(id="cached", kind="assistant", data={"text": "hello"})
+        layouts: list[str] = []
+        original = runtime._print_block
+
+        def counted(*args: Any, **kwargs: Any) -> None:
+            layouts.append(runtime.theme.id)
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(runtime, "_print_block", counted)
+        try:
+            first = runtime._capture_block(block, 80, 3, force_terminal=True)
+            runtime.theme = SimpleNamespace(id="one")
+            assert runtime._capture_block(block, 80, 3, force_terminal=True) == first
+            assert layouts == ["one"]
+            runtime.theme = SimpleNamespace(id="two")
+            runtime._capture_block(block, 80, 3, force_terminal=True)
+            assert layouts == ["one", "two"]
+        finally:
+            await runtime.scheduler.aclose()

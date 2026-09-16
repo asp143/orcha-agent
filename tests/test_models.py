@@ -208,7 +208,6 @@ def test_ollama_provider_does_not_require_an_environment_variable() -> None:
     assert registry.providers["ollama"].env_keys == ()
 
 
-
 def test_availability_hints_skip_fallbacks_and_report_all_failures(
     tmp_path: Path,
 ) -> None:
@@ -398,3 +397,45 @@ def test_strip_foreign_blocks_replaces_history_with_cleaned_messages() -> None:
     assert messages[2].content == [{"type": "text", "text": "visible answer"}]
     assert messages[2].additional_kwargs == {"safe": "keep"}
     assert messages[2].response_metadata == {"usage": {"input_tokens": 1}}
+
+
+@pytest.mark.parametrize("failures", [0, 1, 2])
+def test_resolve_stops_constructing_after_first_available_model(
+    tmp_path: Path,
+    failures: int,
+) -> None:
+    registry = Registry()
+    calls: list[str] = []
+
+    def factory(name: str, _config: dict[str, object]) -> FakeListChatModel:
+        calls.append(name)
+        if int(name) < failures:
+            raise RuntimeError("unavailable")
+        return FakeListChatModel(responses=[name])
+
+    _api(registry).add_provider("fake", factory, capabilities=_caps())
+    resolver = ModelResolver(registry, _config(tmp_path))
+
+    model = resolver.resolve([f"fake:{index}" for index in range(4)], "main")
+
+    assert model.invoke("hello").content == str(failures)
+    assert calls == [str(index) for index in range(failures + 1)]
+
+
+@pytest.mark.parametrize("method", ["resolve", "resolve_chain"])
+def test_model_resolution_rejects_empty_chain(tmp_path: Path, method: str) -> None:
+    resolver = ModelResolver(Registry(), _config(tmp_path))
+    with pytest.raises(ValueError, match="cannot be empty"):
+        getattr(resolver, method)([], "main")
+
+
+def test_resolve_reports_every_unavailable_fallback(tmp_path: Path) -> None:
+    registry = Registry()
+
+    def factory(name: str, _config: dict[str, object]) -> FakeListChatModel:
+        raise RuntimeError(f"{name} failed")
+
+    _api(registry).add_provider("fake", factory, capabilities=_caps())
+    resolver = ModelResolver(registry, _config(tmp_path))
+    with pytest.raises(RuntimeError, match="first failed.*second failed"):
+        resolver.resolve(["fake:first", "fake:second"], "main")

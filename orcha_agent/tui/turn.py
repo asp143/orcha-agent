@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import signal
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -13,6 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.types import Command
 
+from orcha_agent.core.capture import defer_capture_errors
 from orcha_agent.core.events import (
     InterruptRaised,
     ModelChunk,
@@ -62,9 +64,7 @@ def _event_source(host: TurnHost, namespace: tuple[str, ...]) -> str:
     return nested if source == "main" else f"{source}/{nested}"
 
 
-def _console_call(
-    host: TurnHost, method: str, *args: object, **kwargs: object
-) -> None:
+def _console_call(host: TurnHost, method: str, *args: object, **kwargs: object) -> None:
     console = getattr(host, "console", None)
     callback = getattr(console, method, None)
     if callable(callback):
@@ -366,10 +366,7 @@ async def _message_event(
     agent_type = metadata.get("ls_agent_type") if isinstance(metadata, Mapping) else None
     role = (
         "subagent"
-        if source_id != "main"
-        or namespace
-        or agent_type == "subagent"
-        or "subagent" in str(node)
+        if source_id != "main" or namespace or agent_type == "subagent" or "subagent" in str(node)
         else "main"
     )
     if (
@@ -425,10 +422,7 @@ async def _updates_event(
                 InterruptRaised(payload=payload, source_id=_event_source(ctx, namespace))
             )
         except Exception as exc:
-            warning = (
-                f"Approval handler failed ({type(exc).__name__}); "
-                "rejecting pending actions."
-            )
+            warning = f"Approval handler failed ({type(exc).__name__}); rejecting pending actions."
             resolution = None
         if isinstance(resolution, Resolved):
             return resolution
@@ -493,9 +487,7 @@ async def run_turn(host: TurnHost, text: str) -> None:
         title = " ".join(text.split())[:80]
         if title:
             host.session.set_title(host.session_id, title)
-    await host.bus.emit(
-        TurnStart(thread_id=thread_id, text=text, source_id=source_id)
-    )
+    await host.bus.emit(TurnStart(thread_id=thread_id, text=text, source_id=source_id))
     _open_steering(host)
     next_input: Any = _user_input(text)
     tool_calls = _ToolCallBuffer()
@@ -554,11 +546,7 @@ async def run_turn(host: TurnHost, text: str) -> None:
                 continue
             if static_tool_boundary:
                 steering = _pop_steering(host)
-                next_input = (
-                    Command(update=_user_input(steering))
-                    if steering is not None
-                    else None
-                )
+                next_input = Command(update=_user_input(steering)) if steering is not None else None
                 continue
             _close_steering(host)
             steering = _pop_steering(host)
@@ -580,18 +568,50 @@ async def run_turn(host: TurnHost, text: str) -> None:
     finally:
         _close_steering(host)
         try:
-            host.capture_turn()
-            if cancelled and getattr(host, "record_cancelled_turn_exit", True):
-                host.record_exit("signal")
+            await _capture_turn(host, cancelled=cancelled)
         finally:
             _console_call(host, "print")
-            await host.bus.emit(
-                TurnEnd(thread_id=thread_id, source_id=source_id)
-            )
+            await host.bus.emit(TurnEnd(thread_id=thread_id, source_id=source_id))
             if getattr(host, "rebuild_requested", False):
                 rebuild = getattr(host, "rebuild", None)
                 if callable(rebuild):
                     await rebuild()
+
+
+async def _capture_turn(host: TurnHost, *, cancelled: bool) -> None:
+    """Keep disk work off the event loop and finish it before teardown."""
+    reports: list[tuple[Callable[[str], None], str]] = []
+
+    def capture() -> None:
+        with defer_capture_errors(reports):
+            host.capture_turn()
+            if cancelled and getattr(host, "record_cancelled_turn_exit", True):
+                host.record_exit("signal")
+
+    worker = asyncio.create_task(asyncio.to_thread(capture))
+    interrupted = False
+    try:
+        while True:
+            try:
+                await asyncio.shield(worker)
+                break
+            except asyncio.CancelledError:
+                # Cancelling to_thread does not stop its thread. Join the shielded
+                # worker even after repeated interrupts so stores remain open.
+                interrupted = True
+                if worker.done():
+                    worker.result()
+                    break
+    finally:
+        # Console reporters can schedule transcript commits, so they must run
+        # on this task's event loop, including when persistence failed.
+        for report, message in reports:
+            try:
+                report(message)
+            except Exception:
+                logging.getLogger(__name__).exception("Failed to display capture error")
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 async def _run_cancellable_turn(ctx: TurnHost, text: str) -> None:
