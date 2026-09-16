@@ -248,7 +248,8 @@ class ShellSession:
         delta = {
             key: self.env.get(key)
             for key in self.env.keys() | self.baseline_env.keys()
-            if self.env.get(key) != self.baseline_env.get(key)
+            if key not in {"PWD", "OLDPWD", "SHLVL", "_"}
+            and self.env.get(key) != self.baseline_env.get(key)
         }
 
         def display(values: dict[str, Any]) -> str:

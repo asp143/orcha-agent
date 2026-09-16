@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -407,6 +408,17 @@ def test_portable_env_capture_does_not_depend_on_external_env(shell):
     shell.run("env() { printf unavailable >&2; return 127; }; export PORTABLE_TEST=portable")
     shell.run("exit 0")
     assert "portable" in shell.run('printf "%s" "$PORTABLE_TEST"')[0]
+
+
+def test_approval_omits_shell_noise_but_retains_explicit_environment(shell):
+    shell.run("export REVIEW_VISIBLE=yes; export REVIEW_SECRET=hidden")
+    shell.env.update({"PWD": "/changed", "OLDPWD": "/previous", "SHLVL": "9", "_": "/bin/true"})
+    description = shell.approval_description({"env": {"PWD": "/requested"}})
+    delta = json.loads(description.split("Session environment delta: ", 1)[1].split("\n", 1)[0])
+    assert not {"PWD", "OLDPWD", "SHLVL", "_"} & delta.keys()
+    assert delta["REVIEW_VISIBLE"] == "yes"
+    assert delta["REVIEW_SECRET"] == "[redacted]"
+    assert 'Temporary command environment: {"PWD": "/requested"}' in description
 
 
 def test_artifacts_refuse_symlink_escape(tmp_path):
