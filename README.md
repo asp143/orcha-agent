@@ -561,3 +561,124 @@ the envelope metadata plus exactly:
 For an unknown entry type, import unwraps this exact marker-and-payload pair.
 This preserves the original object losslessly even when its keys collide with
 envelope metadata, without mistaking ordinary unknown fields for a wrapper.
+
+## Skills
+
+Put a `SKILL.md` in `.orcha-agent/skills/<name>/` or
+`~/.config/orcha-agent/skills/<name>/`. Discovery searches project ancestors,
+nearest first, with native skills before imported skills at each depth. Claude,
+Codex, and GitHub skill directories are imported too; user skills are the fallback.
+
+```markdown
+---
+name: review
+description: Review a change for correctness and missing tests
+globs: ["**/*.py"]
+---
+Read the affected callers and report concrete findings with file references.
+```
+
+Only names and descriptions enter the prompt by default. The `skill` tool reads
+bodies on demand; `alwaysApply: true` includes the body immediately. `globs` is
+accepted as metadata. `hide: true` hides a skill from the model's prompt listing;
+`disableModelInvocation: true` also prevents tool invocation. Both remain available
+through explicit user commands. Hiding also suppresses automatic body inclusion.
+
+Run `/skills`, `/skill:review [args]`, or `/skill review [args]`. Skill commands
+submit the body and arguments as a user turn and appear in composer completion.
+Set `enabled`, `import_claude`, `import_codex`, or `import_github` to `false` under
+`[plugins.skills]` to disable discovery or individual importers.
+
+## MCP servers
+
+Configure `~/.config/orcha-agent/mcp.json` or trusted-project
+`.orcha-agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "local": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["/absolute/path/to/server.py"],
+      "timeout": 30,
+      "enabled": true
+    },
+    "remote": {"type": "http", "url": "https://example.com/mcp"}
+  }
+}
+```
+
+Supported transports are `stdio`, streamable `http`, and legacy `sse`; `env` and
+`headers` are optional mappings. Project servers require the existing project
+trust setting (`--trust-cwd` for one invocation). Claude `.mcp.json` and Codex
+`~/.codex/config.toml` servers are imported; disable them with `import_claude = false`
+or `import_codex = false` under `[plugins.mcp]`.
+
+Connections start in the background. The first agent build waits at most 250 ms for them,
+then can expose cached tool schemas from `~/.cache/orcha-agent/mcp/` while connection
+continues. Tools use names such as `mcp__local__search`, follow exec-tier approval,
+and share the ordinary output truncation limits. The status line shows connected
+and enabled server counts. Failed connections retry with backoff; exit closes them.
+
+Try `/mcp list`, `/mcp test local`, `/mcp resources local`, or `/mcp prompts local`.
+Manage configuration with `/mcp add local python /path/to/server.py`,
+`/mcp add remote --url https://example.com/mcp`, `/mcp remove local`,
+`/mcp enable local`, `/mcp disable local`, `/mcp reload`, and `/mcp reconnect [name]`.
+Adds write to project config when trusted, otherwise user config. Removing an
+imported Codex server writes a native removal marker without changing its TOML;
+the marker also prevents a lower-priority definition from reappearing.
+
+## Custom slash commands
+
+Place Markdown files in `.orcha-agent/commands/*.md` or
+`~/.config/orcha-agent/commands/*.md`. Recursive `.claude/commands/` and
+`~/.claude/commands/` are also imported: `foo/bar.md` supplies `/bar` and `/foo:bar`.
+Native commands win over imports; project commands win within each format.
+Existing built-in commands cannot be replaced.
+
+```markdown
+---
+description: Explain a module
+argument-hint: <path>
+---
+Explain $1 and list its main callers. Additional context: $@[2:]
+```
+
+Run `/explain orcha_agent/core/agent.py` after saving this as `explain.md`.
+Frontmatter also accepts `model` for a command-specific model override, restored
+after the turn. Templates support `$1` through `$9`, `$@`, `$ARGUMENTS`, and
+one-based `$@[start:len]` slices. Arguments are appended when no placeholders exist.
+Shell interpolation such as `` !`git status --short` `` runs only for trusted files
+(user command directories or trusted projects), with a timeout and output cap.
+Set `[plugins.file_commands] import_claude = false` to disable Claude imports.
+
+## Context files
+
+The context plugin walks from the current directory to the nearest Git root and
+loads one file at each depth, in this priority order:
+`.orcha-agent/AGENTS.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, then
+`.github/copilot-instructions.md`. Global `~/.config/orcha-agent/AGENTS.md` and
+`~/.claude/CLAUDE.md` precede project instructions. Broader instructions appear
+before closer ones. Deeper files are listed as pointers, without loading their bodies.
+
+References such as `@docs/conventions.md` expand relative to the importing file;
+code examples remain literal. Imports are bounded, cyclic imports stop, and
+sensitive `.env*`/`Credentials` paths are excluded. Prompt content is framed as
+`<repo-rules>` with `<file path="…">` and pointer-only `<dir-context>` entries.
+
+```toml
+[plugins.context_files]
+enabled = true
+import_claude = true
+import_cursor = true
+import_github = true
+max_bytes = 65536
+max_import_depth = 5
+```
+
+The ladder replaces the default root-only memory loading; explicitly configured
+custom memory sources remain available. Turso's structured-memory-only mode stays
+structured-only. To try it, add `AGENTS.md` at the repository root and a closer
+`.orcha-agent/AGENTS.md`, launch from that directory, and ask the agent which
+repository instructions apply.
