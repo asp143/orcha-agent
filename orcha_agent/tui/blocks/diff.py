@@ -25,6 +25,15 @@ def _visualize_indent(value: str) -> str:
     return indent.replace(" ", "·").replace("\t", "→") + value[len(indent) :]
 
 
+def _highlight_indented(value: str, language: str, theme: Any) -> Text:
+    visual = _visualize_indent(value)
+    colored = highlight(visual, language, theme)[: len(visual)]
+    indent_length = len(value) - len(value.lstrip(" \t"))
+    # These display glyphs are not source tokens: lexers can mark them as errors.
+    colored.stylize(str(theme_value(theme, "toolDiffContext")), 0, indent_length)
+    return colored
+
+
 def _changes(before: str, after: str) -> tuple[set[int], set[int]]:
     old = _TOKENS.findall(_visualize_indent(before))
     new = _TOKENS.findall(_visualize_indent(after))
@@ -40,8 +49,7 @@ def _changes(before: str, after: str) -> tuple[set[int], set[int]]:
 def _append(
     target: Text, value: str, color: str, changed: set[int], language: str, theme: Any
 ) -> None:
-    visual = _visualize_indent(value)
-    colored = highlight(visual, language, theme)[: len(visual)]
+    colored = _highlight_indented(value, language, theme)
     offset = 0
     for index, token in enumerate(_TOKENS.findall(colored.plain)):
         if index in changed:
@@ -111,8 +119,7 @@ def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: boo
             content = line[1:] if line.startswith(" ") else line
             color = str(theme_value(theme, "toolDiffContext"))
             output.append(f" {new_line:>{digits}}│", style=color)
-            visual = _visualize_indent(content)
-            colored = highlight(visual, language, theme)[: len(visual)]
+            colored = _highlight_indented(content, language, theme)
             output.append(colored)
             old_line += 1
             new_line += 1
