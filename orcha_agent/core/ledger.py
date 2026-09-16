@@ -38,6 +38,7 @@ class Entry:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MessageEntry(Entry):
     message: dict[str, Any]
+    _validated_message: BaseMessage | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -174,8 +175,10 @@ def _decode_entry(
         if not isinstance(message, Mapping):
             raise TypeError("Message entry message must be an object")
         serialized_message = dict(message)
-        messages_from_dict([serialized_message])
-        return MessageEntry(message=serialized_message, **common)
+        validated_message = messages_from_dict([serialized_message])[0]
+        return MessageEntry(
+            message=serialized_message, _validated_message=validated_message, **common
+        )
     if entry_type == "model_change":
         model = payload["model"]
         if not (
@@ -775,6 +778,9 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
 
 
 def _message_from_entry(entry: MessageEntry) -> BaseMessage:
+    if entry._validated_message is not None:
+        # Context consumers may mutate messages; keep the validated entry reusable.
+        return entry._validated_message.model_copy(deep=True)
     return messages_from_dict([entry.message])[0]
 
 

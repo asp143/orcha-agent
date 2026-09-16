@@ -989,3 +989,27 @@ def test_active_query_transfers_only_ancestors_and_rejects_missing_session(
     assert {row["id"] for row in rows} == {root.id, leaf.id}
     with pytest.raises(EntryNotFound, match="missing-session"):
         ledger.path("missing-session")
+
+
+def test_loaded_context_deserializes_each_message_once(
+    ledger_session: tuple[Ledger, SessionStore, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import orcha_agent.core.ledger as ledger_module
+
+    ledger, _, session_id = ledger_session
+    ledger.append_many(session_id, [_message(HumanMessage(content=str(i))) for i in range(10)])
+    original = ledger_module.messages_from_dict
+    calls = 0
+
+    def counted(messages: Any) -> Any:
+        nonlocal calls
+        calls += len(messages)
+        return original(messages)
+
+    monkeypatch.setattr(ledger_module, "messages_from_dict", counted)
+    path = ledger.path(session_id)
+    first = build_context(path)
+    assert calls == 10
+    first.messages[0].content = "consumer mutation"
+    assert build_context(path).messages[0].content == "0"
+    assert calls == 10
