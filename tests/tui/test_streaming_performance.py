@@ -79,3 +79,36 @@ def test_renderer_budget_cache_is_bounded_and_drops_old_revisions() -> None:
     block.update(text="next")
     dispatcher.render(block, DEFAULT_THEME, 80, 5, False)
     assert len(dispatcher._cache) == 1
+
+
+@pytest.mark.asyncio
+async def test_visible_thinking_metrics_do_not_relayout_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = Markdown.__rich_console__
+
+    def counted(self: Markdown, *args: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        yield from original(self, *args)
+
+    monkeypatch.setattr(Markdown, "__rich_console__", counted)
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(lambda _: asyncio.sleep(0), input=pipe, output=DummyOutput())
+        block = runtime.frame.add("thinking", {"text": "**reasoning**", "visible": True})
+        try:
+            before = runtime._viewport_text().value
+            for tick in range(10):
+                runtime.scheduler.tick_spinners(now=block.created + tick + 1)
+                assert runtime._viewport_text().value == before
+            assert calls == 1
+            block.update(visible=False)
+            collapsed = runtime._viewport_text().value
+            runtime.scheduler.tick_spinners(now=block.created + 20)
+            assert runtime._viewport_text().value != collapsed
+            block.update(visible=True, text="new reasoning")
+            runtime._viewport_text()
+            assert calls == 2
+        finally:
+            await runtime.scheduler.aclose()

@@ -57,6 +57,7 @@ class Block:
     created: float = field(default_factory=time.monotonic)
     data: MutableMapping[str, Any] = field(default_factory=dict)
 
+    _content_revision: int = field(default=0, repr=False, compare=False)
     _rendered_rows: dict[tuple[Any, ...], str] = field(
         default_factory=dict, repr=False, compare=False
     )
@@ -74,7 +75,20 @@ class Block:
         if changes:
             self.data.update(changes)
         self.revision += 1
-        self._rendered_rows.clear()
+        changed_keys = set(data or ()) | set(changes)
+        metrics_only = (
+            self.kind == "thinking"
+            and bool(changed_keys)
+            and changed_keys
+            <= {
+                "spinner_frame",
+                "reasoning_tokens",
+                "tokens_per_second",
+            }
+        )
+        if not metrics_only:
+            self._content_revision += 1
+            self._rendered_rows.clear()
 
     def settle(self) -> None:
         if self.state is BlockState.COMMITTED:

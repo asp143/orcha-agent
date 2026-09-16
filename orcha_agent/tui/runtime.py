@@ -67,6 +67,7 @@ from .blocks import (
     render_delivery,
     render_task,
     theme_spinner,
+    theme_value,
 )
 from .console import ConsoleOutput
 from .complete import ComposerCompleter
@@ -1567,8 +1568,13 @@ class ApplicationRuntime:
         prose = self._uses_prose_rows(block)
         if prose:
             rows = 10_000
+        visible_thinking = (
+            prose
+            and block.kind == "thinking"
+            and bool(block.data.get("visible", theme_value(self.theme, "thinking_visible", True)))
+        )
         key = (
-            block.revision,
+            (block._content_revision, block.state) if visible_thinking else block.revision,
             width,
             rows,
             force_terminal,
