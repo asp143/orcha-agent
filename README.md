@@ -567,7 +567,9 @@ envelope metadata, without mistaking ordinary unknown fields for a wrapper.
 Put a `SKILL.md` in `.orcha-agent/skills/<name>/` or
 `~/.config/orcha-agent/skills/<name>/`. Discovery searches project ancestors,
 nearest first, with native skills before imported skills at each depth. Claude,
-Codex, and GitHub skill directories are imported too; user skills are the fallback.
+Codex, and GitHub skill directories are imported too. In an untrusted project,
+user roots are searched first; conflicting project skill names are skipped with a
+warning. Trusted projects retain project-first precedence with user skills as fallback.
 
 ```markdown
 ---
@@ -625,7 +627,9 @@ Supported transports are `stdio`, streamable `http`, and legacy `sse`; `env` and
 trust setting (`--trust-cwd` for one invocation). Claude `.mcp.json` and Codex
 `~/.codex/config.toml` servers are imported; disable them with `import_claude = false`
 or `import_codex = false` under `[plugins.mcp]`. Server names cannot contain `__`.
-Headers and URL credentials require HTTPS unless the URL host is loopback. Codex imports recognize
+Headers and URL credentials require HTTPS unless the URL host is loopback.
+HTTPS URLs such as `https://user:pw@host/mcp` are accepted and use HTTP Basic
+authentication over TLS; URL credentials are not categorically blocked. Codex imports recognize
 `startup_timeout_sec`, `tool_timeout_sec`, `env_http_headers`, and
 `bearer_token_env_var`; environment-backed headers resolve at connection time.
 Malformed server entries are reported individually without disabling valid entries.
@@ -657,7 +661,9 @@ Place Markdown files in `.orcha-agent/commands/*.md` or
 `/bar` alias exists only for trusted, unambiguous definitions. User commands take
 precedence over all untrusted project commands and aliases. With a trusted project,
 native commands win over imports and project commands win within each format.
-Existing built-in commands cannot be replaced.
+Existing built-in commands cannot be replaced. Command roots must resolve within
+their project or home scope before files are enumerated; symlinked importer
+directories cannot redirect discovery outside that scope.
 
 ```markdown
 ---
@@ -690,11 +696,13 @@ apply on a subsequent build, and discovery failures are logged.
 
 References such as `@docs/conventions.md` expand relative to the importing file;
 code examples remain literal. Imports are bounded, cyclic imports stop, and
-untrusted project files and resolved import targets must remain inside the Git
-root. Absolute and `~` imports in untrusted project files stay literal; symlink
+untrusted project files and resolved import targets must remain inside the nearest
+Git root, or inside cwd when no Git repository exists. Discovering ancestors up to
+home never grants an untrusted project access to the rest of home. Absolute and `~` imports in untrusted project files stay literal; symlink
 escapes are rejected. Home-scope instruction files are unaffected by the project
 containment rule. Regardless of trust, instructions never inline `.ssh/`, `.aws/`,
-`.gnupg/`, `*.pem`, `*.key`, `*.p12`, `credentials.json`, `secrets.*`, `.env*`, or
+`.gnupg/`, `.docker/`, `.kube/`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`,
+`*.pem`, `*.key`, `*.p12`, `*.pfx`, `credentials.json`, `secrets.*`, `.env*`, or
 `Credentials/`, including symlink disguises. Prompt content is framed as
 `<repo-rules>` with `<file path="…">` and pointer-only `<dir-context>` entries.
 

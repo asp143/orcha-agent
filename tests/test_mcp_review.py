@@ -394,3 +394,23 @@ async def test_http_url_userinfo_is_an_implicit_authorization_header():
     with pytest.raises(ValueError, match="HTTPS"):
         mcp.connection_headers({"url": url})
     assert mcp.validate_server("local", {"url": "http://user:fixture@127.0.0.1/mcp"})
+
+
+@pytest.mark.asyncio
+async def test_https_url_credentials_remain_supported_as_basic_auth():
+    import httpx2
+
+    observed = []
+
+    async def receive(request):
+        observed.append((request.url.scheme, request.headers["authorization"].startswith("Basic ")))
+        return httpx2.Response(200)
+
+    values = mcp.validate_server(
+        "remote", {"url": "https://fixture:fixture-password@example.com/mcp"}
+    )
+    async with httpx2.AsyncClient(
+        transport=httpx2.MockTransport(receive), headers=mcp.connection_headers(values)
+    ) as client:
+        await client.post(values["url"])
+    assert observed == [("https", True)]
