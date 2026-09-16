@@ -37,9 +37,22 @@ _IMPORT = re.compile(r"(?<!\S)@([./~\w-][^\s]*)")
 
 def _safe(path: Path) -> bool:
     return not any(
-        part in {"Credentials", ".ssh", ".aws", ".gnupg", "credentials.json"}
+        part
+        in {
+            "Credentials",
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".netrc",
+            ".git-credentials",
+            ".npmrc",
+            ".pypirc",
+            ".docker",
+            ".kube",
+            "credentials.json",
+        }
         or part.startswith((".env", "secrets."))
-        or part.endswith((".pem", ".key", ".p12"))
+        or part.endswith((".pem", ".key", ".p12", ".pfx"))
         for part in path.parts
     )
 
@@ -170,7 +183,10 @@ def render_context(
         return ""
     names = _ladder(options)
     ancestors = ancestor_dirs(cwd, home=home)
-    boundary = ancestors[-1].resolve() if not trust_cwd else None
+    # Home bounds discovery, but it never grants project files access to all of
+    # home. Only an actual repository root may widen the untrusted cwd boundary.
+    project_root = ancestors[-1] if (ancestors[-1] / ".git").exists() else cwd
+    boundary = project_root.resolve() if not trust_cwd else None
     paths = [home / ".config/orcha-agent/AGENTS.md"]
     if options.get("import_claude", True):
         paths.append(home / ".claude/CLAUDE.md")

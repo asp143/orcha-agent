@@ -186,6 +186,13 @@ def test_untrusted_context_contains_ladder_and_imports(tmp_path: Path):
         ".ssh/x",
         ".aws/config",
         ".gnupg/x",
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".docker/config.json",
+        ".kube/config",
+        "a.pfx",
         "a.pem",
         "a.key",
         "a.p12",
@@ -223,6 +230,44 @@ def test_non_repo_ancestor_walk_stops_at_home(tmp_path: Path):
     outside = tmp_path / "elsewhere/child"
     outside.mkdir(parents=True)
     assert ancestor_dirs(outside, home=home) == [outside]
+
+
+def test_untrusted_non_repo_import_boundary_is_cwd_under_home(tmp_path: Path):
+    home = tmp_path / "home"
+    cwd = home / "Downloads/evil"
+    put(cwd / "AGENTS.md", "@../../.netrc @../../ordinary.md @docs/local.md")
+    put(home / ".netrc", "PRIVATE NETRC FIXTURE")
+    put(home / "ordinary.md", "OUTSIDE ORDINARY FIXTURE")
+    put(home / "AGENTS.md", "ANCESTOR RULES @ordinary.md")
+    put(cwd / "docs/local.md", "LOCAL @nested.md")
+    put(cwd / "docs/nested.md", "NESTED RULES")
+    put(home / ".config/orcha-agent/AGENTS.md", "GLOBAL @local.md")
+    put(home / ".config/orcha-agent/local.md", "GLOBAL IMPORT")
+
+    result = render_context(cwd, {}, home=home, trust_cwd=False)
+
+    assert "@../../.netrc @../../ordinary.md LOCAL NESTED RULES" in result
+    assert "PRIVATE NETRC FIXTURE" not in result
+    assert "OUTSIDE ORDINARY FIXTURE" not in result
+    assert "ANCESTOR RULES" not in result
+    assert "GLOBAL GLOBAL IMPORT" in result
+
+
+def test_untrusted_nested_repo_imports_keep_git_root_boundary(tmp_path: Path):
+    home = tmp_path / "home"
+    root = home / "repo"
+    cwd = root / "src/nested"
+    put(root / ".git", "gitdir: elsewhere")
+    put(root / "AGENTS.md", "ROOT @shared.md")
+    put(root / "shared.md", "SHARED RULES")
+    put(cwd / "AGENTS.md", "NESTED @../../shared.md @../../../ordinary.md")
+    put(home / "ordinary.md", "OUTSIDE ORDINARY FIXTURE")
+
+    result = render_context(cwd, {}, home=home, trust_cwd=False)
+
+    assert "ROOT SHARED RULES" in result
+    assert "NESTED SHARED RULES @../../../ordinary.md" in result
+    assert "OUTSIDE ORDINARY FIXTURE" not in result
 
 
 @pytest.mark.asyncio
@@ -272,10 +317,26 @@ async def test_discovery_gate_preserves_background_and_disables_legacy(
 
 
 @pytest.mark.parametrize("reverse", [True, False])
-def test_sensitive_import_symlink_cannot_disguise_path(tmp_path: Path, monkeypatch, reverse: bool):
+@pytest.mark.parametrize("trusted", [True, False])
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".ssh/config",
+        ".netrc",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        ".docker/config.json",
+        ".kube/config",
+        "a.pfx",
+    ],
+)
+def test_sensitive_import_symlink_cannot_disguise_path(
+    tmp_path: Path, monkeypatch, reverse: bool, trusted: bool, name: str
+):
     harmless = put(tmp_path / "ordinary.md", "ordinary fixture")
-    sensitive = tmp_path / ".ssh" / "config"
-    sensitive.parent.mkdir()
+    sensitive = tmp_path / name
+    sensitive.parent.mkdir(parents=True, exist_ok=True)
     if reverse:
         alias = tmp_path / "alias.md"
         alias.symlink_to(sensitive)
@@ -290,4 +351,6 @@ def test_sensitive_import_symlink_cannot_disguise_path(tmp_path: Path, monkeypat
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", guarded_open)
-    assert expand_imports(source, max_bytes=4096).startswith("@")
+    assert expand_imports(
+        source, max_bytes=4096, trust_cwd=trusted, project_root=tmp_path
+    ).startswith("@")
