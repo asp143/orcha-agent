@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .tools.common import DEFAULT_DENY
+
 DEFAULT_MODEL = "anthropic:claude-opus-5"
 DEFAULT_MEMORY = ("AGENTS.md", "CLAUDE.md")
 
@@ -209,6 +211,11 @@ class MemoryStoreConfig:
 class ToolsConfig:
     native: bool = True
     edit_format: str = "replace"
+    allowed_roots: tuple[str, ...] = ()
+    deny: tuple[str, ...] = DEFAULT_DENY
+    shell_env_passthrough: tuple[str, ...] = ()
+    max_read_bytes: int = 64 * 1024 * 1024
+    read_summary: bool = False
 
 
 def _tools_config(value: Any, parser: argparse.ArgumentParser) -> ToolsConfig:
@@ -220,7 +227,29 @@ def _tools_config(value: Any, parser: argparse.ArgumentParser) -> ToolsConfig:
     edit_format = value.get("edit_format", "replace")
     if edit_format not in ("replace", "hashline"):
         parser.error('[tools] edit_format must be "replace" or "hashline"')
-    return ToolsConfig(native=native, edit_format=edit_format)
+    sequences: dict[str, tuple[str, ...]] = {}
+    for key, default in (("allowed_roots", ()), ("deny", DEFAULT_DENY), ("shell_env_passthrough", ())):
+        supplied = value.get(key, default)
+        if not isinstance(supplied, (list, tuple)) or any(
+            not isinstance(item, str) or not item.strip() for item in supplied
+        ):
+            parser.error(f"[tools] {key} must be a list of nonempty strings")
+        sequences[key] = tuple(supplied)
+    if any(not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name)
+           for name in sequences["shell_env_passthrough"]):
+        parser.error("[tools] shell_env_passthrough must contain environment variable names")
+    maximum = value.get("max_read_bytes", 64 * 1024 * 1024)
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+        parser.error("[tools] max_read_bytes must be a positive integer")
+    summary = value.get("read_summary", False)
+    if not isinstance(summary, bool):
+        parser.error("[tools] read_summary must be true or false")
+    return ToolsConfig(
+        native=native, edit_format=edit_format,
+        allowed_roots=sequences["allowed_roots"], deny=sequences["deny"],
+        shell_env_passthrough=sequences["shell_env_passthrough"],
+        max_read_bytes=maximum, read_summary=summary,
+    )
 
 
 @dataclass(frozen=True, slots=True)
