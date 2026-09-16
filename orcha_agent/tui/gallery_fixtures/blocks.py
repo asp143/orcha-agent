@@ -79,6 +79,12 @@ TOOL_GALLERY_FIXTURES: dict[
     str,
     dict[GalleryState, GalleryBlockFixture],
 ] = {
+    "bash_jobs": _tool_states(
+        "bash_jobs",
+        args={"action": "list"},
+        result={"jobs": [{"id": "build-1", "status": "running", "command": "npm run build"}]},
+        error="job not found",
+    ),
     "execute": _tool_states(
         "execute",
         args={"command": "uv run pytest -q tests/tui"},

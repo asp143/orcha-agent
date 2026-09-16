@@ -37,7 +37,17 @@ def test_every_renderer_state_gallery_output_is_non_empty(tmp_path: Path) -> Non
 
 def test_tool_gallery_covers_every_builtin_tool_in_every_state(tmp_path: Path) -> None:
     theme = load_themes(home=tmp_path, symbols="unicode")["dark"]
-    expected = {"execute", "ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
+    expected = {
+        "bash_jobs",
+        "execute",
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "delete",
+        "glob",
+        "grep",
+    }
     assert set(gallery_blocks.TOOL_GALLERY_FIXTURES) == expected
     for state in GALLERY_STATES:
         assert all(state in states for states in gallery_blocks.TOOL_GALLERY_FIXTURES.values())
@@ -86,7 +96,7 @@ def test_tool_gallery_frames_keep_exact_width_with_nerd_and_emoji_symbols() -> N
                 assert "\r" not in row and "\n" not in row
                 assert cell_len(row) == 100, (state, plain, repr(row))
                 if row.startswith("╰"):
-                    assert " " not in row[1:-1], (state, plain, repr(row))
+                    assert row.endswith(" ⟦Ctrl+O: Collapse⟧ ╯"), (state, plain, repr(row))
 
     assert seen_symbols == {"󰄬", "󰅖", "⏳", "📂", "🔍"}
 

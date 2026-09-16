@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from time import monotonic
 from typing import Any
 
@@ -41,6 +42,25 @@ def _color(value: str) -> str | None:
     return "yellow" if value == "brown" else value
 
 
+def clear_terminal_cache() -> None:
+    """Drop session-local replay state on clear or session switch."""
+    _REPLAYS.clear()
+
+
+@lru_cache(maxsize=512)
+def _cell_style(attributes: tuple[Any, ...]) -> Style:
+    fg, bg, bold, italics, underscore, reverse, strike = attributes
+    return Style(
+        color=_color(fg),
+        bgcolor=_color(bg),
+        bold=bold or None,
+        italic=italics or None,
+        underline=underscore or None,
+        reverse=reverse or None,
+        strike=strike or None,
+    )
+
+
 def terminal_rows(key: str, source: str, width: int, *, streaming: bool = False) -> list[Text]:
     """Feed only appended bytes; repaint at most every 50 ms while streaming."""
     width = max(1, width)
@@ -67,23 +87,44 @@ def terminal_rows(key: str, source: str, width: int, *, streaming: bool = False)
     replay.tail = source[-128:]
     replay.updated = now
     rows: list[Text] = []
-    cells = [*replay.screen.history.top, *(replay.screen.buffer[index] for index in range(64))]
+    last_content_row = max(
+        (
+            index
+            for index, line in replay.screen.buffer.items()
+            if any(char.data.strip() or char.bg != "default" for char in line.values())
+        ),
+        default=0,
+    )
+    last_row = max(replay.screen.cursor.y, last_content_row)
+    cells = [
+        *replay.screen.history.top,
+        *(replay.screen.buffer[index] for index in range(last_row + 1)),
+    ]
     for line in cells:
         row = Text()
-        for column in range(width):
-            char = line[column]
-            row.append(
-                char.data,
-                Style(
-                    color=_color(char.fg),
-                    bgcolor=_color(char.bg),
-                    bold=char.bold,
-                    italic=char.italics,
-                    underline=char.underscore,
-                    reverse=char.reverse,
-                    strike=char.strikethrough,
-                ),
+        # Sparse pyte rows contain only touched cells. Preserve interior blanks,
+        # but never allocate spans or cells for the untouched right margin.
+        last_column = max(line, default=-1)
+        run: list[str] = []
+        previous: tuple[Any, ...] | None = None
+        for column in range(min(width, last_column + 1)):
+            char = line.get(column, replay.screen.default_char)
+            attributes = (
+                char.fg,
+                char.bg,
+                char.bold,
+                char.italics,
+                char.underscore,
+                char.reverse,
+                char.strikethrough,
             )
+            if previous is not None and attributes != previous:
+                row.append("".join(run), _cell_style(previous))
+                run = []
+            run.append(char.data)
+            previous = attributes
+        if previous is not None:
+            row.append("".join(run), _cell_style(previous))
         row.rstrip()
         rows.append(row)
     while rows and not rows[-1].plain:

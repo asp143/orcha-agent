@@ -308,6 +308,7 @@ def _frame(
     state: str,
     sections: Mapping[int, str] | None = None,
     edit: bool = False,
+    expanded: bool = False,
 ) -> Text:
     width = max(4, width)
     border = str(theme_value(theme, border_token, theme_value(theme, "muted")))
@@ -323,9 +324,6 @@ def _frame(
     header_value = header.copy() if isinstance(header, Text) else Text(_one_line(header))
     if "\n" in header_value.plain or "\r" in header_value.plain:
         header_value = Text(_one_line(header_value.plain))
-    if len(rows) > max(0, budget_rows - 2):
-        hint = "[Ctrl+O: Expand]" if theme_symbol(theme, "preset", "") == "ascii" else EXPAND_HINT
-        header_value.append(f" {hint}", style=str(theme_value(theme, "dim")))
     max_header_width = max(0, width - 8)
     if header_value.cell_len > max_header_width:
         header_value = Text(_middle_ellipsis(header_value.plain, max_header_width))
@@ -360,10 +358,25 @@ def _frame(
             framed.append(" ")
         framed.append(v, style=border)
         _append_line(output, framed)
-    _append_line(output, Text(f"{bl}{h * (width - 2)}{br}", style=border))
+    footer = Text(bl, style=border)
+    hint = ""
+    if expanded or len(rows) > max(0, budget_rows - 2):
+        action = "Collapse" if expanded else "Expand"
+        hint = (
+            f"[Ctrl+O: {action}]"
+            if theme_symbol(theme, "preset", "") == "ascii"
+            else f"⟦Ctrl+O: {action}⟧"
+        )
+    if hint and cell_len(hint) + 4 <= width:
+        footer.append(h * (width - cell_len(hint) - 4), style=border)
+        footer.append(f" {hint} ", style=f"dim {theme_value(theme, 'dim')}")
+        footer.append(br, style=border)
+    else:
+        footer = Text(f"{bl}{h * (width - 2)}{br}", style=border)
+    _append_line(output, footer)
     background = theme_value(theme, _card_background_token(state), None)
     if background not in (None, "", "default"):
-        output.stylize(f"on {background}")
+        output.stylize_before(f"on {background}")
     return output
 
 
@@ -543,6 +556,36 @@ def _edit_rows(
             )
         )
     return header, rows
+
+
+def _bash_jobs_rows(
+    block: Block, args: Mapping[str, Any], expanded: bool, width: int
+) -> tuple[list[str | Text], dict[int, str]]:
+    result = block.data.get("result")
+    action = str(args.get("action", "list"))
+    if action == "read":
+        return _bash_rows(
+            block, {"command": f"job {args.get('job_id', args.get('id', ''))}"}, expanded, width
+        )
+    if action == "kill":
+        job = args.get("job_id", args.get("id", ""))
+        return [f"Job {job}", _result_text(result) or "Stopped"], {}
+    jobs = _value(result, "jobs", result if isinstance(result, list) else [])
+    rows: list[str | Text] = []
+    if isinstance(jobs, list):
+        for job in jobs:
+            if isinstance(job, Mapping):
+                identifier = job.get("job_id", job.get("id", "—"))
+                rows.append(
+                    f"{identifier} · {job.get('status', 'running')} · {job.get('command', '')}"
+                )
+    if not rows:
+        rows = [
+            _result_text(result) if result and not isinstance(jobs, list) else "No background jobs"
+        ]
+    if not expanded and len(rows) > BASH_LINES:
+        rows = [*rows[:BASH_LINES], f"… {len(rows) - BASH_LINES} more jobs"]
+    return rows, {}
 
 
 def _bash_rows(
@@ -902,6 +945,7 @@ def _render_impl(
             theme=theme,
             border_token="error",
             state=state,
+            expanded=expanded,
         )
     if has_image(block):
         return render_image(block, theme, width, budget_rows, expanded)
@@ -914,6 +958,9 @@ def _render_impl(
     elif name in _EDIT:
         header, rows = _edit_rows(block, args, theme, width, expanded)
         edit = True
+    elif name == "bash_jobs":
+        header = f"{_glyph(block, state, theme)} Bash jobs · {args.get('action', 'list')}"
+        rows, sections = _bash_jobs_rows(block, args, expanded, width)
     elif name in _BASH:
         header = f"{_glyph(block, state, theme)} Bash"
         rows, sections = _bash_rows(block, args, expanded, width)
@@ -945,6 +992,7 @@ def _render_impl(
         state=state,
         sections=sections,
         edit=edit,
+        expanded=expanded,
     )
 
 

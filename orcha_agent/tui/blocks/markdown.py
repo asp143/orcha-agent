@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from copy import copy
+import re
 from typing import Any
 
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -11,13 +12,49 @@ from rich.markdown import Markdown
 
 # Settled paragraphs/lists/fences survive streaming tail updates. Retain a bounded
 # number of blocks, not every historical version of an assistant response.
+_REFERENCE = re.compile(r"(?m)^ {0,3}\[[^]\n]+\]:")
+
+_PARSED: OrderedDict[str, tuple[int, int, list[Any]]] = OrderedDict()
+
 _LAYOUTS: OrderedDict[tuple[Any, ...], tuple[Any, ...]] = OrderedDict()
 
 
 class StreamingMarkdown(Markdown):
     """Preserve Rich's GFM parser and reuse layouts of unchanged root blocks."""
 
+    def __init__(self, markup: str, *args: Any, **kwargs: Any) -> None:
+        boundary = line_offset = 0
+        prefix: list[Any] = []
+        # Reference definitions can retroactively change any earlier inline link.
+        # Keep those uncommon documents on the full parser for correctness.
+        if not _REFERENCE.search(markup):
+            for source, cached in reversed(_PARSED.items()):
+                if markup.startswith(source):
+                    boundary, line_offset, prefix = cached
+                    break
+        super().__init__(markup[boundary:], *args, **kwargs)
+        for token in self.parsed:
+            if token.map:
+                token.map = [line + line_offset for line in token.map]
+        self.parsed = [*prefix, *self.parsed]
+        self.markup = markup
+        self._source_lines = markup.splitlines(keepends=True)
+        depth = 0
+        starts: list[tuple[int, int]] = []
+        for index, token in enumerate(self.parsed):
+            if depth == 0 and token.map:
+                starts.append((index, token.map[0]))
+            depth += token.nesting
+        if starts and not _REFERENCE.search(markup):
+            index, line = starts[-1]
+            _PARSED[markup] = (sum(map(len, self._source_lines[:line])), line, self.parsed[:index])
+            while len(_PARSED) > 8:
+                _PARSED.popitem(last=False)
+
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        if _REFERENCE.search(self.markup):
+            yield from super().__rich_console__(console, options)
+            return
         groups: list[list[Any]] = []
         current: list[Any] = []
         depth = 0
@@ -49,7 +86,9 @@ class StreamingMarkdown(Markdown):
         )
         for group in groups:
             key = (
-                repr(group),
+                "".join(self._source_lines[group[0].map[0] : group[0].map[1]])
+                if group[0].map
+                else self.markup,
                 newline,
                 self.style,
                 self.code_theme,

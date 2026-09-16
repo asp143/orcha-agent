@@ -40,8 +40,8 @@ def _changes(before: str, after: str) -> tuple[set[int], set[int]]:
 def _append(
     target: Text, value: str, color: str, changed: set[int], language: str, theme: Any
 ) -> None:
-    colored = highlight(value, language, theme)
-    colored.plain = _visualize_indent(value)
+    visual = _visualize_indent(value)
+    colored = highlight(visual, language, theme)[: len(visual)]
     offset = 0
     for index, token in enumerate(_TOKENS.findall(colored.plain)):
         if index in changed:
@@ -94,6 +94,7 @@ def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: boo
             continue
         if output:
             output.append("\n")
+        line_start = len(output)
         if line.startswith("-"):
             color = str(theme_value(theme, "toolDiffRemoved"))
             output.append(f"-{old_line:>{digits}}│", style=color)
@@ -110,11 +111,16 @@ def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: boo
             content = line[1:] if line.startswith(" ") else line
             color = str(theme_value(theme, "toolDiffContext"))
             output.append(f" {new_line:>{digits}}│", style=color)
-            colored = highlight(content, language, theme)
-            colored.plain = _visualize_indent(content)
+            visual = _visualize_indent(content)
+            colored = highlight(visual, language, theme)[: len(visual)]
             output.append(colored)
             old_line += 1
             new_line += 1
+        if line.startswith(("-", "+")):
+            token = "toolDiffRemovedBg" if line.startswith("-") else "toolDiffAddedBg"
+            background = theme_value(theme, token, None)
+            if background not in (None, "", "default"):
+                output.stylize(Style(bgcolor=str(background)), line_start, len(output))
         rendered_lines += 1
     content_lines = [line for line in lines if not line.startswith(("@@ ", "---", "+++"))]
     hidden_lines = max(0, len(content_lines) - maximum)

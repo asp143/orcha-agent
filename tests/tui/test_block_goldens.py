@@ -26,6 +26,8 @@ DARK_THEME: dict[str, Any] = {
         "thinkingOff": "#89dceb",
         "thinkingText": "#7f849c",
         "toolDiffAdded": "#a6e3a1",
+        "toolDiffAddedBg": "#24352b",
+        "toolDiffRemovedBg": "#39272f",
         "toolDiffContext": "#7f849c",
         "toolDiffRemoved": "#f38ba8",
         "toolErrorBg": "#321d2a",
