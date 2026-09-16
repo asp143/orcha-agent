@@ -260,12 +260,13 @@ class AppContext:
             self.session.set_plugin_state(self.session_id, plugin, state)
 
     def _resolve_summarizer(self, cfg: Config) -> Any:
+        """Invalidate the manual model on rebuild; construct it only for compact.
+
+        Provider-free contexts may supply their own summarizer implementation.
+        """
         if not self.registry.providers:
             return self.summarizer
-        return ModelResolver(self.registry, cfg).resolve(
-            cfg.summarizer_model or cfg.model,
-            "summarizer",
-        )
+        return None
 
     def _clean_history_for_model(
         self,
@@ -828,6 +829,10 @@ class AppContext:
             build_context(self.ledger.path(self.session_id)).messages,
             {"reasoning", "thinking"},
         )
+        if self.summarizer is None and self.registry.providers:
+            self.summarizer = ModelResolver(self.registry, self.cfg).resolve(
+                self.cfg.summarizer_model or self.cfg.model, "summarizer"
+            )
         if self.summarizer is None:
             raise RuntimeError("summarizer model is unavailable")
         summary = await self.summarizer.ainvoke(

@@ -1651,12 +1651,12 @@ async def test_model_switch_retargets_unset_role_models_to_selected_provider(
     assert ctx.agent is candidate_graph
     assert isinstance(captured["model"], BaseChatModel)
     assert isinstance(summarizer.model, BaseChatModel)
-    assert isinstance(ctx.summarizer, BaseChatModel)
+    assert ctx.summarizer is None
     assert captured["model"] is created[0]
     assert summarizer.model is created[1]
-    assert ctx.summarizer is created[2]
-    assert codex_availability_calls == [None, None, None]
-    assert codex_factory_calls == ["x", "x", "x"]
+    assert len(created) == 2
+    assert codex_availability_calls == [None, None]
+    assert codex_factory_calls == ["x", "x"]
     assert anthropic_availability_calls == []
     assert anthropic_factory_calls == []
 
