@@ -153,12 +153,37 @@ class MagicKeywordsMiddleware(AgentMiddleware):
                     break
             registry = getattr(self.ctx, "registry", None)
             provider = registry.providers.get(prefix) if registry is not None else None
-            if provider is not None and provider.capabilities.thinking:
+            profile = getattr(request.model, "profile", None) or {}
+            levels = profile.get("reasoning_effort_levels", ())
+            highest = next(
+                (level for level in ("max", "xhigh", "high", "medium", "low") if level in levels),
+                None,
+            )
+            if (
+                provider is not None
+                and provider.capabilities.thinking
+                and profile.get("reasoning_output") is not False
+            ):
                 if prefix in {"openai", "codex"}:
-                    settings["reasoning"] = {"effort": "xhigh", "summary": "auto"}
+                    if highest is not None:
+                        settings["reasoning"] = {"effort": highest, "summary": "auto"}
                 elif prefix == "anthropic":
-                    settings["reasoning_effort"] = "max"
-                    settings["thinking"] = {"type": "adaptive"}
+                    if highest is not None:
+                        settings["reasoning_effort"] = highest
+                    if "xhigh" in levels:
+                        settings["thinking"] = {"type": "adaptive"}
+                    elif profile.get("reasoning_output") is True:
+                        max_tokens = (
+                            settings.get("max_tokens")
+                            or getattr(request.model, "max_tokens", None)
+                            or 4096
+                        )
+                        if max_tokens > 1024:
+                            settings["thinking"] = {
+                                "type": "enabled",
+                                "budget_tokens": max_tokens - 1,
+                            }
+                            settings["temperature"] = 1
                 elif prefix == "google":
                     model_name = str(
                         getattr(request.model, "model", "")

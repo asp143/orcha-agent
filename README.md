@@ -998,7 +998,8 @@ and resumed sessions do not automatically open it.
 ## Magic keywords
 
 Standalone lowercase `ultrathink` requests the highest reasoning effort for the
-current turn; `orchestrate` adds a hidden system reminder to fan out independent
+current turn, capped by the actual model profile and supported reasoning controls.
+Non-reasoning models receive no extra reasoning parameters. `orchestrate` adds a hidden system reminder to fan out independent
 work with `task`. Standalone `plan` makes that turn read-only when the plan mode
 is registered: only its read tools are exposed, and write/delegation calls are
 blocked. These controls do not change saved model settings or the session mode.

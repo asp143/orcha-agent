@@ -66,7 +66,10 @@ def middleware():
 
 def request(text):
     return ModelRequest(
-        model=FakeListChatModel(responses=["ok"]),
+        model=FakeListChatModel(
+            responses=["ok"],
+            profile={"reasoning_output": True, "reasoning_effort_levels": ["high", "xhigh", "max"]},
+        ),
         messages=[HumanMessage(text)],
         tools=[{"name": "read"}, {"name": "write"}, {"name": "task"}],
         system_message=SystemMessage("Base"),
@@ -187,3 +190,44 @@ async def test_temporary_model_adapter_overrides_main_provider():
     assert settings["thinking_level"] == "high"
     assert "thinking" not in settings
     assert "reasoning_effort" not in settings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_name,expected", [("gpt-4o", None), ("gpt-5.2", "xhigh")])
+async def test_real_openai_payload_respects_model_profile(model_name, expected):
+    from langchain_openai import ChatOpenAI
+
+    model = ChatOpenAI(model=model_name, api_key="test")
+    plugin = middleware()
+    plugin.ctx.registry.providers["openai"] = SimpleNamespace(
+        capabilities=SimpleNamespace(thinking=True)
+    )
+    value = request("ultrathink").override(model=model, model_settings={})
+    handler = AsyncMock()
+    await plugin.awrap_model_call(value, handler)
+    modified = handler.call_args.args[0]
+    payload = model._get_request_payload(modified.messages, **modified.model_settings)
+    if expected is None:
+        assert "reasoning" not in payload
+        assert "reasoning_effort" not in payload
+    else:
+        assert payload["reasoning"]["effort"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_name,expected", [("claude-opus-4-5", "high"), ("claude-sonnet-4-5", None)]
+)
+async def test_real_older_anthropic_payload_uses_enabled_thinking(model_name, expected):
+    from langchain_anthropic import ChatAnthropic
+
+    model = ChatAnthropic(model=model_name, api_key="test", max_tokens=4096)
+    plugin = middleware()
+    value = request("ultrathink").override(model=model, model_settings={})
+    handler = AsyncMock()
+    await plugin.awrap_model_call(value, handler)
+    modified = handler.call_args.args[0]
+    payload = model._get_request_payload(modified.messages, **modified.model_settings)
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 4095}
+    assert payload["temperature"] == 1
+    assert payload.get("output_config", {}).get("effort") == expected
