@@ -10,7 +10,7 @@ from typing import Any
 
 from orcha_agent.core.events import AgentBuildBefore, AppExit, AppStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
-from orcha_agent.extensibility.mcp import MCPManager, load_servers
+from orcha_agent.extensibility.mcp import MCPManager, load_servers, private_write, validate_server
 
 PLUGIN = PluginSpec(name="mcp", version="1.0.0")
 
@@ -22,11 +22,7 @@ def _write(path: Path, name: str, value: dict[str, Any] | None) -> None:
         entries.pop(name, None)
     else:
         entries[name] = value
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(document, indent=2) + "\n")
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    private_write(path, json.dumps(document, indent=2) + "\n")
 
 
 async def command(manager: MCPManager, ctx: Any, args: str) -> None:
@@ -39,7 +35,9 @@ async def command(manager: MCPManager, ctx: Any, args: str) -> None:
                 ctx.console.print(manager.error, markup=False)
             for name, connection in manager.connections.items():
                 ctx.console.print(
-                    f"{name}: {connection.status} ({len(connection.tools)} tools)", markup=False
+                    f"{name}: {connection.status} ({len(connection.tools)} tools)"
+                    + (f" — {connection.error}" if connection.error else ""),
+                    markup=False,
                 )
             if not manager.connections and not manager.error:
                 ctx.console.print("No MCP servers configured.")
@@ -80,6 +78,7 @@ async def command(manager: MCPManager, ctx: Any, args: str) -> None:
                 ("http://", "https://")
             ):
                 raise ValueError("MCP URL must use http:// or https://")
+            values = validate_server(name, values)
             await asyncio.to_thread(_write, default_path, name, values)
             await manager.reload()
             ctx.console.print(f"Added MCP server {name}.", markup=False)
@@ -90,9 +89,13 @@ async def command(manager: MCPManager, ctx: Any, args: str) -> None:
         if action in {"remove", "enable", "disable"}:
             path = connection.config.source
             values = dict(connection.config.values)
-            if path.suffix == ".toml":
-                path = manager.home / ".config/orcha-agent/mcp.json"
-                # A native tombstone masks imported entries without rewriting TOML.
+            native_paths = {
+                manager.home / ".config/orcha-agent/mcp.json",
+                manager.cwd / ".orcha-agent/mcp.json",
+            }
+            if path not in native_paths:
+                path = default_path
+                # Native overrides mask imports without ever rewriting foreign files.
                 if action == "remove":
                     values = {"_orcha_removed": True}
                 else:
@@ -119,6 +122,8 @@ async def command(manager: MCPManager, ctx: Any, args: str) -> None:
             raise ValueError(f"Unknown MCP action: {action}")
         if not connection.config.enabled:
             raise ValueError(f"MCP server {name} is disabled")
+        if action == "test" and connection.error:
+            ctx.console.print(f"{name}: {connection.error}", markup=False)
         async with asyncio.timeout(connection.config.timeout):
             await connection.ready.wait()
             if action == "test":
