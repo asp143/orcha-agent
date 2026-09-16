@@ -27,7 +27,7 @@ def _plain(renderable: object | None) -> str:
 
 
 def test_all_symbol_presets_cover_the_complete_surface() -> None:
-    assert set(SYMBOL_PRESETS) == {"unicode", "nerd", "ascii"}
+    assert set(SYMBOL_PRESETS) == {"unicode", "nerd", "ascii", "colorblind"}
     for preset in SYMBOL_PRESETS.values():
         assert set(preset) == set(SYMBOL_KEYS)
 
@@ -130,6 +130,7 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
         Block(
             id="success",
             kind="tool",
+            state=BlockState.SETTLED,
             data={"name": "execute", "result": {"output": "ok"}},
         ),
         theme,
