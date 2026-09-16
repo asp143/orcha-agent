@@ -63,7 +63,8 @@ def test_compaction_status_is_visible_only_while_present():
     ctx = context()
     assert compaction_segment(ctx) is None
     ctx.compaction_status = "summarizing"
-    assert compaction_segment(ctx).text == "/compact summarizing"
+    assert compaction_segment(ctx).text == "compacting…"
+    assert compaction_segment(ctx).icon_key == "icon.context"
     assert compaction_segment(ctx).token == "warning"
 
 
@@ -159,3 +160,17 @@ async def test_compaction_state_markers_do_not_render_as_assistant_output():
     )
     await _message_event(ctx, (AIMessageChunk(content="visible answer"), {}), calls, labels)
     assert seen == ["visible answer"]
+
+
+def test_m9_compaction_status_renders_icon_and_short_label(tmp_path):
+    from tests.test_statusline import _Theme, _cfg, _ctx
+    from orcha_agent.tui.statusline import render_statusline
+
+    ctx = _ctx(tmp_path, cfg=_cfg(tmp_path, left=("compaction",), right=()))
+    ctx.compaction_status = "compacting"
+    ctx.registry._add_status_segment("test", "compaction", compaction_segment)
+    fragments = render_statusline(ctx, _Theme("unicode"), width=40)
+    rendered = "".join(text for _, text in fragments)
+    assert "◔ compacting…" in rendered
+    assert "/compact" not in rendered
+    assert len(rendered) == 40

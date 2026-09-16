@@ -608,7 +608,7 @@ def usage_segment(ctx: Any) -> Segment | None:
 
 def compaction_segment(ctx: Any) -> Segment | None:
     status = getattr(ctx, "compaction_status", None)
-    return Segment(f"/compact {status}", "warning") if status else None
+    return Segment("compacting…", "warning", "icon.context") if status else None
 
 
 def time_segment(ctx: Any) -> Segment | None:

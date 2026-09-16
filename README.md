@@ -183,13 +183,24 @@ selected model's catalog context window and leaves the configured token reserve.
 Provider token counts are used when available, with text-size estimates as a
 fallback. Speculative summarization prepares a reusable summary below the
 threshold. Setting `enabled = false` disables automatic maintenance; manual
-`/compact` remains available.
+`/compact` remains available. `idle_seconds` is the quiet interval after a main
+turn before the idle threshold check (default 60 seconds); new activity cancels
+pending idle work. `speculative` enables background summary preparation at 75%
+of the compaction threshold (default true). Preparation does not change history
+or show a foreground compaction status; a later compaction may reuse it.
 
 `summary` produces a concise continuation summary; `handoff` uses a structured
 note covering decisions, progress, and next steps. `shake` only removes
 superseded tool content. Repeated file reads can replace older read results
 without breaking tool-call/result pairing. A transcript card records compaction,
 and the context gauge turns amber near the configured threshold.
+
+`drop_useless` is a plugin hook: middleware can set
+`ToolMessage.additional_kwargs["superseded"] = True` on a result that is no
+longer needed. Compaction replaces that payload with a superseded-result marker
+while preserving its tool-call pairing. Native repeated-read detection is
+controlled separately by `supersede_reads`; native tools do not set the plugin
+flag. Set `drop_useless = false` to retain plugin-marked payloads.
 
 ## Models, catalog, and roles
 
@@ -223,15 +234,23 @@ Use `@role` or `@role:effort` anywhere a model specification is accepted, includ
 Effort values are `off`, `low`, `medium`, `high`, and `max`, subject to provider
 support. `orcha --smol`, `orcha --slow`, and `orcha --plan` select those model
 roles for a run. The `--plan` model flag is separate from `--mode plan`, which
-restricts the tools available to the agent.
+restricts the tools available to the agent. Unset roles fall back to the current
+main model; `/model @smol` and `--smol` print
+`role smol is not configured, using main` when taking that fallback. The same
+notice applies to other unset role selections.
 
 User catalog overrides live in `~/.config/orcha-agent/models.yml`; trusted
 projects can add `.orcha-agent/models.yml`. Project overrides are ignored unless
 the working directory is trusted. Provider entries can add `models`, change
 `model_overrides`, and obtain an `api_key` from an environment-variable name or
-an explicitly configured `!command`. Credential commands run only when the
-provider is resolved, never while browsing models. Prices come from this merged
-catalog; `[pricing."provider:model"]` remains the final price override.
+an explicitly configured `!command` in the **user-scope** file only. Project
+files may name an environment variable, but cannot run credential commands,
+even when the project is trusted. Credential commands run only when the provider
+is resolved and its accepted environment variables are not already set, never
+while browsing models. Command output is cached for the process lifetime per
+provider and user-file stamp; changing the user file invalidates that cache.
+Commands receive closed standard input and a ten-second timeout. Prices come
+from this merged catalog; `[pricing."provider:model"]` remains the final price override.
 
 For example:
 
@@ -262,6 +281,10 @@ a per-model breakdown. Usage is recorded per provider request in the session
 SQLite database, including the session, model, provider, agent role, input and
 output tokens, cache reads/writes, estimated cost, time to first token, duration,
 and stop reason. Model switches retain each request's original cost.
+TTFT measures time from request start to the first visible token, excluding
+empty or reasoning-only chunks. Requests with no visible token callback
+(including nonstreaming responses) show an unavailable TTFT rather than using
+the total request duration.
 
 Use `orcha stats today` or `orcha stats all` to inspect usage without starting a
 model; `orcha stats session --session SESSION` selects a saved session. `week`
