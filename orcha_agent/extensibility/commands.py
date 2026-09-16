@@ -38,19 +38,34 @@ def discover_commands(
     """Trusted user commands take precedence over all untrusted project aliases."""
     home = home or Path.home()
     roots = [
-        (cwd / ".orcha-agent/commands", False, trust_cwd),
-        (home / ".config/orcha-agent/commands", False, True),
+        (cwd / ".orcha-agent/commands", False, trust_cwd, cwd),
+        (home / ".config/orcha-agent/commands", False, True, home),
     ]
     if import_claude:
         roots.extend(
-            [(cwd / ".claude/commands", True, trust_cwd), (home / ".claude/commands", True, True)]
+            [
+                (cwd / ".claude/commands", True, trust_cwd, cwd),
+                (home / ".claude/commands", True, True, home),
+            ]
         )
     if not trust_cwd:
         roots.sort(key=lambda entry: not entry[2])
     result: dict[str, FileCommand] = {}
     short_aliases: list[tuple[str, str]] = []
     trusted_names: dict[str, set[str]] = {}
-    for root, recursive, trusted in roots:
+    for root, recursive, trusted, scope in roots:
+        try:
+            resolved_root = root.resolve()
+            if not resolved_root.is_relative_to(scope.resolve()):
+                continue
+        except (OSError, RuntimeError):
+            continue
+        if any(
+            part == "Credentials" or part.startswith(".env")
+            for path in (root, resolved_root)
+            for part in path.parts
+        ):
+            continue
         for path in sorted(root.glob("**/*.md" if recursive else "*.md")):
             try:
                 relative = path.relative_to(root)
@@ -58,7 +73,7 @@ def discover_commands(
                 if any(part == "Credentials" or part.startswith(".env") for part in relative.parts):
                     continue
                 resolved = path.resolve()
-                if not resolved.is_relative_to(root.resolve()):
+                if not resolved.is_relative_to(resolved_root):
                     continue
                 if any(part == "Credentials" or part.startswith(".env") for part in resolved.parts):
                     continue
