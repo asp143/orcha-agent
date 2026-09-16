@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import signal
 import shlex
 import subprocess
@@ -26,7 +27,7 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import History
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, vi_mode, vi_navigation_mode
 from prompt_toolkit.key_binding import DynamicKeyBindings, KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
@@ -63,6 +64,7 @@ from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
 from .blocks.image import image_protocol
+from .blocks.terminal import clear_terminal_cache
 from .blocks import (
     BlockRendererDispatcher,
     DEFAULT_RENDERERS,
@@ -89,11 +91,12 @@ from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
 from .statusline import agent_counts, render_statusline
-from .theme import Theme, ThemeWatcher, load_themes, select_theme, theme_from_background
+from .theme import Theme, ThemeWatcher, apply_colorblind, load_themes, select_theme, theme_from_background
 from .title import TerminalTitle
 from .turn import _run_cancellable_turn
 from .overlays import HubOverlay, KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
+from .overlays.paste import PasteOverlay
 from .overlays.hub import ledger_transcript_frame
 
 
@@ -246,6 +249,9 @@ class _PaintOutput:
         self.pump: _TerminalPump | None = None
         self._probe_task: asyncio.Task[Any] | None = None
         self._degraded = False
+        self._redraw_skipped = False
+        self._sync_depth = 0
+        self._sync_open = False
         self._closed = False
         self.background: str | None = None
         self.focus_changed: Callable[[bool], None] = lambda _focused: None
@@ -290,11 +296,30 @@ class _PaintOutput:
         elif value.startswith("\x1b]11;"):
             self.background = value[5:].rstrip("\x07\x1b\\")
 
+    def begin_frame(self) -> None:
+        """Keep erase, settled output and redraw in one terminal transaction."""
+        if self._sync_depth == 0 and self.pump is not None:
+            self.flush()
+            self._sync_open = self.synchronized
+            if self._sync_open:
+                self.pump.write("\x1b[?2026h")
+        self._sync_depth += 1
+
+    def end_frame(self) -> None:
+        if self._sync_depth <= 0:
+            return
+        if self._sync_depth == 1 and self.pump is not None:
+            self.flush()
+            if self._sync_open:
+                self.pump.write("\x1b[?2026l")
+            self._sync_open = False
+        self._sync_depth -= 1
+
     def flush(self) -> None:
         data = "".join(self.output._buffer)
         self.output._buffer.clear()
         if data and self.pump is not None:
-            if self.synchronized:
+            if self.synchronized and self._sync_depth == 0:
                 data = "\x1b[?2026h" + data + "\x1b[?2026l"
             self.pump.write(data)
 
@@ -302,7 +327,9 @@ class _PaintOutput:
         if not render_as_done and self.pump is not None and self.pump.pending > 262144:
             # Skip before PT advances its differential screen. Never drop bytes
             # from an already-rendered frame or enqueue another invalidation.
+            self._redraw_skipped = True
             return
+        self._redraw_skipped = False
         self._original_redraw(render_as_done)
 
     def start(self) -> None:
@@ -319,20 +346,27 @@ class _PaintOutput:
             now = time.monotonic()
             lag = max(0.0, now - previous - 0.25)
             previous = now
-            pending = self.pump.pending if self.pump is not None else 0
-            stalled = self.watchdog.sample(pending, now)
-            if self.pump is not None and self.pump.error is not None:
-                self.logger.error("Terminal output failed: %s", type(self.pump.error).__name__)
-                if self.application.is_running:
-                    self.application.exit(exception=OSError("terminal output disconnected"))
+            if not self._sample_output(now=now, lag=lag):
                 return
-            degraded = stalled or lag > 0.25
-            if degraded and not self._degraded:
-                self.logger.warning("Terminal repaint degraded: pending=%d loop_lag=%.3fs", pending, lag)
-            self.application.min_redraw_interval = 0.1 if degraded else 1 / 60
-            self._degraded = degraded
-            if pending < 65536:
-                self.application.invalidate()
+
+    def _sample_output(self, *, now: float, lag: float) -> bool:
+        pending = self.pump.pending if self.pump is not None else 0
+        stalled = self.watchdog.sample(pending, now)
+        if self.pump is not None and self.pump.error is not None:
+            self.logger.error("Terminal output failed: %s", type(self.pump.error).__name__)
+            if self.application.is_running:
+                self.application.exit(exception=OSError("terminal output disconnected"))
+            return False
+        degraded = stalled or lag > 0.25
+        transitioned = degraded != self._degraded
+        if degraded and transitioned:
+            self.logger.warning("Terminal repaint degraded: pending=%d loop_lag=%.3fs", pending, lag)
+        self.application.min_redraw_interval = 0.1 if degraded else 1 / 60
+        self._degraded = degraded
+        # FrameScheduler owns activity ticks. An idle watchdog must not paint.
+        if transitioned or (self._redraw_skipped and pending < 65536):
+            self.application.invalidate()
+        return True
 
     async def close(self) -> None:
         if self._closed:
@@ -590,8 +624,9 @@ class ApplicationRuntime:
         completion_registry = registry or Registry()
         self.frame = Frame()
         self._tui_config = getattr(getattr(ctx, "cfg", None), "tui", None)
+        self._base_theme = theme
         if isinstance(theme, Theme):
-            theme = replace(theme, hyperlinks=getattr(self._tui_config, "hyperlinks", True))
+            theme = replace(apply_colorblind(theme, getattr(self._tui_config, "colorblind", False)), hyperlinks=getattr(self._tui_config, "hyperlinks", True))
         self.theme: Any = theme
         self._viewport_scroll = 0
         self._turn_started = 0.0
@@ -604,7 +639,7 @@ class ApplicationRuntime:
         current_theme_id = str(
             getattr(theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default")
         )
-        self._themes.setdefault(current_theme_id, theme)
+        self._themes.setdefault(current_theme_id, self._base_theme)
         if registry is None:
             block_renderers: Any = {
                 **DEFAULT_RENDERERS,
@@ -628,6 +663,7 @@ class ApplicationRuntime:
             set_theme=self._set_theme,
         )
         self.ui.theme = theme
+        self.ui.frame = self.frame
         self.ui.active_agent = None
         self.ui.themes = self._themes
         self.ui.history = history
@@ -635,6 +671,7 @@ class ApplicationRuntime:
         self._pending: set[asyncio.Future[Any]] = set()
         self._terminal_pending: set[asyncio.Future[Any]] = set()
         self._submit_lock = asyncio.Lock()
+        self._commit_lock = asyncio.Lock()
         self._early_notifications: list[str] = []
         self._scrollback = console or Console()
         self.queue = PromptQueue()
@@ -684,6 +721,7 @@ class ApplicationRuntime:
             completer=completer,
             accept_handler=self._accept,
         )
+        self.composer.on_paste_peek = lambda text: self._track(self.ui.show(PasteOverlay(text)))
         self.buffer = self.composer.buffer
         self._restore_draft()
         effective = load_keybindings(
@@ -703,7 +741,7 @@ class ApplicationRuntime:
 
         @core_bindings.add(
             "escape",
-            filter=Condition(lambda: self._active_overlay is None and self.application.editing_mode != EditingMode.VI),
+            filter=Condition(lambda: self._active_overlay is None) & (~vi_mode | vi_navigation_mode),
         )
         def _escape(event: Any) -> None:
             self._escape_ladder(event)
@@ -788,7 +826,7 @@ class ApplicationRuntime:
             full_screen=False,
             min_redraw_interval=1 / 60,
             max_render_postpone_time=0.05,
-            mouse_support=Condition(lambda: self._active_overlay is not None or getattr(self._tui_config, "mouse", True)),
+            mouse_support=Condition(lambda: self._active_overlay is not None or self._mouse_mode() == "full"),
             editing_mode=EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS,
             cursor=ModalCursorShapeConfig(),
             **kwargs,
@@ -1294,6 +1332,10 @@ class ApplicationRuntime:
         """Restore editor-local state after AppContext activates a session."""
 
         self.buffer.reset(append_to_history=False)
+        self.composer.forget_pastes()
+        clear_terminal_cache()
+        self._last_tool_card = None
+        self._expanded_tool_id = None
         self.queue.clear()
         self.thinking_level = self._restore_thinking_level()
         self.ui.thinking_level = self.thinking_level
@@ -1408,7 +1450,10 @@ class ApplicationRuntime:
             event.app.invalidate()
 
     def _newline_or_followup(self, event: Any) -> None:
-        event.current_buffer.insert_text("\n")
+        if self.streaming:
+            self._queue_draft(event)
+        else:
+            event.current_buffer.insert_text("\n")
 
     def _dequeue(self, event: Any) -> None:
         text = self.queue.pop_last()
@@ -1849,11 +1894,13 @@ class ApplicationRuntime:
         self.application.editing_mode = EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS
         self._paint_output._enabled = getattr(self._tui_config, "synchronized_output", True)
         self._paint_output.synchronized = self._paint_output._enabled and self._paint_output._detected_synchronized
-        self._apply_theme(self.theme)
+        self._apply_theme(self._base_theme)
 
     def _apply_theme(self, selected: Any) -> Any:
+        selected = self._themes.get(getattr(selected, "id", None), selected)
+        self._base_theme = selected
         if isinstance(selected, Theme):
-            selected = replace(selected, hyperlinks=getattr(self._tui_config, "hyperlinks", True))
+            selected = replace(apply_colorblind(selected, getattr(self._tui_config, "colorblind", False)), hyperlinks=getattr(self._tui_config, "hyperlinks", True))
         self.composer.theme = selected
         self._block_dispatcher.clear_cache()
         self.theme = selected
@@ -1937,7 +1984,9 @@ class ApplicationRuntime:
             theme=getattr(self.theme, "rich", None),
         )
         self._print_block(console, block, width, rows, viewport=True)
-        return stream.getvalue()
+        # PT's ANSI parser understands SGR but not OSC 8. Keep hyperlinks on
+        # the native scrollback path and strip only their wrappers in the live UI.
+        return re.sub(r"\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)", "", stream.getvalue())
 
     def _measure_block(self, block: Block, width: int) -> int:
         rendered = self._capture_block(
@@ -1949,12 +1998,19 @@ class ApplicationRuntime:
         lines = rendered.splitlines()
         return max(1, len(lines))
 
+    def _mouse_mode(self) -> str:
+        value = getattr(self._tui_config, "mouse", "scroll")
+        return ("full" if value else "off") if isinstance(value, bool) else value
+
     def _viewport_mouse(self, event: Any) -> Any:
+        mode = self._mouse_mode()
+        if mode == "off":
+            return NotImplemented
         if event.event_type == MouseEventType.SCROLL_UP:
             self._viewport_scroll += 3
         elif event.event_type == MouseEventType.SCROLL_DOWN:
             self._viewport_scroll = max(0, self._viewport_scroll - 3)
-        elif event.event_type == MouseEventType.MOUSE_UP:
+        elif event.event_type == MouseEventType.MOUSE_UP and mode == "full":
             self.application.layout.focus(self.buffer)
         else:
             return NotImplemented
@@ -2072,15 +2128,7 @@ class ApplicationRuntime:
 
     def _commit_blocks(self, blocks: list[Block]) -> None:
         def write_and_prune() -> None:
-            pump = self._paint_output.pump
-            synchronized = self._paint_output.synchronized and pump is not None
-            if synchronized:
-                pump.write("\x1b[?2026h")
-            try:
-                self._write_blocks(blocks)
-            finally:
-                if synchronized:
-                    pump.write("\x1b[?2026l")
+            self._write_blocks(blocks)
             # Prune inside the suspended-app window: the redraw that follows
             # run_in_terminal must paint the frame WITHOUT the just-printed
             # blocks, or it re-renders them at full height and scrolls a
@@ -2097,8 +2145,13 @@ class ApplicationRuntime:
                 if self._shutting_down:
                     return
                 await asyncio.sleep(0.05)
-            await self._run_in_app_terminal(write_and_prune)
-            self.application.invalidate()
+            async with self._commit_lock:
+                self._paint_output.begin_frame()
+                try:
+                    await self._run_in_app_terminal(write_and_prune)
+                finally:
+                    # run_in_terminal's context exit has already repainted PT.
+                    self._paint_output.end_frame()
 
         self._track(write_and_release(), terminal=True)
 
@@ -2110,6 +2163,9 @@ class ApplicationRuntime:
             terminal=True,
         )
         self.transcript.clear()
+        clear_terminal_cache()
+        self._last_tool_card = None
+        self._expanded_tool_id = None
         self.application.invalidate()
 
     async def _drain(self, pending: set[asyncio.Future[Any]]) -> None:
