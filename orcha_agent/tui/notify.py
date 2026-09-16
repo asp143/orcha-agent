@@ -47,7 +47,10 @@ class DesktopNotifier:
         self._osc9_supported = (
             osc9_supported
             if osc9_supported is not None
-            else (os.environ.get("TERM_PROGRAM", "").lower() in {"iterm.app", "wezterm", "ghostty"})
+            else (
+                bool(os.environ.get("WT_SESSION"))
+                or os.environ.get("TERM_PROGRAM", "").lower() in {"iterm.app", "wezterm", "ghostty"}
+            )
         )
         self.enabled = enabled
         self.output = output

@@ -17,6 +17,7 @@ from .composer import Composer
 from .frame import Block
 from .gallery_fixtures.composer import COMPOSER_LINES, COMPOSER_SHAPES, PASTE_EXAMPLE, ghost_example
 from .gallery_fixtures.surfaces import surface_fixtures
+from .gallery_fixtures.palette import light_colorblind_fixture
 from .overlays.base import Overlay
 from .gallery_fixtures import GALLERY_FIXTURES, GALLERY_STATES, GalleryState
 from .gallery_fixtures.blocks import TOOL_GALLERY_FIXTURES
@@ -200,6 +201,8 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
         command, hint = ghost_example()
         console.print(command, end="", markup=False)
         console.print(hint, style=theme.colors.get("dim", "dim"), markup=False)
+        console.rule("Light colorblind diff colors")
+        console.print(light_colorblind_fixture())
         for name, rows in surface_fixtures().items():
             console.rule(name, style=theme.colors.get("accent", "cyan"))
             console.print(

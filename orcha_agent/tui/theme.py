@@ -364,7 +364,11 @@ def apply_colorblind(theme: Theme, enabled: bool = True) -> Theme:
     """Apply an explicit palette option independently of the symbol preset."""
     if not enabled:
         return theme
-    background = _prompt_color(theme.color("toolSuccessBg")) or "#181820"
+    background = (
+        _prompt_color(theme.color("toolSuccessBg"))
+        or _prompt_color(theme.color("userMessageBg"))
+        or "#181820"
+    )
 
     def tint(color: str) -> str:
         return "#" + "".join(
