@@ -25,6 +25,10 @@ from .events import AgentBuildAfter, AgentBuildBefore, EventBus
 from .models import ModelResolver
 from .registry import Registry
 from .session import SessionStore
+from .tools.approvals import approval_configs
+from .tools.backend import GuardedLocalShellBackend
+from .tools.common import PathPolicy
+from .tools.middleware import NativeFilesystemMiddleware, NativeOutputMiddleware
 
 DEFAULT_SYSTEM_PROMPT = "You are a careful terminal coding agent. Use tools deliberately and report concrete results."
 FILESYSTEM_TOOL_NAMES = {
@@ -57,8 +61,9 @@ def _native_interrupts(interrupts: Mapping[str, Any]) -> dict[str, Any]:
     return mapped
 
 
-def _filesystem_middleware(backend: Any, names: set[str]) -> FilesystemMiddleware:
-    filesystem = FilesystemMiddleware(backend=backend, tools=sorted(names | {"read_file"}))
+def _filesystem_middleware(backend: Any, names: set[str], native: bool = False) -> FilesystemMiddleware:
+    middleware_type = NativeFilesystemMiddleware if native else FilesystemMiddleware
+    filesystem = middleware_type(backend=backend, tools=sorted(names | {"read_file"}))
     # deepagents 0.7.9 requires read_file at construction, even when all of its
     # file tools are replaced. Keep its overflow middleware with the exact scope.
     filesystem._enabled_tools = frozenset(names)
@@ -187,6 +192,7 @@ def _subagents(
     filesystem: FilesystemMiddleware | None,
     include_general_purpose: bool,
     native_tools: list[Any] | None = None,
+    policy: PathPolicy | None = None,
 ) -> list[Any]:
     configured: list[Any] = []
     for entry in registry.subagents:
@@ -208,6 +214,10 @@ def _subagents(
             if native_tools is not None:
                 if isinstance(spec.get("interrupt_on"), Mapping):
                     configured_spec["interrupt_on"] = _native_interrupts(spec["interrupt_on"])
+                    if policy is not None:
+                        configured_spec["interrupt_on"] = approval_configs(
+                            configured_spec["interrupt_on"], policy, registry.tools,
+                        )
                 requested = spec.get("tools")
                 if requested is None:
                     configured_spec["tools"] = native_tools
@@ -219,15 +229,23 @@ def _subagents(
                         item for item in requested if not isinstance(item, str)
                         and item.name not in {tool.name for tool in native_tools}
                     ] + [tool for tool in native_tools if tool.name in requested_names]
+                    selected_names = {tool.name for tool in configured_spec["tools"]}
+                    filesystem_names = {tool.name for tool in filesystem.tools} if filesystem else set()
+                    for requested_name in requested_names - selected_names - filesystem_names:
+                        if requested_name not in registry.tools:
+                            raise ValueError(f"Unknown subagent tool: {requested_name}")
+                        configured_spec["tools"].append(registry.tools[requested_name])
                     if filesystem is not None:
                         scoped_filesystem = _filesystem_middleware(
                             filesystem.backend,
                             {tool.name for tool in filesystem.tools} & requested_names,
+                            native=True,
                         )
             if filesystem is not None:
                 configured_spec["middleware"] = [
                     *(spec.get("middleware") or ()),
                     scoped_filesystem,
+                    *([NativeOutputMiddleware()] if native_tools is not None else []),
                 ]
             configured.append(configured_spec)
         else:
@@ -242,6 +260,8 @@ def _subagents(
             general_purpose["tools"] = native_tools
         if filesystem is not None:
             general_purpose["middleware"] = [filesystem]
+            if native_tools is not None:
+                general_purpose["middleware"].append(NativeOutputMiddleware())
         configured.insert(0, general_purpose)
     return configured
 
@@ -304,11 +324,11 @@ async def build_agent(
         and cfg.backend == "local_shell"
         and {"read", "write", "edit", "bash"}.issubset(registry.tools)
     )
+    policy = PathPolicy(cfg.cwd, cfg.tools.allowed_roots, cfg.tools.deny) if native else None
     if native:
-        # Native paths use host filesystem semantics. Share those semantics with
-        # delete, memory loading and both deepagents overflow offload paths.
         if isinstance(backend, LocalShellBackend):
-            backend.virtual_mode = False
+            assert policy is not None
+            backend = GuardedLocalShellBackend(policy, cfg.tools.max_read_bytes)
             backend = CompositeBackend(
                 default=backend,
                 routes={},
@@ -325,7 +345,10 @@ async def build_agent(
             tool_scope = _native_names(tool_scope)
     allowed = _native_names(always_allowed) if native else set(always_allowed)
     interrupts = {name: value for name, value in mode.interrupt_on.items() if name not in allowed}
-    middleware = [entry.middleware for entry in registry.middleware]
+    if policy is not None:
+        interrupts = approval_configs(interrupts, policy, registry.tools)
+    middleware = [entry.middleware for entry in registry.middleware
+                  if native or entry.plugin != "tools_native"]
     middleware.append(TodoListMiddleware())
     filesystem: FilesystemMiddleware | None = None
     if native or mode.allowed_tools is not None or tool_scope is not None:
@@ -338,7 +361,7 @@ async def build_agent(
             filesystem_tools &= tool_scope
         if native:
             filesystem_tools &= {"delete"}
-        filesystem = _filesystem_middleware(backend, filesystem_tools)
+        filesystem = _filesystem_middleware(backend, filesystem_tools, native=native)
         middleware.append(filesystem)
     tools = [
         tool
@@ -382,6 +405,7 @@ async def build_agent(
                 [tool for tool in tools if tool.name in {
                     "read", "write", "edit", "bash", "bash_jobs", "grep", "glob", "ls"
                 }] if native else None,
+                policy,
             )
         ),
         "backend": backend,

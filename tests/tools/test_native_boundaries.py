@@ -131,7 +131,10 @@ async def test_explicit_subagent_approvals_and_readonly_filesystem_scope(tmp_pat
             await build_agent(registry, cfg, session, bus)
         agents = {spec["name"]: spec for spec in captured["subagents"]}
         executor = agents["executor"]
-        assert executor["interrupt_on"] == {"bash": True, "bash_jobs": True}
+        assert set(executor["interrupt_on"]) == {"bash", "bash_jobs"}
+        for interrupt in executor["interrupt_on"].values():
+            assert interrupt["allowed_decisions"] == ["approve", "edit", "reject", "respond"]
+            assert callable(interrupt["description"])
         assert {item.name for item in executor["tools"]} == {"bash", "bash_jobs"}
         reader = agents["reader"]
         assert {item.name for item in reader["tools"]} == {"read", "grep"}
@@ -176,6 +179,9 @@ async def test_custom_large_result_offloads_and_native_read_recovers_it(tmp_path
         assert all(item.status == "success" for item in messages)
         assert destination.read_text() == payload
         assert str(destination) in messages[0].content
+        assert "read_file" not in messages[0].content
+        assert "Use read(path=" in messages[0].content
+        assert destination.stat().st_mode & 0o777 == 0o600
         assert len(messages[0].content) < len(payload)
         assert "entry 04999" in messages[1].content
         assert "entry 05001" in messages[1].content
