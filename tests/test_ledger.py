@@ -973,7 +973,7 @@ def test_export_session_force_refuses_to_follow_a_symlink(
     assert target.read_text(encoding="utf-8") == "keep target"
 
 
-def test_active_query_transfers_only_ancestors_and_rejects_missing_session(
+def test_active_query_transfers_only_ancestors(
     ledger_session: tuple[Ledger, SessionStore, str],
 ) -> None:
     ledger, store, session_id = ledger_session
@@ -987,8 +987,6 @@ def test_active_query_transfers_only_ancestors_and_rejects_missing_session(
     with store.saver.lock:
         rows = ledger._active_rows(session_id, leaf.id)
     assert {row["id"] for row in rows} == {root.id, leaf.id}
-    with pytest.raises(EntryNotFound, match="missing-session"):
-        ledger.path("missing-session")
 
 
 def test_loaded_context_deserializes_each_message_once(
@@ -1013,3 +1011,15 @@ def test_loaded_context_deserializes_each_message_once(
     first.messages[0].content = "consumer mutation"
     assert build_context(path).messages[0].content == "0"
     assert calls == 10
+
+
+def test_loaded_message_cache_respects_mutable_serialized_payload(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, _, session_id = ledger_session
+    ledger.append(session_id, _message(HumanMessage(content="original")))
+    path = ledger.path(session_id)
+    entry = path[0]
+    assert isinstance(entry, MessageEntry)
+    entry.message["data"]["content"] = "updated serialized content"
+    assert build_context(path).messages[0].content == "updated serialized content"

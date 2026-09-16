@@ -12,12 +12,12 @@ import stat
 import threading
 import warnings
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import message_to_dict
+from langchain_core.messages import BaseMessage, message_to_dict
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
     ChannelVersions,
@@ -365,6 +365,31 @@ class SessionStore:
             )
             """
         )
+        from .capture_cursor import FingerprintCache
+
+        self._capture_message_cache: dict[str, FingerprintCache] = {}
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS capture_messages (
+                thread_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                message_id TEXT,
+                digest TEXT NOT NULL,
+                PRIMARY KEY (thread_id, position)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS capture_state (
+                thread_id TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+            )
+            """
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS threads_session ON threads(session_id)"
+        )
         thread_columns = {
             row["name"]
             for row in self._connection.execute("PRAGMA table_info(threads)")
@@ -595,6 +620,7 @@ class SessionStore:
             ).fetchall()
         for row in rows:
             self.saver.delete_thread(row["thread_id"])
+            self._capture_message_cache.pop(row["thread_id"], None)
         with self.saver.lock:
             try:
                 self._connection.execute("BEGIN")
@@ -602,6 +628,12 @@ class SessionStore:
                     "DELETE FROM entries WHERE session_id = ?",
                     (session_id,),
                 )
+                for table in ("capture_messages", "capture_state"):
+                    self._connection.execute(
+                        f"DELETE FROM {table} WHERE thread_id IN "
+                        "(SELECT thread_id FROM threads WHERE session_id = ?)",
+                        (session_id,),
+                    )
                 self._connection.execute(
                     "DELETE FROM threads WHERE session_id = ?",
                     (session_id,),
@@ -760,16 +792,24 @@ class SessionStore:
         return matches[0]
 
     def get_thread(self, thread_id: str) -> ThreadInfo | None:
-        row = self._connection.execute(
-            """
-            SELECT thread_id, session_id, seeded_from, captured,
-                   captured_message_ids
-            FROM threads
-            WHERE thread_id = ?
-            """,
-            (thread_id,),
-        ).fetchone()
-        return self._thread(row)
+        with self.saver.lock:
+            row = self._connection.execute(
+                """
+                SELECT thread_id, session_id, seeded_from, captured,
+                       captured_message_ids
+                FROM threads WHERE thread_id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+            info = self._thread(row)
+            if info is not None and not info.captured_message_ids:
+                ids = self._connection.execute(
+                    "SELECT message_id FROM capture_messages "
+                    "WHERE thread_id = ? AND message_id IS NOT NULL ORDER BY position",
+                    (thread_id,),
+                ).fetchall()
+                info = replace(info, captured_message_ids=tuple(row[0] for row in ids))
+        return info
 
     def next_thread_id(self, session_id: str) -> str:
         prefix = f"{session_id}."
@@ -836,6 +876,7 @@ class SessionStore:
         seeded_from: str | None = None,
         captured: int = 0,
         captured_message_ids: Sequence[str] = (),
+        captured_messages: Sequence[BaseMessage] | None = None,
     ) -> ThreadInfo:
         message_ids = tuple(captured_message_ids)
         info = ThreadInfo(
@@ -845,7 +886,17 @@ class SessionStore:
             captured,
             message_ids,
         )
-        encoded_message_ids = self._encode_captured_message_ids(message_ids)
+        from .capture_cursor import message_digest
+
+        if not all(isinstance(message_id, str) for message_id in message_ids):
+            raise TypeError("captured_message_ids must contain only strings")
+        encoded_message_ids = "[]"
+        fingerprints = (
+            [(index, message.id, message_digest(message))
+             for index, message in enumerate(captured_messages)]
+            if captured_messages is not None
+            else [(index, message_id, "") for index, message_id in enumerate(message_ids)]
+        )
         with self.saver.lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
@@ -884,10 +935,22 @@ class SessionStore:
                     ),
                 )
                 self._connection.execute(
+                    "DELETE FROM capture_messages WHERE thread_id = ?", (thread_id,)
+                )
+                self._connection.execute(
+                    "DELETE FROM capture_state WHERE thread_id = ?", (thread_id,)
+                )
+                self._connection.executemany(
+                    "INSERT INTO capture_messages(thread_id, position, message_id, digest) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(thread_id, *row) for row in fingerprints],
+                )
+                self._connection.execute(
                     "UPDATE sessions SET current_thread = ? WHERE thread_id = ?",
                     (thread_id, session_id),
                 )
                 self._connection.commit()
+                self._capture_message_cache.pop(thread_id, None)
             except BaseException:
                 self._connection.rollback()
                 raise

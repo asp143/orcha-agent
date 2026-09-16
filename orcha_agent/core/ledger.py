@@ -20,6 +20,7 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 
+from .capture_cursor import CaptureBatch
 from .models import filter_foreign_blocks
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ class Entry:
 class MessageEntry(Entry):
     message: dict[str, Any]
     _validated_message: BaseMessage | None = field(default=None, repr=False, compare=False)
+    _validated_payload: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -177,7 +179,10 @@ def _decode_entry(
         serialized_message = dict(message)
         validated_message = messages_from_dict([serialized_message])[0]
         return MessageEntry(
-            message=serialized_message, _validated_message=validated_message, **common
+            message=serialized_message,
+            _validated_message=validated_message,
+            _validated_payload=deepcopy(serialized_message),
+            **common
         )
     if entry_type == "model_change":
         model = payload["model"]
@@ -512,7 +517,10 @@ class Ledger:
         if captured < 0:
             raise ValueError("captured must be non-negative")
         message_ids = tuple(captured_message_ids)
-        encoded_message_ids = self.store._encode_captured_message_ids(message_ids)
+        encoded_message_ids = (
+            "[]" if isinstance(entries, CaptureBatch)
+            else self.store._encode_captured_message_ids(message_ids)
+        )
         batch = list(entries)
         with self.store.saver.lock:
             connection = self.store._connection
@@ -534,6 +542,28 @@ class Ledger:
                 )
                 if cursor.rowcount != 1:
                     raise EntryNotFound(thread_id)
+                if isinstance(entries, CaptureBatch):
+                    connection.execute(
+                        "DELETE FROM capture_messages WHERE thread_id = ? AND position >= ?",
+                        (thread_id, captured),
+                    )
+                    connection.executemany(
+                        """
+                        INSERT INTO capture_messages(thread_id, position, message_id, digest)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(thread_id, position) DO UPDATE SET
+                            message_id = excluded.message_id, digest = excluded.digest
+                        """,
+                        [(thread_id, *update) for update in entries.updates],
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO capture_state(thread_id, digest) VALUES (?, ?)
+                        ON CONFLICT(thread_id) DO UPDATE SET digest = excluded.digest
+                        WHERE digest != excluded.digest
+                        """,
+                        (thread_id, entries.state),
+                    )
                 connection.commit()
             except BaseException:
                 connection.rollback()
@@ -641,8 +671,8 @@ class Ledger:
             )
             SELECT entry.session_id, entry.id, entry.parent_id,
                    entry.type, entry.ts, entry.payload
-            FROM ancestors JOIN entries AS entry ON entry.id = ancestors.id
-            WHERE entry.session_id = ?
+            FROM ancestors CROSS JOIN entries AS entry
+            WHERE entry.id = ancestors.id AND entry.session_id = ?
             """,
             (session_id, leaf_id, session_id, session_id),
         ).fetchall()
@@ -654,9 +684,7 @@ class Ledger:
                 session = connection.execute(
                     "SELECT leaf_id FROM sessions WHERE thread_id = ?", (session_id,)
                 ).fetchone()
-                if session is None:
-                    raise EntryNotFound(session_id)
-                leaf_id = session["leaf_id"]
+                leaf_id = None if session is None else session["leaf_id"]
             else:
                 leaf_id = leaf
             rows = self._active_rows(session_id, leaf_id)
@@ -778,7 +806,7 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
 
 
 def _message_from_entry(entry: MessageEntry) -> BaseMessage:
-    if entry._validated_message is not None:
+    if entry._validated_message is not None and entry.message == entry._validated_payload:
         # Context consumers may mutate messages; keep the validated entry reusable.
         return entry._validated_message.model_copy(deep=True)
     return messages_from_dict([entry.message])[0]

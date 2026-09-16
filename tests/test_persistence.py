@@ -427,3 +427,28 @@ def test_installed_libsql_driver_satisfies_session_and_checkpoint_contract(
 
         assert restored is not None
         assert restored.checkpoint["id"] == checkpoint["id"]
+
+
+def test_replica_active_chain_and_capture_cursor(tmp_path: Path) -> None:
+    from langchain_core.messages import HumanMessage
+
+    from orcha_agent.core.capture import capture_graph_values
+    from orcha_agent.core.ledger import build_context
+
+    with open_session_store(
+        _turso_config(tmp_path / "replica-cursor.db"),
+        environ={"TURSO_AUTH_TOKEN": _AUTH_TOKEN},
+        connector=FakeConnector(),
+    ) as store:
+        source = store.create(tmp_path, "fake:model")
+        values = {"messages": [HumanMessage(content="replica", id="message")]}
+        assert capture_graph_values(
+            store, source.thread_id, source.current_thread or "", values, only_if_new=True
+        )
+        ledger = Ledger(store)
+        target = store.create(tmp_path, "fake:model")
+        ledger.fork(source.thread_id, target.thread_id)
+        assert build_context(ledger.path(target.thread_id)).messages == values["messages"]
+        assert not capture_graph_values(
+            store, source.thread_id, source.current_thread or "", values, only_if_new=True
+        )

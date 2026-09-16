@@ -1,13 +1,24 @@
-"""Shared ID-aware graph-state capture for main and child turns."""
+"""Digest-aware incremental graph-state capture for main and child turns."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from langchain_core.messages import HumanMessage, message_to_dict, messages_from_dict
+from langchain_core.messages import HumanMessage, message_to_dict
 
-from .ledger import CompactionEntry, CustomEntry, Ledger, MessageEntry
+from .capture_cursor import CaptureBatch, FingerprintCache, message_digest
+from .ledger import (
+    CompactionEntry,
+    CustomEntry,
+    Entry,
+    Ledger,
+    MessageEntry,
+    ModeChangeEntry,
+    ModelChangeEntry,
+    ResetBoundaryEntry,
+    build_context,
+)
 from .session import SessionStore
 
 _SUMMARIZATION_PREFIX = "Here is a summary of the conversation to date:\n\n"
@@ -22,24 +33,57 @@ def capture_graph_values(
     only_if_new: bool,
     report_error: Callable[[str], None] | None = None,
 ) -> bool:
-    """Append unseen graph messages and turn state without losing compactions."""
+    """Capture changed messages/state and their normalized cursors atomically.
 
-    thread = store.get_thread(thread_id)
-    if thread is None or thread.session_id != session_id:
-        raise LookupError(f"Unknown graph thread: {thread_id}")
-    messages = list(values.get("messages", ()))
-    current_message_ids = tuple(message.id for message in messages if isinstance(message.id, str))
-    previous_message_ids = thread.captured_message_ids
-    previous_id_set = set(previous_message_ids)
-    current_id_set = set(current_message_ids)
-    shrunk = (bool(previous_message_ids) and not previous_id_set.issubset(current_id_set)) or (
-        not previous_message_ids and len(messages) < thread.captured
+    Messages are mutable and have no revision contract. Digest-check the prefix
+    to detect in-place edits, but write only changed cursor rows and live state.
+    A non-append checkpoint gets a reset snapshot so duplicates and ordering are
+    preserved exactly rather than silently deduplicated by message ID.
+    """
+    cache = store._capture_message_cache.get(thread_id)
+    if cache is None:
+        cache = FingerprintCache()
+        if len(store._capture_message_cache) >= 4:
+            del store._capture_message_cache[next(iter(store._capture_message_cache))]
+        store._capture_message_cache[thread_id] = cache
+    with store.saver.lock:
+        thread = store._connection.execute(
+            "SELECT thread.session_id, thread.captured, session.leaf_id "
+            "FROM threads AS thread JOIN sessions AS session "
+            "ON session.thread_id = thread.session_id WHERE thread.thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        if thread is None or thread["session_id"] != session_id:
+            raise LookupError(f"Unknown graph thread: {thread_id}")
+        if cache.cursor is not None and cache.leaf_id == thread["leaf_id"]:
+            persisted = cache.cursor
+        else:
+            rows = store._connection.execute(
+                "SELECT message_id, digest FROM capture_messages "
+                "WHERE thread_id = ? ORDER BY position",
+                (thread_id,),
+            ).fetchall()
+            persisted = [(row["message_id"], row["digest"]) for row in rows]
+        state_row = store._connection.execute(
+            "SELECT digest FROM capture_state WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+
+    messages = values.get("messages", ())
+    fingerprints = cache.messages_digest(messages)
+    previous = persisted
+    if not previous and thread["captured"]:
+        # One-time migration of old cursor rows. Use ledger content, not current
+        # graph content, so same-ID changes during recovery remain detectable.
+        previous_messages = build_context(Ledger(store).path(session_id)).messages
+        previous = [(message.id, message_digest(message)) for message in previous_messages]
+    unchanged_prefix = len(fingerprints) >= len(previous) and all(
+        current == old or (not old[1] and current[0] == old[0])
+        for current, old in zip(fingerprints, previous, strict=False)
     )
-    entries: list[CompactionEntry | MessageEntry | CustomEntry] = []
-    candidates = messages
-    summary_index: int | None = None
-    if shrunk:
-        summary_index = next(
+    entries: list[Entry] = []
+    reset = bool(previous) and not unchanged_prefix
+    summary_index = (
+        next(
             (
                 index
                 for index, message in enumerate(messages)
@@ -48,85 +92,54 @@ def capture_graph_values(
             ),
             None,
         )
-        if summary_index is not None:
-            summary_message = messages[summary_index]
-            summary = (
-                summary_message.content
-                if isinstance(summary_message.content, str)
-                else str(summary_message.content)
-            )
-            candidates = messages[summary_index + 1 :]
-            first_retained_id = next(
-                (
-                    message.id
-                    for message in candidates
-                    if isinstance(message.id, str) and message.id in previous_id_set
-                ),
-                None,
-            )
-            first_kept_id = None
-            if first_retained_id is not None:
-                path = Ledger(store).path(session_id)
-                retained_at = next(
-                    (
-                        index
-                        for index, entry in enumerate(path)
-                        if isinstance(entry, MessageEntry)
-                        and messages_from_dict([entry.message])[0].id == first_retained_id
-                    ),
-                    None,
-                )
-                if retained_at is not None and retained_at > 0:
-                    first_kept_id = path[retained_at - 1].id
-            entries.append(
-                CompactionEntry(
-                    summary=summary.removeprefix(_SUMMARIZATION_PREFIX),
-                    first_kept_id=first_kept_id,
-                )
-            )
-
-    if previous_message_ids:
-        for index, message in enumerate(candidates):
-            message_id = message.id
-            if isinstance(message_id, str):
-                unseen = message_id not in previous_id_set
-            else:
-                absolute_index = index if summary_index is None else summary_index + 1 + index
-                unseen = absolute_index >= thread.captured
-            if unseen:
-                entries.append(MessageEntry(message=message_to_dict(message)))
-    elif summary_index is not None:
-        entries.extend(MessageEntry(message=message_to_dict(message)) for message in candidates)
-    else:
-        entries.extend(
-            MessageEntry(message=message_to_dict(message))
-            for message in messages[thread.captured :]
-        )
-
-    if only_if_new and not entries:
-        return False
-    entries.append(
-        CustomEntry(
-            custom_type="turn_state",
-            data={
-                "todos": values.get("todos", []),
-                "files": values.get("files", {}),
-            },
-        )
+        if reset
+        else None
     )
+    if summary_index is not None:
+        summary = messages[summary_index].content
+        entries.append(CompactionEntry(summary=str(summary).removeprefix(_SUMMARIZATION_PREFIX)))
+        candidates = messages[summary_index + 1 :]
+    elif reset:
+        context = build_context(Ledger(store).path(session_id))
+        entries.append(ResetBoundaryEntry())
+        if context.model is not None:
+            entries.append(ModelChangeEntry(model=context.model))
+        if context.mode is not None:
+            entries.append(ModeChangeEntry(mode=context.mode))
+        candidates = messages
+    else:
+        candidates = messages[len(previous) :]
+    entries.extend(MessageEntry(message=message_to_dict(message)) for message in candidates)
+    state = {"todos": values.get("todos", []), "files": values.get("files", {})}
+    digest = cache.live_state_digest(state)
+    if reset or state_row is None or state_row["digest"] != digest:
+        entries.append(CustomEntry(custom_type="turn_state", data=state))
+    # The only_if_new API still means no entries for an identical checkpoint.
+    # Stable-state ordinary turn completion is also a no-op.
+    if not entries:
+        return False
+    updates = [
+        (index, message_id, fingerprint)
+        for index, (message_id, fingerprint) in enumerate(fingerprints)
+        if index >= len(persisted) or (message_id, fingerprint) != persisted[index]
+    ]
     try:
-        Ledger(store).capture(
+        appended = Ledger(store).capture(
             session_id,
             thread_id,
-            entries,
+            CaptureBatch(entries, updates, digest),
             captured=len(messages),
-            captured_message_ids=current_message_ids,
+            captured_message_ids=tuple(
+                message.id for message in messages if isinstance(message.id, str)
+            ),
         )
     except Exception as exc:
         message = f"Failed to capture session {session_id} thread {thread_id}: {exc}"
         if report_error is not None:
             report_error(message)
         raise RuntimeError(message) from exc
+    cache.cursor = fingerprints
+    cache.leaf_id = appended[-1].id
     return True
 
 

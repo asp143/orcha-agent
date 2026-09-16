@@ -395,6 +395,7 @@ class AppContext:
                 seeded_from=self.ledger.leaf(self.session_id),
                 captured=len(seeded_messages),
                 captured_message_ids=captured_message_ids,
+                captured_messages=seeded_messages,
             )
         except BaseException:
             self.session.saver.delete_thread(new_thread)
