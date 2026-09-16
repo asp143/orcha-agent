@@ -114,3 +114,58 @@ def test_exec_tools_are_not_rewritable() -> None:
     from orcha_agent.extensibility.hooks import WRITE_TOOLS
 
     assert not {"bash", "execute"} & WRITE_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_extended_response_and_resumed_threads() -> None:
+    from deepagents.middleware.summarization import SummarizationState
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain.agents.middleware.types import ExtendedModelResponse
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from orcha_agent.core.events import Compaction
+
+    class CompactOnce(AgentMiddleware):
+        state_schema = SummarizationState
+
+        async def awrap_model_call(self, request, handler):
+            response = await handler(request)
+            if request.state.get("_summarization_event"):
+                return response
+            return ExtendedModelResponse(
+                model_response=response,
+                command=Command(
+                    update={
+                        "_summarization_event": {
+                            "cutoff_index": 1,
+                            "summary_message": HumanMessage("Keep the user's constraint"),
+                            "file_path": "/history.md",
+                        }
+                    }
+                ),
+            )
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    graph = create_agent(
+        FakeListChatModel(responses=["ok"]),
+        middleware=[HooksMiddleware(emit), CompactOnce()],
+        checkpointer=InMemorySaver(),
+    )
+    for thread in ("first", "second", "first"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage("go")]}, {"configurable": {"thread_id": thread}}
+        )
+    assert [
+        (event.session_id, event.summary) for event in events if isinstance(event, Compaction)
+    ] == [
+        ("first", "Keep the user's constraint"),
+        ("second", "Keep the user's constraint"),
+    ]

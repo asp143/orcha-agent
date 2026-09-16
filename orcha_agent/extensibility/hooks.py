@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import hashlib
 import json
 import os
 import signal
@@ -11,13 +12,14 @@ import sys
 from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import ToolMessage
 
 from orcha_agent.core.config import HookConfig
-from orcha_agent.core.events import Event, ToolCallAfter, ToolCallBefore
+from orcha_agent.core.events import Compaction, Event, ToolCallAfter, ToolCallBefore
 
 WRITE_TOOLS = frozenset({"write", "write_file", "edit", "edit_file", "delete", "apply_patch"})
 _PYTHON_RUNNER = """import asyncio, importlib, inspect, json, sys
@@ -127,7 +129,45 @@ async def run_hook(hook: HookConfig, payload: dict[str, Any], cwd: Path) -> Hook
     )
 
 
+class HooksState(AgentState):
+    _orcha_hook_summary_before: Annotated[NotRequired[str], PrivateStateAttr]
+
+
+def _summary_signature(event: Any) -> str:
+    if not isinstance(event, dict):
+        return ""
+    message = event.get("summary_message")
+    text = getattr(message, "text", "")
+    return hashlib.sha256(
+        json.dumps([event.get("cutoff_index"), event.get("file_path"), text], default=str).encode()
+    ).hexdigest()
+
+
 class HooksMiddleware(AgentMiddleware):
+    state_schema = HooksState
+
+    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any]:
+        # Baseline is graph state, so parallel threads/subgraphs cannot share it.
+        # Establish it on every model call, including resumed checkpoints.
+        return {"_orcha_hook_summary_before": _summary_signature(state.get("_summarization_event"))}
+
+    async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        event = state.get("_summarization_event")
+        signature = _summary_signature(event)
+        if not signature or signature == state.get("_orcha_hook_summary_before", ""):
+            return None
+        message = event.get("summary_message")
+        thread_id = getattr(getattr(runtime, "execution_info", None), "thread_id", None)
+        if thread_id is None:
+            from langgraph.config import get_config
+
+            try:
+                thread_id = get_config().get("configurable", {}).get("thread_id", "")
+            except RuntimeError:
+                thread_id = ""
+        await self.emit(Compaction(str(thread_id), str(getattr(message, "text", ""))))
+        return {"_orcha_hook_summary_before": signature}
+
     def __init__(self, emit: Callable[[Event], Awaitable[Any]]) -> None:
         self.emit = emit
 
