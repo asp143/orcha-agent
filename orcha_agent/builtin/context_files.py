@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from collections.abc import Mapping
@@ -13,6 +14,8 @@ from typing import Any
 from orcha_agent.core.config import DEFAULT_MEMORY
 from orcha_agent.core.events import AgentBuildBefore, AppExit, AppStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
+
+_LOG = logging.getLogger(__name__)
 
 PLUGIN = PluginSpec(name="context_files")
 _SKIP = {
@@ -33,18 +36,32 @@ _IMPORT = re.compile(r"(?<!\S)@([./~\w-][^\s]*)")
 
 
 def _safe(path: Path) -> bool:
-    return not any(part == "Credentials" or part.startswith(".env") for part in path.parts)
+    return not any(
+        part in {"Credentials", ".ssh", ".aws", ".gnupg", "credentials.json"}
+        or part.startswith((".env", "secrets."))
+        or part.endswith((".pem", ".key", ".p12"))
+        for part in path.parts
+    )
 
 
-def ancestor_dirs(cwd: Path) -> list[Path]:
-    """Return closest first, stopping at a repository (including worktree .git files)."""
-    result = []
-    current = cwd.resolve()
-    while True:
-        result.append(current)
-        if (current / ".git").exists() or current.parent == current:
-            return result
-        current = current.parent
+def _allowed(path: Path, boundary: Path | None = None) -> bool:
+    resolved = path.resolve()
+    return (
+        _safe(path) and _safe(resolved) and (boundary is None or resolved.is_relative_to(boundary))
+    )
+
+
+def ancestor_dirs(cwd: Path, *, home: Path | None = None) -> list[Path]:
+    """Stop at the repository root; without a repo, never ascend above home."""
+    cwd = cwd.resolve()
+    home = (home or Path.home()).resolve()
+    candidates = [cwd, *cwd.parents]
+    for index, directory in enumerate(candidates):
+        if (directory / ".git").exists():
+            return candidates[: index + 1]
+    if cwd.is_relative_to(home):
+        return candidates[: candidates.index(home) + 1]
+    return [cwd]
 
 
 def _ladder(options: Mapping[str, Any]) -> list[str]:
@@ -58,23 +75,33 @@ def _ladder(options: Mapping[str, Any]) -> list[str]:
     return names
 
 
-def _pick(directory: Path, names: list[str]) -> Path | None:
+def _pick(directory: Path, names: list[str], boundary: Path | None = None) -> Path | None:
     for name in names:
         candidate = directory / name
-        if _safe(candidate.resolve()) and candidate.is_file():
+        if _allowed(candidate, boundary) and candidate.is_file():
             return candidate
     return None
 
 
-def expand_imports(path: Path, *, max_bytes: int, max_depth: int = 5) -> str:
+def expand_imports(
+    path: Path,
+    *,
+    max_bytes: int,
+    max_depth: int = 5,
+    trust_cwd: bool = True,
+    project_root: Path | None = None,
+) -> str:
     """Read with a shared I/O budget; imports inside Markdown code remain literal."""
+    boundary = project_root.resolve() if project_root is not None and not trust_cwd else None
     remaining = max(0, max_bytes)
     seen: set[Path] = set()
 
     def read(source: Path, depth: int) -> str | None:
         nonlocal remaining
+        if not _allowed(source, boundary):
+            return None
         source = source.resolve()
-        if source in seen or not _safe(source) or remaining <= 0:
+        if source in seen or remaining <= 0:
             return None
         try:
             with source.open("rb") as handle:
@@ -106,6 +133,8 @@ def expand_imports(path: Path, *, max_bytes: int, max_depth: int = 5) -> str:
             def replace(match: re.Match[str]) -> str:
                 token = match.group(1)
                 name = token.rstrip(".,;:!?)]}\"'")
+                if not trust_cwd and (name.startswith("~") or Path(name).is_absolute()):
+                    return match.group(0)
                 target = Path(name).expanduser()
                 if not target.is_absolute():
                     target = source.parent / target
@@ -127,25 +156,40 @@ def expand_imports(path: Path, *, max_bytes: int, max_depth: int = 5) -> str:
     return read(path, 0) or ""
 
 
-def render_context(cwd: Path, options: Mapping[str, Any], *, home: Path | None = None) -> str:
+def render_context(
+    cwd: Path,
+    options: Mapping[str, Any],
+    *,
+    home: Path | None = None,
+    trust_cwd: bool = True,
+) -> str:
     """Select one instruction at each depth and emit bounded descendant pointers."""
     home = home or Path.home()
     cap = max(0, int(options.get("max_bytes", 65_536)))
     if cap < 32:
         return ""
     names = _ladder(options)
-    ancestors = ancestor_dirs(cwd)
+    ancestors = ancestor_dirs(cwd, home=home)
+    boundary = ancestors[-1].resolve() if not trust_cwd else None
     paths = [home / ".config/orcha-agent/AGENTS.md"]
     if options.get("import_claude", True):
         paths.append(home / ".claude/CLAUDE.md")
-    paths.extend(path for directory in reversed(ancestors) if (path := _pick(directory, names)))
+    home_paths = set(paths)
+    paths.extend(
+        path for directory in reversed(ancestors) if (path := _pick(directory, names, boundary))
+    )
     opening, closing = "<repo-rules>\n", "</repo-rules>"
     fragments = [opening]
     used = len((opening + closing).encode())
     seen: set[Path] = set()
     for path in paths:
         resolved = path.resolve()
-        if resolved in seen or not path.is_file() or not _safe(resolved):
+        is_home = path in home_paths
+        if (
+            resolved in seen
+            or not _allowed(path, None if is_home else boundary)
+            or not path.is_file()
+        ):
             continue
         seen.add(resolved)
         prefix = f'<file path="{escape(str(path), quote=True)}">\n'
@@ -155,7 +199,11 @@ def render_context(cwd: Path, options: Mapping[str, Any], *, home: Path | None =
             break
         content = escape(
             expand_imports(
-                path, max_bytes=budget, max_depth=max(0, int(options.get("max_import_depth", 5)))
+                path,
+                max_bytes=budget,
+                max_depth=max(0, int(options.get("max_import_depth", 5))),
+                trust_cwd=trust_cwd or is_home,
+                project_root=boundary,
             )
         )
         # Escape first and keep complete entities/Unicode characters within the cap.
@@ -176,7 +224,7 @@ def render_context(cwd: Path, options: Mapping[str, Any], *, home: Path | None =
         directory = Path(root)
         if directory.resolve() == cwd.resolve():
             continue
-        path = _pick(directory, names)
+        path = _pick(directory, names, boundary)
         if path is None or path.resolve() in seen:
             continue
         pointer = f'<dir-context path="{escape(str(path), quote=True)}" />\n'
@@ -203,28 +251,43 @@ def register(api: PluginAPI) -> None:
             or getattr(getattr(context.cfg, "memory_store", None), "backend", "files") == "turso"
         ):
             return
-        task = asyncio.create_task(
-            asyncio.to_thread(render_context, Path(context.cfg.cwd), api.config)
-        )
+        task = asyncio.create_task(discover())
+
+    async def discover() -> str:
+        try:
+            text = await asyncio.to_thread(
+                render_context,
+                Path(context.cfg.cwd),
+                api.config,
+                trust_cwd=getattr(context.cfg, "trust_cwd", False),
+            )
+        except Exception:
+            _LOG.exception("Context file discovery failed")
+            text = ""
+        api.request_rebuild()
+        return text
 
     async def build(event: AgentBuildBefore) -> None:
         nonlocal fragment
         if task is None:
             return
-        text = await asyncio.shield(task)
+        # Disable legacy reads before waiting: a timeout or discovery failure must
+        # never fall back to reading an untrusted root instruction symlink.
+        if (
+            context is not None
+            and tuple(getattr(context.cfg, "memory", DEFAULT_MEMORY)) == DEFAULT_MEMORY
+        ):
+            event.kwargs["memory"] = []
+        try:
+            text = await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
+        except TimeoutError:
+            return
         if not fragment and text:
             fragment = text
             api.system_prompt_fragment(text, priority=20)
         prompt = event.kwargs.get("system_prompt", "")
         if text and text not in prompt:
             event.kwargs["system_prompt"] = "\n\n".join(filter(None, (prompt, text)))
-        # The ladder replaces legacy default root-file loading, but explicit
-        # custom memory sources and structured-memory backend semantics survive.
-        if (
-            context is not None
-            and tuple(getattr(context.cfg, "memory", DEFAULT_MEMORY)) == DEFAULT_MEMORY
-        ):
-            event.kwargs["memory"] = []
 
     async def stop(_event: AppExit) -> None:
         if task is not None and not task.done():

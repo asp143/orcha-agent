@@ -159,3 +159,135 @@ async def test_turso_keeps_structured_only_memory(tmp_path: Path, monkeypatch):
     await bus.emit(event)
     assert event.kwargs == {"system_prompt": "stored", "memory": []}
     await bus.emit(AppExit())
+
+
+def test_untrusted_context_contains_ladder_and_imports(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    put(root / ".git", "")
+    outside = put(tmp_path / "outside.md", "OUTSIDE CONTENT")
+    (root / "CLAUDE.md").symlink_to(outside)
+    home = tmp_path / "home"
+    put(home / ".config/orcha-agent/AGENTS.md", "HOME RULES")
+    result = render_context(root, {}, home=home, trust_cwd=False)
+    assert "OUTSIDE CONTENT" not in result
+    assert "HOME RULES" in result
+    put(root / "AGENTS.md", "@~/.ssh/x @/etc/hostname @../outside.md @linked.md @local.md")
+    (root / "linked.md").symlink_to(outside)
+    put(root / "local.md", "LOCAL CONTENT")
+    result = render_context(root, {}, home=home, trust_cwd=False)
+    assert "@~/.ssh/x @/etc/hostname @../outside.md @linked.md LOCAL CONTENT" in result
+    assert "OUTSIDE CONTENT" not in result
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".ssh/x",
+        ".aws/config",
+        ".gnupg/x",
+        "a.pem",
+        "a.key",
+        "a.p12",
+        "credentials.json",
+        "secrets.txt",
+        ".env.fake",
+        "Credentials/x",
+    ],
+)
+@pytest.mark.parametrize("trusted", [True, False])
+def test_sensitive_context_never_read(tmp_path: Path, name: str, trusted: bool, monkeypatch):
+    # No sensitive file contents are needed: reject before attempting any open.
+    source = put(tmp_path / "AGENTS.md", f"@{name}")
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        assert path == source, f"Attempted sensitive read: {path}"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    assert (
+        expand_imports(source, max_bytes=4096, trust_cwd=trusted, project_root=tmp_path)
+        == f"@{name}"
+    )
+
+
+def test_non_repo_ancestor_walk_stops_at_home(tmp_path: Path):
+    home = tmp_path / "home"
+    cwd = home / "a/b"
+    cwd.mkdir(parents=True)
+    put(tmp_path / "AGENTS.md", "OUTSIDE")
+    put(home / "AGENTS.md", "HOME")
+    assert ancestor_dirs(cwd, home=home) == [cwd, cwd.parent, home]
+    assert "OUTSIDE" not in render_context(cwd, {}, home=home)
+    outside = tmp_path / "elsewhere/child"
+    outside.mkdir(parents=True)
+    assert ancestor_dirs(outside, home=home) == [outside]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [True, False])
+async def test_discovery_gate_preserves_background_and_disables_legacy(
+    tmp_path: Path, monkeypatch, fails: bool, caplog
+):
+    import asyncio
+    import threading
+
+    release = threading.Event()
+
+    def discover(*args, **kwargs):
+        release.wait(3)
+        if fails:
+            raise OSError("discovery failed")
+        assert kwargs["trust_cwd"] is False
+        return "<repo-rules>READY</repo-rules>"
+
+    monkeypatch.setattr("orcha_agent.builtin.context_files.render_context", discover)
+    registry, bus = Registry(), EventBus()
+    rebuilt = asyncio.Event()
+    register(
+        PluginAPI(
+            name="context_files",
+            config={},
+            state={},
+            registry=registry,
+            bus=bus,
+            request_rebuild=rebuilt.set,
+        )
+    )
+    await bus.emit(AppStart(SimpleNamespace(cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=False))))
+    event = AgentBuildBefore({"system_prompt": "base", "memory": ["AGENTS.md"]})
+    try:
+        await asyncio.wait_for(bus.emit(event), timeout=0.7)
+        assert event.kwargs == {"system_prompt": "base", "memory": []}
+    finally:
+        release.set()
+    await asyncio.wait_for(rebuilt.wait(), timeout=1)
+    await bus.emit(event)
+    if fails:
+        assert "discovery failed" in caplog.text
+    else:
+        assert "READY" in event.kwargs["system_prompt"]
+    await bus.emit(AppExit())
+
+
+@pytest.mark.parametrize("reverse", [True, False])
+def test_sensitive_import_symlink_cannot_disguise_path(tmp_path: Path, monkeypatch, reverse: bool):
+    harmless = put(tmp_path / "ordinary.md", "ordinary fixture")
+    sensitive = tmp_path / ".ssh" / "config"
+    sensitive.parent.mkdir()
+    if reverse:
+        alias = tmp_path / "alias.md"
+        alias.symlink_to(sensitive)
+    else:
+        sensitive.symlink_to(harmless)
+        alias = sensitive
+    source = put(tmp_path / "AGENTS.md", f"@{alias.relative_to(tmp_path)}")
+    original_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        assert path == source, f"Attempted sensitive read: {path}"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    assert expand_imports(source, max_bytes=4096).startswith("@")
