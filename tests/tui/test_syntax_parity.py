@@ -213,3 +213,48 @@ def test_live_bash_remains_running_with_partial_result():
     card = render(block, None, 100, 3, False)
     assert "Ctrl+O" in card.plain
     assert "✔" not in card.plain
+
+
+def test_python_fastpath_has_one_builtin_candidate():
+    from fnmatch import fnmatchcase
+    from pygments.lexers import get_all_lexers
+
+    for filename in ("source.py", "source.pyw", "source.pyi"):
+        candidates = [
+            aliases[0]
+            for _name, aliases, patterns, _mimes in get_all_lexers(plugins=False)
+            if any(fnmatchcase(filename, pattern) for pattern in patterns)
+        ]
+        assert candidates == ["python"]
+        assert language_from_path(filename + ":10-20") == "python"
+
+
+def test_ambiguous_extensions_keep_pygments_selection():
+    from pygments.lexers import find_lexer_class_for_filename
+
+    for filename in ("header.h", "source.m", "UNKNOWN.PY", "noextension", ""):
+        lexer = find_lexer_class_for_filename(filename)
+        expected = lexer.aliases[0] if lexer is not None else "text"
+        assert language_from_path(filename) == expected
+
+
+def test_python_filename_plugin_still_participates_in_selection(monkeypatch):
+    from pygments.lexer import Lexer
+    from orcha_agent.tui.blocks import syntax
+
+    class CustomPython(Lexer):
+        aliases = ["custom-python"]
+        filenames = ["plugin_fixture.py"]
+        priority = 100
+
+    monkeypatch.setattr(syntax, "find_plugin_lexers", lambda: iter([CustomPython]))
+    monkeypatch.setitem(
+        syntax.find_lexer_class_for_filename.__globals__,
+        "find_plugin_lexers",
+        lambda: iter([CustomPython]),
+    )
+    language_from_path.cache_clear()
+    try:
+        assert language_from_path("plugin_fixture.py") == "custom-python"
+    finally:
+        language_from_path.cache_clear()

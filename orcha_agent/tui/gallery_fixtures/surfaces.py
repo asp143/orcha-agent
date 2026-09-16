@@ -13,7 +13,7 @@ from orcha_agent.tui.frame import Block
 from orcha_agent.tui.overlays.help import HelpOverlay
 from orcha_agent.tui.overlays.hub import HubOverlay
 from orcha_agent.tui.overlays.theme import ThemeOverlay
-from orcha_agent.tui.theme import load_themes
+from orcha_agent.tui.theme import _BUILTIN_NAMES, _PORTED_NAMES, load_theme_file
 from orcha_agent.tui.overlays.model import ModelOverlay
 from orcha_agent.tui.overlays.settings import SettingsOverlay
 from orcha_agent.tui.statusline import brand_segment, cache_hit_segment, token_rate_segment
@@ -68,8 +68,10 @@ def surface_fixtures() -> dict[str, list[str]]:
     settings.category = 2
     settings._load()
     behaviour_rows = settings.render_text().splitlines()
-    ctx.ui.themes = load_themes(home=Path("/tmp/orcha-gallery-empty-home"))
-    ctx.ui.theme = ctx.ui.themes["dark"]
+    # This non-interactive picker fixture only reads names and the current ID.
+    # The gallery already loads/validates the palettes for its active theme.
+    ctx.ui.themes = {name: None for name in (*_BUILTIN_NAMES, *_PORTED_NAMES.values())}
+    ctx.ui.theme = load_theme_file(Path(__file__).parents[1] / "themes" / "dark.json")
     themes = ThemeOverlay(ctx)
     hub = HubOverlay(ctx)
     activity_rows = []

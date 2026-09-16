@@ -11,8 +11,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 @dataclass(frozen=True)
 class ModelInfo:
@@ -26,15 +24,19 @@ class ModelInfo:
     tool_calls: bool = True
 
 
-class _Loader(yaml.SafeLoader):
-    pass
+def _load_override(path: Path) -> Any:
+    # The bundled catalog is JSON. Import YAML only when an override actually
+    # exists, keeping gallery and ordinary model metadata lookup lightweight.
+    import yaml
 
+    class Loader(yaml.SafeLoader):
+        pass
 
-def _command(loader: Any, node: Any) -> str:
-    return "!" + str(loader.construct_scalar(node))
+    def command(loader: Any, node: Any) -> str:
+        return "!" + str(loader.construct_scalar(node))
 
-
-_Loader.add_constructor("!command", _command)
+    Loader.add_constructor("!command", command)
+    return yaml.load(path.read_text(), Loader=Loader)
 
 
 def _paths(config: Any = None) -> tuple[Path, ...]:
@@ -50,7 +52,7 @@ def _paths(config: Any = None) -> tuple[Path, ...]:
 def _overrides(stamps: tuple[tuple[str, int, int, bool], ...]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name, mtime, size, commands_allowed in stamps:
-        data = yaml.load(Path(name).read_text(), Loader=_Loader) or {}
+        data = _load_override(Path(name)) or {}
         if not isinstance(data, dict):
             raise ValueError("models.yml must contain a mapping")
         for provider, values in data.get("providers", data).items():

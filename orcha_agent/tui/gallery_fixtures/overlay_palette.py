@@ -1,5 +1,7 @@
 """Selection colour fixture derived from the live picker style adapter."""
 
+from itertools import groupby
+
 from rich.style import Style
 from rich.text import Text
 
@@ -88,12 +90,20 @@ def overlay_frame_fixture(theme: Theme, width: int, surface: str) -> Text:
         )
         screen.draw_all_floats()
     result = Text()
+    # Resolve each repeated style once, then retain one span per adjacent run.
+    # Per-cell spans otherwise generate thousands of redundant ANSI wrappers.
+    styles: dict[str, Style] = {}
     for y in range(height):
-        for x in range(columns):
-            cell = screen.data_buffer[y][x]
-            attrs = theme.pt.get_attrs_for_style_str(cell.style)
-            color = f"#{attrs.color}" if attrs.color and len(attrs.color) == 6 else None
-            background = f"#{attrs.bgcolor}" if attrs.bgcolor and len(attrs.bgcolor) == 6 else None
-            result.append(cell.char, Style(color=color, bgcolor=background, bold=attrs.bold))
+        cells = (screen.data_buffer[y][x] for x in range(columns))
+        for key, group in groupby(cells, key=lambda cell: cell.style):
+            style = styles.get(key)
+            if style is None:
+                attrs = theme.pt.get_attrs_for_style_str(key)
+                color = f"#{attrs.color}" if attrs.color and len(attrs.color) == 6 else None
+                background = (
+                    f"#{attrs.bgcolor}" if attrs.bgcolor and len(attrs.bgcolor) == 6 else None
+                )
+                style = styles[key] = Style(color=color, bgcolor=background, bold=attrs.bold)
+            result.append("".join(cell.char for cell in group), style)
         result.append("\n")
     return result

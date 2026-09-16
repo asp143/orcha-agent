@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -52,6 +53,31 @@ except AttributeError:
 else:
     raise AssertionError('unknown exports must raise AttributeError')
 """,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_gallery_and_bundled_catalog_do_not_import_yaml(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+import orcha_agent.tui.gallery
+from pathlib import Path
+from types import SimpleNamespace
+from orcha_agent.core.catalog import get_catalog
+config = SimpleNamespace(user_config_path=Path(sys.argv[1]) / "config.toml", trust_cwd=False)
+assert len(get_catalog(config)) > 100
+assert 'yaml' not in sys.modules
+assert 'langchain_core' not in sys.modules
+""",
+            str(tmp_path),
         ],
         capture_output=True,
         text=True,

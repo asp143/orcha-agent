@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
+from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import PurePath
 from typing import Any
 
-from pygments.lexers import get_lexer_for_filename
+from pygments.lexers import find_lexer_class_for_filename
+from pygments.plugin import find_plugin_lexers
 from pygments.style import Style as PygmentsStyle
 from pygments.styles import get_style_by_name
 from pygments.token import Comment, Keyword, Name, Number, Operator, Punctuation, String, Token
@@ -28,8 +30,16 @@ def language_from_path(path: str) -> str:
     aliases = {"Dockerfile": "docker", "Makefile": "make", ".gitignore": "text"}
     if name in aliases:
         return aliases[name]
+    # Python's ordinary extensions have one built-in filename candidate. Avoid
+    # compiling the entire lexer registry's filename globs for every cold process.
+    # Ambiguous extensions (for example .h and .m) still use Pygments' ranking.
+    if PurePath(name).suffix in {".py", ".pyw", ".pyi"} and not any(
+        fnmatchcase(name, pattern) for lexer in find_plugin_lexers() for pattern in lexer.filenames
+    ):
+        return "python"
     try:
-        return get_lexer_for_filename(name).aliases[0]
+        lexer = find_lexer_class_for_filename(name)
+        return lexer.aliases[0] if lexer is not None else "text"
     except (ClassNotFound, IndexError):
         return "text"
 
