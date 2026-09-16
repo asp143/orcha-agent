@@ -183,6 +183,7 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
         self.rules = rules
         self.pending: dict[str, list[SystemMessage]] = {}
         self.interrupt_pending: dict[str, Any] = {}
+        self.model_monitors: dict[str, Any] = {}
         self.paths = SkillGlobsMiddleware({})
         self.paths.cwd = cwd
 
@@ -278,22 +279,51 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
 
         host = _stream_host.get()
         if host is None:
-            return await self._with_reminders(request, handler)
+            monitor_token = _model_monitor.set(None)
+            try:
+                return await self._with_reminders(request, handler)
+            finally:
+                _model_monitor.reset(monitor_token)
         config = get_config()
-        # Subagent graphs own their own retry boundaries; never rewind a task.
-        namespace = str(config.get("configurable", {}).get("checkpoint_ns", ""))
-        if "|" in namespace:
-            return await self._with_reminders(request, handler)
         thread = str(config.get("configurable", {}).get("thread_id", ""))
+        host_thread = (
+            str(host.thread_config.get("configurable", {}).get("thread_id", ""))
+            if host is not None
+            else None
+        )
+        # ContextVars propagate into async task tools and their child graphs.
+        # Only the graph owned by this retry boundary may interrupt its stream.
+        namespace = str(config.get("configurable", {}).get("checkpoint_ns", ""))
+        if host is None or thread != host_thread or "|" in namespace:
+            host_token = _stream_host.set(None)
+            monitor_token = _model_monitor.set(None)
+            try:
+                return await self._with_reminders(request, handler)
+            finally:
+                _model_monitor.reset(monitor_token)
+                _stream_host.reset(host_token)
         self.interrupt_pending.pop(thread, None)
         monitor = ModelStreamMonitor(host)
+        self.model_monitors[thread] = monitor
         install_model_callback(request.model)
         token = _model_monitor.set(monitor)
         try:
             result = await self._with_reminders(request, handler)
             if monitor.pending is not None:
                 raise monitor.pending
+            # Non-streaming providers produce no token callbacks. Inspect before
+            # the model node commits, so a retry cannot restore rejected tools.
+            if not monitor.inspected:
+                messages = (
+                    [result] if isinstance(result, AIMessage) else getattr(result, "result", [])
+                )
+                for message in messages:
+                    if isinstance(message, AIMessage):
+                        await monitor.inspect(message)
             return result
+        except BaseException:
+            self.model_monitors.pop(thread, None)
+            raise
         finally:
             _model_monitor.reset(token)
             if monitor.pending is not None:
@@ -305,3 +335,8 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
         pending = self.interrupt_pending.get(thread)
         if pending is not None:
             raise pending
+        monitor = self.model_monitors.pop(thread, None)
+        if monitor is not None and not monitor.inspected:
+            messages = state.get("messages", [])
+            if messages and isinstance(messages[-1], AIMessage):
+                await monitor.inspect(messages[-1])

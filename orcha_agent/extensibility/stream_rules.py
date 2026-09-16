@@ -63,8 +63,10 @@ class ModelStreamMonitor:
         self.host = host
         self.pending: StreamInterrupt | None = None
         self.usage: list[AIMessage] = []
+        self.inspected = False
 
     async def inspect(self, message: AIMessage) -> None:
+        self.inspected = True
         if message.usage_metadata:
             # Keep provider-reported partial usage, even if this very chunk aborts.
             self.usage.append(message)
@@ -86,8 +88,6 @@ class RuleStreamCallback(AsyncCallbackHandler):
             await monitor.inspect(chunk.message)
 
 
-def install_model_callback(model: Any) -> None:
-    """Install an inert, context-local dispatcher without cloning model state.
 class _RuleInterruptLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # LangChain logs before honoring raise_error. Match its exact structured
@@ -103,15 +103,17 @@ class _RuleInterruptLogFilter(logging.Filter):
         )
 
 
+def install_model_callback(model: Any) -> None:
+    """Install an inert, context-local dispatcher without cloning model state.
 
     Cloning resets stateful fake/custom models. A single permanent dispatcher also
     avoids restoring shared callback lists in competing model-call finalizers.
     """
-    callbacks = model.callbacks
-    handlers = callbacks.handlers if isinstance(callbacks, BaseCallbackManager) else callbacks or []
     callback_logger = logging.getLogger("langchain_core.callbacks.manager")
     if not any(isinstance(item, _RuleInterruptLogFilter) for item in callback_logger.filters):
         callback_logger.addFilter(_RuleInterruptLogFilter())
+    callbacks = model.callbacks
+    handlers = callbacks.handlers if isinstance(callbacks, BaseCallbackManager) else callbacks or []
     if any(isinstance(callback, RuleStreamCallback) for callback in handlers):
         return
     if isinstance(callbacks, BaseCallbackManager):
@@ -134,8 +136,14 @@ async def intercepted_stream(host: Any, value: Any, **kwargs: Any) -> AsyncItera
         for registration in getattr(getattr(host, "bus", None), "handlers", ())
     )
     if not subscribed:
-        async for item in host.agent.astream(value, **kwargs):
-            yield item
+        token = _stream_host.set(None)
+        monitor_token = _model_monitor.set(None)
+        try:
+            async for item in host.agent.astream(value, **kwargs):
+                yield item
+        finally:
+            _model_monitor.reset(monitor_token)
+            _stream_host.reset(token)
         return
     token = _stream_host.set(host)
     try:
