@@ -12,6 +12,7 @@ from prompt_toolkit.completion import Completion
 from orcha_agent.core.events import AgentBuildBefore, AppExit, AppStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 from orcha_agent.extensibility.skills import Skill, discover_skills, render_skills
+from orcha_agent.extensibility.skill_globs import SkillGlobsMiddleware
 
 PLUGIN = PluginSpec(name="skills", version="1.0.0")
 
@@ -20,6 +21,9 @@ def register(api: PluginAPI) -> None:
     skills: dict[str, Skill] = {}
     task: asyncio.Task[None] | None = None
     prompt = ""
+    glob_middleware = SkillGlobsMiddleware(
+        skills, enabled=api.config.get("auto_attach_globs", True)
+    )
 
     async def ready() -> None:
         if task is not None:
@@ -50,7 +54,7 @@ def register(api: PluginAPI) -> None:
         if not skills:
             ctx.console.print("No skills found.")
         for skill in sorted(skills.values(), key=lambda item: item.name):
-            ctx.console.print(f"/skill:{skill.name} — {skill.description}")
+            ctx.console.print(f"/skill:{skill.name} — {skill.description}", markup=False)
 
     async def read_skill(name: str) -> str:
         """Read a skill's instructions by name when relevant to the user's task."""
@@ -68,7 +72,11 @@ def register(api: PluginAPI) -> None:
     async def load(ctx: Any) -> None:
         nonlocal prompt
         found, warnings = await asyncio.to_thread(
-            discover_skills, Path(ctx.cfg.cwd), Path.home(), api.config
+            discover_skills,
+            Path(ctx.cfg.cwd),
+            Path.home(),
+            api.config,
+            trust_cwd=bool(getattr(ctx.cfg, "trust_cwd", False)),
         )
         skills.update(found)
         for warning in warnings:
@@ -97,12 +105,25 @@ def register(api: PluginAPI) -> None:
         if getattr(getattr(event.ctx, "cfg", None), "cwd", None) is None:
             return
         if task is None:
-            task = asyncio.create_task(load(event.ctx), name="skills-discovery")
+            glob_middleware.cwd = Path(event.ctx.cfg.cwd)
+
+            async def guarded_load() -> None:
+                try:
+                    await load(event.ctx)
+                except Exception as exc:
+                    event.ctx.console.warning(
+                        f"Skill discovery failed: {type(exc).__name__}: {exc}"
+                    )
+
+            task = asyncio.create_task(guarded_load(), name="skills-discovery")
             if hasattr(event.ctx, "add_command_discovery_task"):
                 event.ctx.add_command_discovery_task(task)
 
     async def before_build(event: AgentBuildBefore) -> None:
-        await ready()
+        try:
+            await asyncio.wait_for(ready(), timeout=0.25)
+        except TimeoutError:
+            return
         current = event.kwargs.get("system_prompt", "")
         if prompt and prompt not in current:
             event.kwargs["system_prompt"] = current + "\n\n" + prompt
@@ -122,6 +143,7 @@ def register(api: PluginAPI) -> None:
         ]
 
     api.add_tool(StructuredTool.from_function(coroutine=read_skill, name="skill"))
+    api.add_middleware(glob_middleware, priority=60)
     api.add_command("skill", command, help="Run a skill: /skill <name> [args]")
     api.add_command("skills", listing, help="List discovered skills")
     api.add_completer("/skill ", complete)
