@@ -509,3 +509,53 @@ review were delegated with explicit file ownership. Static gates and independent
 read-only checks ran concurrently. Ordered merges, dependent integration and
 commits stayed serial. The requested load sweep deliberately ran concurrent
 suites; final benchmark measurements ran afterward without those test jobs.
+
+## Wave-2 review follow-up — 2026-09-17
+
+Three small commits address the final review:
+
+- `bec144d`: model/provider, Roles and Catalog headers now use the live selector's
+  non-selectable row mapping. Cursor and scrolling operate on screen rows;
+  footer counts and selection still operate on selectable items. Ungrouped
+  selectors keep lazy visible-row formatting. Regression tests compare
+  `create_content` with the textual snapshot, exercise every selected item in a
+  four-row viewport, and cover filtering, errors and empty results.
+- `07a1796`: renamed `runtime-polish.80.txt` and `runtime-polish.120.txt` to `.ansi`
+  without changing their bytes; a test rejects ESC bytes in all `.txt` goldens.
+- `7e71cff`: capture reuses one prior ledger context across shake markers,
+  including summary/reset and cursor-migration paths. Tests verify one context
+  reconstruction, preserved tool results/summaries and no duplicate shake events.
+
+`omp-models.76.txt` was regenerated and remained byte-identical: its text snapshot
+already displayed headers. Both `polish-round2-models.{80,120}.ansi` were updated
+and eyeballed because their live controls now display those same headers. At 80
+columns the final browser item is below the initial viewport and becomes visible
+when selected; the footer still correctly counts 13 selectable entries.
+
+Gates passed: `uv sync`, Ruff check/format, Pyright, ordinary pytest and exact
+clean-environment pytest, default/light galleries, tmux verification and the full
+benchmark suite. Both full pytest runs reported **2,159 passed, 2 optional skips**
+(73.69 s ordinary; 73.32 s clean environment). The isolated 120×40 and 80×30 smoke
+was repeated with temporary HOME/XDG configuration, empty stderr, unsubmitted
+paste and clean Ctrl+D; live captures include the model group headers.
+
+Benchmarks used clean commit `7e71cffe8c5f9719b0c7e10daf664ebd12c33b30`, 20
+repetitions/startup processes, and scoped SHA-256
+`1a6a0095cb8e43d1a4b4859f34ba3e2f7f21edbe9c501db48754492b50d55357`.
+All six artifacts share that commit/hash; UTC timestamps span
+2026-09-16 19:19:04–19:21:29. Direct help measured 60.242 ms median / 61.756 ms
+p95, and plain gallery 269.473 / 275.054 ms (median −0.8% / −0.4% respectively
+versus the preceding wave-2 measurement).
+
+Twenty actual command runs measured help 75.268 ms median / 78.073 ms maximum,
+default gallery 284.403 / 289.741 ms, and light gallery 286.021 / 292.113 ms.
+Every sample stayed inside the 150 ms help and 300 ms gallery budgets.
+
+The full benchmark's 1,000-turn stable capture case measured 0.510 ms median /
+2.059 ms p95, versus 0.417 / 0.486 ms previously. An isolated 20-repetition repeat
+on the same clean commit measured 0.403 / 0.420 ms, so the increase did not
+reproduce; neither a causal regression nor an improvement is established by
+these separate runs. The original full-suite result remains in the primary
+artifacts, and the repeat is at `/tmp/int2-review-capture-repeat` for this run.
+The targeted multi-shake regression independently verifies the intended single
+context reconstruction.
