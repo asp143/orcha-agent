@@ -151,17 +151,18 @@ def test_gallery_entrypoint_skips_project_dotenv_and_interactive_app(
     calls: list[object] = []
 
     monkeypatch.setattr(entrypoint, "load_config", lambda: cfg)
-    monkeypatch.setattr(entrypoint, "run_gallery", lambda value: calls.append(value) or 0)
     monkeypatch.setattr(
-        entrypoint,
-        "load_dotenv",
+        "orcha_agent.tui.gallery.run_gallery", lambda value: calls.append(value) or 0
+    )
+    monkeypatch.setattr(
+        "dotenv.load_dotenv",
         lambda *_args, **_kwargs: pytest.fail("gallery must not load project dotenv"),
     )
 
     async def fail_run_app(_cfg: object) -> int:
         pytest.fail("gallery must not start the interactive app")
 
-    monkeypatch.setattr(entrypoint, "run_app", fail_run_app)
+    monkeypatch.setattr("orcha_agent.tui.app.run_app", fail_run_app)
 
     with pytest.raises(SystemExit) as raised:
         entrypoint.main()
