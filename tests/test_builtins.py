@@ -23,6 +23,7 @@ EXPECTED_BUILTIN_PLUGINS = {
     "banner",
     "commands_core",
     "commands_model",
+    "commands_review",
     "commands_session",
     "filesystem",
     "memory",
@@ -35,6 +36,7 @@ EXPECTED_BUILTIN_PLUGINS = {
     "provider_openai",
     "render_default",
     "statusbar",
+    "tools_native",
 }
 EXPECTED_COMMANDS = {
     "branch",
@@ -54,6 +56,7 @@ EXPECTED_COMMANDS = {
     "plugins",
     "providers",
     "resume",
+    "review",
     "sessions",
     "status",
     "sync",
@@ -167,6 +170,9 @@ def test_loading_builtins_registers_expected_plugins_and_features(
     assert set(registry.modes) == EXPECTED_MODES
     assert set(registry.providers) == EXPECTED_PROVIDERS
     assert set(registry.commands) == EXPECTED_COMMANDS
+    assert {"read", "write", "edit", "bash", "bash_jobs", "grep", "glob", "ls"} <= set(
+        registry.tools
+    )
     assert {entry.kind for entry in registry.block_renderers} == {
         "assistant",
         "banner",

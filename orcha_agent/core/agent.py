@@ -14,6 +14,7 @@ from deepagents import (
     create_deep_agent,
 )
 import deepagents.graph as deepagents_graph
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
@@ -24,6 +25,10 @@ from .events import AgentBuildAfter, AgentBuildBefore, EventBus
 from .models import ModelResolver
 from .registry import Registry
 from .session import SessionStore
+from .tools.approvals import approval_configs
+from .tools.backend import GuardedLocalShellBackend
+from .tools.common import PathPolicy
+from .tools.middleware import NativeFilesystemMiddleware, NativeOutputMiddleware
 
 DEFAULT_SYSTEM_PROMPT = "You are a careful terminal coding agent. Use tools deliberately and report concrete results."
 FILESYSTEM_TOOL_NAMES = {
@@ -37,6 +42,33 @@ FILESYSTEM_TOOL_NAMES = {
     "execute",
 }
 logger = logging.getLogger(__name__)
+NATIVE_TOOL_ALIASES = {
+    "read_file": "read",
+    "write_file": "write",
+    "edit_file": "edit",
+    "execute": "bash",
+}
+
+
+def _native_names(names: Iterable[str]) -> set[str]:
+    return {NATIVE_TOOL_ALIASES.get(name, name) for name in names}
+
+
+def _native_interrupts(interrupts: Mapping[str, Any]) -> dict[str, Any]:
+    mapped = {NATIVE_TOOL_ALIASES.get(name, name): value for name, value in interrupts.items()}
+    if mapped.get("bash"):
+        mapped.setdefault("bash_jobs", mapped["bash"])
+    return mapped
+
+
+def _filesystem_middleware(backend: Any, names: set[str], native: bool = False) -> FilesystemMiddleware:
+    middleware_type = NativeFilesystemMiddleware if native else FilesystemMiddleware
+    filesystem = middleware_type(backend=backend, tools=sorted(names | {"read_file"}))
+    # deepagents 0.7.9 requires read_file at construction, even when all of its
+    # file tools are replaced. Keep its overflow middleware with the exact scope.
+    filesystem._enabled_tools = frozenset(names)
+    filesystem.tools = [tool for tool in filesystem.tools if tool.name in names]
+    return filesystem
 
 
 
@@ -159,6 +191,8 @@ def _subagents(
     default_model: Any,
     filesystem: FilesystemMiddleware | None,
     include_general_purpose: bool,
+    native_tools: list[Any] | None = None,
+    policy: PathPolicy | None = None,
 ) -> list[Any]:
     configured: list[Any] = []
     for entry in registry.subagents:
@@ -176,10 +210,42 @@ def _subagents(
         )
         if isinstance(spec, dict):
             configured_spec = {**spec, "model": model}
+            scoped_filesystem = filesystem
+            if native_tools is not None:
+                if isinstance(spec.get("interrupt_on"), Mapping):
+                    configured_spec["interrupt_on"] = _native_interrupts(spec["interrupt_on"])
+                    if policy is not None:
+                        configured_spec["interrupt_on"] = approval_configs(
+                            configured_spec["interrupt_on"], policy, registry.tools,
+                        )
+                requested = spec.get("tools")
+                if requested is None:
+                    configured_spec["tools"] = native_tools
+                else:
+                    requested_names = _native_names(
+                        item if isinstance(item, str) else item.name for item in requested
+                    )
+                    configured_spec["tools"] = [
+                        item for item in requested if not isinstance(item, str)
+                        and item.name not in {tool.name for tool in native_tools}
+                    ] + [tool for tool in native_tools if tool.name in requested_names]
+                    selected_names = {tool.name for tool in configured_spec["tools"]}
+                    filesystem_names = {tool.name for tool in filesystem.tools} if filesystem else set()
+                    for requested_name in requested_names - selected_names - filesystem_names:
+                        if requested_name not in registry.tools:
+                            raise ValueError(f"Unknown subagent tool: {requested_name}")
+                        configured_spec["tools"].append(registry.tools[requested_name])
+                    if filesystem is not None:
+                        scoped_filesystem = _filesystem_middleware(
+                            filesystem.backend,
+                            {tool.name for tool in filesystem.tools} & requested_names,
+                            native=True,
+                        )
             if filesystem is not None:
                 configured_spec["middleware"] = [
                     *(spec.get("middleware") or ()),
-                    filesystem,
+                    scoped_filesystem,
+                    *([NativeOutputMiddleware()] if native_tools is not None else []),
                 ]
             configured.append(configured_spec)
         else:
@@ -190,8 +256,12 @@ def _subagents(
         for spec in configured
     ):
         general_purpose = {**GENERAL_PURPOSE_SUBAGENT, "model": default_model}
+        if native_tools is not None:
+            general_purpose["tools"] = native_tools
         if filesystem is not None:
             general_purpose["middleware"] = [filesystem]
+            if native_tools is not None:
+                general_purpose["middleware"].append(NativeOutputMiddleware())
         configured.insert(0, general_purpose)
     return configured
 
@@ -249,12 +319,39 @@ async def build_agent(
     )
     backend = registry.backends[cfg.backend].factory(cfg)
     mode = registry.modes[cfg.mode]
-    allowed = set(always_allowed)
+    native = (
+        cfg.tools.native
+        and cfg.backend == "local_shell"
+        and {"read", "write", "edit", "bash"}.issubset(registry.tools)
+    )
+    policy = PathPolicy(cfg.cwd, cfg.tools.allowed_roots, cfg.tools.deny) if native else None
+    if native:
+        if isinstance(backend, LocalShellBackend):
+            assert policy is not None
+            backend = GuardedLocalShellBackend(policy, cfg.tools.max_read_bytes)
+            backend = CompositeBackend(
+                default=backend,
+                routes={},
+                artifacts_root=str(cfg.cwd / ".orcha" / "artifacts"),
+            )
+        mode = dataclass_replace(
+            mode,
+            interrupt_on=_native_interrupts(mode.interrupt_on),
+            allowed_tools=(
+                None if mode.allowed_tools is None else _native_names(mode.allowed_tools)
+            ),
+        )
+        if tool_scope is not None:
+            tool_scope = _native_names(tool_scope)
+    allowed = _native_names(always_allowed) if native else set(always_allowed)
     interrupts = {name: value for name, value in mode.interrupt_on.items() if name not in allowed}
-    middleware = [entry.middleware for entry in registry.middleware]
+    if policy is not None:
+        interrupts = approval_configs(interrupts, policy, registry.tools)
+    middleware = [entry.middleware for entry in registry.middleware
+                  if native or entry.plugin != "tools_native"]
     middleware.append(TodoListMiddleware())
     filesystem: FilesystemMiddleware | None = None
-    if mode.allowed_tools is not None or tool_scope is not None:
+    if native or mode.allowed_tools is not None or tool_scope is not None:
         filesystem_tools = (
             set(FILESYSTEM_TOOL_NAMES)
             if mode.allowed_tools is None
@@ -262,25 +359,16 @@ async def build_agent(
         )
         if tool_scope is not None:
             filesystem_tools &= tool_scope
-        constructor_tools = filesystem_tools | {"read_file"}
-        filesystem = FilesystemMiddleware(
-            backend=backend,
-            tools=sorted(constructor_tools),
-        )
-        # deepagents 0.7.9 requires read_file during construction even when a
-        # custom mode allows no filesystem tools. Remove that synthetic tool
-        # afterward so the effective allowlist remains exact.
-        if "read_file" not in filesystem_tools:
-            filesystem._enabled_tools = frozenset(filesystem_tools)
-            filesystem.tools = [
-                tool for tool in filesystem.tools if tool.name in filesystem_tools
-            ]
+        if native:
+            filesystem_tools &= {"delete"}
+        filesystem = _filesystem_middleware(backend, filesystem_tools, native=native)
         middleware.append(filesystem)
     tools = [
         tool
         for name, tool in registry.tools.items()
         if (mode.allowed_tools is None or name in mode.allowed_tools)
         and (tool_scope is None or name in tool_scope)
+        and (native or registry._tool_owners.get(name) != "tools_native")
     ]
     tools.extend(
         tool
@@ -295,7 +383,8 @@ async def build_agent(
         value
         for value in (
             system_prompt,
-            *(fragment.text for fragment in registry.prompt_fragments),
+            *(fragment.text for fragment in registry.prompt_fragments
+              if native or fragment.plugin != "tools_native"),
             _structured_memory_prompt(cfg, session),
         )
         if value
@@ -313,13 +402,18 @@ async def build_agent(
                 subagent_model,
                 filesystem,
                 _general_purpose_enabled(registry, cfg),
+                [tool for tool in tools if tool.name in {
+                    "read", "write", "edit", "bash", "bash_jobs", "grep", "glob", "ls"
+                }] if native else None,
+                policy,
             )
         ),
         "backend": backend,
         "memory": (
             []
             if getattr(getattr(cfg, "memory_store", None), "backend", "files") == "turso"
-            else _memory_sources(cfg)
+            else [str(cfg.cwd / path.lstrip("/")) for path in _memory_sources(cfg)]
+            if native else _memory_sources(cfg)
         ),
         "interrupt_on": interrupts,
         "system_prompt": prompt or DEFAULT_SYSTEM_PROMPT,

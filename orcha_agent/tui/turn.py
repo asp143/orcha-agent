@@ -194,10 +194,10 @@ class _FileDiffCapture:
         self.root = root.resolve()
         self._pending: dict[str, tuple[str, str, Path]] = {}
 
-    def _path(self, value: object) -> Path | None:
+    def _path(self, value: object, *, native: bool = False) -> Path | None:
         if not isinstance(value, str) or not value:
             return None
-        candidate = self.root / value.lstrip("/")
+        candidate = self.root / value if native else self.root / value.lstrip("/")
         resolved = candidate.resolve()
         try:
             resolved.relative_to(self.root)
@@ -206,10 +206,10 @@ class _FileDiffCapture:
         return resolved
 
     def start(self, event: ToolCallStart) -> None:
-        if event.name not in {"edit_file", "write_file"}:
+        if event.name not in {"edit_file", "write_file", "edit", "write"}:
             return
         display_path = event.args.get("file_path", event.args.get("path"))
-        path = self._path(display_path)
+        path = self._path(display_path, native=event.name in {"edit", "write"})
         if path is None:
             return
         try:
@@ -241,7 +241,7 @@ def _start_file_diff_capture(
     event: ToolCallStart,
     capture: _FileDiffCapture | None,
 ) -> _FileDiffCapture | None:
-    if event.name not in {"edit_file", "write_file"}:
+    if event.name not in {"edit_file", "write_file", "edit", "write"}:
         return capture
     if capture is None:
         cfg = getattr(ctx, "cfg", None)

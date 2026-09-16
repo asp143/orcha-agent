@@ -92,7 +92,11 @@ def _state(block: Block) -> str:
         if any(isinstance(call, Mapping) and "result" not in call for call in calls):
             return "running"
         if any(
-            isinstance(call, Mapping) and _exit_code(call.get("result")) not in (None, 0)
+            isinstance(call, Mapping)
+            and (
+                _exit_code(call.get("result")) not in (None, 0)
+                or getattr(call.get("result"), "status", "") == "error"
+            )
             for call in calls
         ):
             return "error"
@@ -145,6 +149,10 @@ def _one_line(value: Any) -> str:
 
 
 def _path(args: Mapping[str, Any], cwd: Any = None) -> str:
+    if not any(args.get(key) for key in ("path", "file_path", "filename")):
+        patch = args.get("patch")
+        if isinstance(patch, str) and (header := re.match(r"\[([^\n]+)#[0-9a-fA-F]+\]", patch)):
+            return _path({"path": header[1]}, cwd)
     for key in ("path", "file_path", "filename"):
         if not args.get(key):
             continue
@@ -392,12 +400,18 @@ def _diff(value: Any) -> str | None:
 def _read_source_rows(
     value: Any, args: Mapping[str, Any]
 ) -> tuple[list[tuple[str, str]], int | None, int | None]:
-    lines = _result_text(value).splitlines()
+    lines = _result_text(value).split("\n")
+    if lines and not lines[-1]:
+        lines.pop()
     parsed: list[tuple[str, str]] = []
     real_numbers: list[int] = []
     numbered = True
+    hashline = any(re.fullmatch(r"\[.+#[0-9a-fA-F]{4}\]", line) for line in lines)
     for line in lines:
-        match = re.match(r"^\s*(\d+(?:\.\d+)?)  (.*)$", line)
+        match = (
+            re.match(r"^(\d+):(.*)$", line)
+            if hashline else re.match(r"^\s*(\d+(?:\.\d+)?)  (.*)$", line)
+        )
         if match:
             marker, source = match.groups()
             parsed.append((marker, source))
@@ -406,7 +420,11 @@ def _read_source_rows(
             parsed.append(("", line))
             if line:
                 numbered = False
-    if numbered and real_numbers:
+    if real_numbers and (
+        hashline or numbered or all(
+            marker or not source or source.startswith("[notice]") for marker, source in parsed
+        )
+    ):
         return parsed, min(real_numbers), max(real_numbers)
 
     offset = args.get("offset")
@@ -454,7 +472,10 @@ def _read_rows(
             source_rows, first, last = _read_source_rows(result, call_args)
             branch = "└─" if index == len(calls) - 1 else "├─"
             selection = f":{first}-{last}" if first is not None and last is not None else ""
-            rows.append(f"{branch} {_path(call_args, cwd)}{selection}")
+            path = _path(call_args, cwd)
+            if str(block.data.get("name")) == "read" and first is not None:
+                path = re.sub(r"(?::(?:raw|[-\d,+]+))+$", "", path)
+            rows.append(f"{branch} {path}{selection}")
             preview = source_rows if expanded else source_rows[:3]
             rows.extend(f"   {source[:4000]}" for _marker, source in preview)
         return f"• Read ({len(calls)})", rows
@@ -462,6 +483,8 @@ def _read_rows(
     if _state(block) == "running":
         return f"⏳ Read: {path}{_selection(args)}", []
     source_rows, first, last = _read_source_rows(block.data.get("result"), args)
+    if str(block.data.get("name")) == "read" and first is not None:
+        path = re.sub(r"(?::(?:raw|[-\d,+]+))+$", "", path)
     selection = f":{first}-{last}" if first is not None and last is not None else ""
     return f"• Read {path}{selection}", _read_display_rows(
         source_rows, expanded=expanded, theme=theme
@@ -522,7 +545,13 @@ def _bash_rows(
             f"… {len(command_lines) - 6} earlier lines {EXPAND_HINT}",
             *command_lines[-6:],
         ]
-    output = _result_text(block.data.get("result")).splitlines()
+    result = block.data.get("result")
+    output = str(_value(result, "raw_output", _result_text(result))).splitlines()
+    if _value(result, "raw_output") is not None:
+        output.extend(
+            line for line in _text(result).splitlines()
+            if line.startswith(("[notice]", "[Output limited:", "Command timed out"))
+        )
     if len(output) > 10 and not expanded:
         total = len(output)
         output = [
@@ -611,6 +640,27 @@ def _grep_items(result: Any, output_mode: str) -> tuple[list[str], int, int]:
         return rows, len(rows), len(paths - {""})
 
     raw_lines = _result_text(result).splitlines()
+    if output_mode == "content" and any(re.match(r"^\s+\d+[:-] ", line) for line in raw_lines):
+        rows: list[str] = []
+        paths: set[str] = set()
+        current_path = ""
+        total = 0
+        for line in raw_lines:
+            if line.startswith("[notice]"):
+                try:
+                    rows.append(json.loads(line.removeprefix("[notice] "))["message"])
+                except (ValueError, KeyError):
+                    rows.append(line)
+            elif line and not line[0].isspace() and line.endswith(":"):
+                current_path = line[:-1]
+                paths.add(current_path)
+            elif match := re.match(r"^\s+(\d+)([:-]) (.*)$", line):
+                number, marker, source = match.groups()
+                total += marker == ":"
+                rows.append(f"{current_path}:{number}{marker}{source}")
+            elif line.strip():
+                rows.append(line)
+        return rows, total, len(paths)
     if output_mode == "files_with_matches":
         rows = [line for line in raw_lines if line]
         return rows, len(rows), len(set(rows))
@@ -694,8 +744,10 @@ def _inline_rows(
         )
         return output
     if name == "grep":
-        grep_result = None if _result_text(result).strip() == "No matches found" else result
-        output_mode = str(args.get("output_mode", "files_with_matches"))
+        grep_text = _result_text(result)
+        grep_result = None if grep_text.strip() in {"No matches found", "No matches found."} else result
+        default_mode = "content" if re.search(r"(?m)^\s+\d+[:-] ", grep_text) else "files_with_matches"
+        output_mode = str(args.get("output_mode", default_mode))
         items, parsed_total, parsed_files = _grep_items(grep_result, output_mode)
         supplied_total = _numeric_value(grep_result, "match_count", "total_matches", "count")
         supplied_files = _numeric_value(grep_result, "file_count", "files_with_matches")
@@ -734,6 +786,17 @@ def _inline_rows(
         _path_item(item)
         for item in _items_from_result(result, "matches", "items", "results", "files", "paths")
     ]
+    if name == "glob" and any(item.startswith("  ") for item in items):
+        directory = ""
+        paths = []
+        for item in items:
+            if item.startswith("  "):
+                paths.append(f"{directory}{item.strip()}")
+            elif item.endswith("/"):
+                directory = "" if item == "./" else item
+            else:
+                paths.append(item)
+        items = paths
     items = [
         item
         for item in items
