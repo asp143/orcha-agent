@@ -99,19 +99,22 @@ def capture_graph_values(
         for current, old in zip(fingerprints, previous, strict=False)
     )
     entries: list[Entry] = []
-    ids = [fingerprint[0] for fingerprint in fingerprints]
-    same_order = (
-        len(fingerprints) >= len(previous)
-        and all(isinstance(message_id, str) for message_id in ids)
-        and len(set(ids)) == len(ids)
-        and ids[: len(previous)] == [fingerprint[0] for fingerprint in previous]
-    )
-    summary_changed = any(
-        current != old
-        and isinstance(messages[index], HumanMessage)
-        and messages[index].additional_kwargs.get("lc_source") == "summarization"
-        for index, (current, old) in enumerate(zip(fingerprints, previous, strict=False))
-    )
+    same_order = False
+    summary_changed = False
+    if not unchanged_prefix:
+        ids = [fingerprint[0] for fingerprint in fingerprints]
+        same_order = (
+            len(fingerprints) >= len(previous)
+            and all(isinstance(message_id, str) for message_id in ids)
+            and len(set(ids)) == len(ids)
+            and ids[: len(previous)] == [fingerprint[0] for fingerprint in previous]
+        )
+        summary_changed = any(
+            current != old
+            and isinstance(messages[index], HumanMessage)
+            and messages[index].additional_kwargs.get("lc_source") == "summarization"
+            for index, (current, old) in enumerate(zip(fingerprints, previous, strict=False))
+        )
     reset = bool(previous) and not unchanged_prefix and (not same_order or summary_changed)
     summary_index = (
         next(
@@ -203,11 +206,12 @@ def capture_graph_values(
             entries.append(ModeChangeEntry(mode=context.mode))
         candidates = messages
     else:
-        changed = [
-            messages[index]
-            for index, (current, old) in enumerate(zip(fingerprints, previous, strict=False))
-            if old[1] and current != old
-        ]
+        if not unchanged_prefix:
+            changed = [
+                messages[index]
+                for index, (current, old) in enumerate(zip(fingerprints, previous, strict=False))
+                if old[1] and current != old
+            ]
         candidates = messages[len(previous) :]
     if changed:
         entries.append(
