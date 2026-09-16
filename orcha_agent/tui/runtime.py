@@ -2207,7 +2207,17 @@ class ApplicationRuntime:
         self.application.after_render += lambda _app: self._paint_output.start()
         self._theme_poll_task = asyncio.create_task(self._poll_themes())
         try:
-            await self.application.run_async()
+            from orcha_agent.builtin.setup import startup_setup
+
+            def start_setup() -> None:
+                if (
+                    self.ctx is not None
+                    and self.registry is not None
+                    and "setup" in self.registry.commands
+                ):
+                    self.application.create_background_task(startup_setup(self.ctx))
+
+            await self.application.run_async(pre_run=start_setup)
         except EOFError:
             pass
         finally:

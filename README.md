@@ -976,3 +976,21 @@ A successful before hook can return `{"block": true, "message": "reason"}` or
 for file-writing tools. Hooks run in declaration order and stop on a block.
 Other exit codes and timeouts produce warnings. `blocking = false` runs an
 observational hook in the background; it cannot block or rewrite a call.
+
+## First-run setup
+
+On an interactive first launch with no user or project config and no usable
+provider, orcha opens a short setup wizard inside the existing TUI. Run
+`uv run orcha setup` or `/setup` to revisit it explicitly. Choose a theme,
+composer style, provider sign-in or API-key environment hint, then a model.
+Choose **Enter model name** for a provider without a model catalog, or configure
+it later with `/model`.
+The wizard never asks for or stores an API key; OAuth sign-in uses the existing
+provider login flow. When the provider is usable, the selected model switches through the normal
+session lifecycle. Otherwise it becomes the next-launch default while the
+current session retains its model. Accepted preferences are saved in
+`~/.config/orcha-agent/config.toml`, preserving other settings.
+
+Press `Esc` at any step to skip without saving partial preferences. A completed
+setup suppresses the automatic wizard on later launches. Noninteractive launches
+and resumed sessions do not automatically open it.

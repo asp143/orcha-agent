@@ -410,6 +410,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("repl", help="start the interactive terminal agent")
+    subcommands.add_parser("setup", help="run the first-run setup wizard")
     subcommands.add_parser("sync", help="synchronize configured Turso stores")
     login = subcommands.add_parser("login", help="log in to a provider")
     login.add_argument("prefix")
