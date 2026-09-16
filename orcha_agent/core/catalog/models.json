@@ -1,0 +1,1952 @@
+{
+  "anthropic:claude-3-5-sonnet-20240620": {
+    "provider": "anthropic",
+    "id": "claude-3-5-sonnet-20240620",
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-3-5-sonnet-20241022": {
+    "provider": "anthropic",
+    "id": "claude-3-5-sonnet-20241022",
+    "context_window": 200000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-3-haiku-20240307": {
+    "provider": "anthropic",
+    "id": "claude-3-haiku-20240307",
+    "context_window": 200000,
+    "max_tokens": 4096,
+    "cost": {
+      "input": 0.25,
+      "output": 1.25,
+      "cache_read": 0.03,
+      "cache_write": 0.3
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-fable-5": {
+    "provider": "anthropic",
+    "id": "claude-fable-5",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-fable-5-1": {
+    "provider": "anthropic",
+    "id": "claude-fable-5-1",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 0.25,
+      "cache_write": 12.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-haiku-4-5": {
+    "provider": "anthropic",
+    "id": "claude-haiku-4-5",
+    "context_window": 200000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 1,
+      "output": 5,
+      "cache_read": 0.1,
+      "cache_write": 1.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-haiku-4-5-20251001": {
+    "provider": "anthropic",
+    "id": "claude-haiku-4-5-20251001",
+    "context_window": 200000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 1,
+      "output": 5,
+      "cache_read": 0.1,
+      "cache_write": 1.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-mythos-5": {
+    "provider": "anthropic",
+    "id": "claude-mythos-5",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-mythos-5-1": {
+    "provider": "anthropic",
+    "id": "claude-mythos-5-1",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 0.25,
+      "cache_write": 12.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-0": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-0",
+    "context_window": 200000,
+    "max_tokens": 32000,
+    "cost": {
+      "input": 15,
+      "output": 75,
+      "cache_read": 1.5,
+      "cache_write": 18.75
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-1": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-1",
+    "context_window": 200000,
+    "max_tokens": 32000,
+    "cost": {
+      "input": 15,
+      "output": 75,
+      "cache_read": 1.5,
+      "cache_write": 18.75
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-1-20250805": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-1-20250805",
+    "context_window": 200000,
+    "max_tokens": 32000,
+    "cost": {
+      "input": 15,
+      "output": 75,
+      "cache_read": 1.5,
+      "cache_write": 18.75
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-20250514": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-20250514",
+    "context_window": 200000,
+    "max_tokens": 32000,
+    "cost": {
+      "input": 15,
+      "output": 75,
+      "cache_read": 1.5,
+      "cache_write": 18.75
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-5": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-5",
+    "context_window": 200000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-5-20251101": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-5-20251101",
+    "context_window": 200000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-6": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-6",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-7": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-7",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-4-8": {
+    "provider": "anthropic",
+    "id": "claude-opus-4-8",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-opus-5": {
+    "provider": "anthropic",
+    "id": "claude-opus-5",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 25,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-sonnet-4-0": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-0",
+    "context_window": 200000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-sonnet-4-20250514": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-20250514",
+    "context_window": 200000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-sonnet-4-5": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-5",
+    "context_window": 1000000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-sonnet-4-5-20250929": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-5-20250929",
+    "context_window": 1000000,
+    "max_tokens": 64000,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-sonnet-4-6": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-6",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "anthropic:claude-sonnet-5": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-5",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:codex-mini-latest": {
+    "provider": "openai",
+    "id": "codex-mini-latest",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 1.5,
+      "output": 6,
+      "cache_read": 0.375,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": false,
+    "tool_calls": true
+  },
+  "openai:daybreak-blue-latest": {
+    "provider": "openai",
+    "id": "daybreak-blue-latest",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 30,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:daybreak-red-latest": {
+    "provider": "openai",
+    "id": "daybreak-red-latest",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 12.5,
+      "output": 75,
+      "cache_read": 1.25,
+      "cache_write": 15.625
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4": {
+    "provider": "openai",
+    "id": "gpt-4",
+    "context_window": 8192,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 30,
+      "output": 60,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": false,
+    "tool_calls": true
+  },
+  "openai:gpt-4-turbo": {
+    "provider": "openai",
+    "id": "gpt-4-turbo",
+    "context_window": 128000,
+    "max_tokens": 4096,
+    "cost": {
+      "input": 10,
+      "output": 30,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4.1": {
+    "provider": "openai",
+    "id": "gpt-4.1",
+    "context_window": 1047576,
+    "max_tokens": 32768,
+    "cost": {
+      "input": 2,
+      "output": 8,
+      "cache_read": 0.5,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4.1-mini": {
+    "provider": "openai",
+    "id": "gpt-4.1-mini",
+    "context_window": 1047576,
+    "max_tokens": 32768,
+    "cost": {
+      "input": 0.4,
+      "output": 1.6,
+      "cache_read": 0.1,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4.1-nano": {
+    "provider": "openai",
+    "id": "gpt-4.1-nano",
+    "context_window": 1047576,
+    "max_tokens": 32768,
+    "cost": {
+      "input": 0.1,
+      "output": 0.4,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4o": {
+    "provider": "openai",
+    "id": "gpt-4o",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 2.5,
+      "output": 10,
+      "cache_read": 1.25,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4o-2024-05-13": {
+    "provider": "openai",
+    "id": "gpt-4o-2024-05-13",
+    "context_window": 128000,
+    "max_tokens": 4096,
+    "cost": {
+      "input": 5,
+      "output": 15,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4o-2024-08-06": {
+    "provider": "openai",
+    "id": "gpt-4o-2024-08-06",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 2.5,
+      "output": 10,
+      "cache_read": 1.25,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4o-2024-11-20": {
+    "provider": "openai",
+    "id": "gpt-4o-2024-11-20",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 2.5,
+      "output": 10,
+      "cache_read": 1.25,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-4o-mini": {
+    "provider": "openai",
+    "id": "gpt-4o-mini",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 0.15,
+      "output": 0.6,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5": {
+    "provider": "openai",
+    "id": "gpt-5",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5-chat-latest": {
+    "provider": "openai",
+    "id": "gpt-5-chat-latest",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5-codex": {
+    "provider": "openai",
+    "id": "gpt-5-codex",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5-mini": {
+    "provider": "openai",
+    "id": "gpt-5-mini",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.25,
+      "output": 2,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5-nano": {
+    "provider": "openai",
+    "id": "gpt-5-nano",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.05,
+      "output": 0.4,
+      "cache_read": 0.005,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5-pro": {
+    "provider": "openai",
+    "id": "gpt-5-pro",
+    "context_window": 400000,
+    "max_tokens": 272000,
+    "cost": {
+      "input": 15,
+      "output": 120,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.1": {
+    "provider": "openai",
+    "id": "gpt-5.1",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.1-chat-latest": {
+    "provider": "openai",
+    "id": "gpt-5.1-chat-latest",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.1-codex": {
+    "provider": "openai",
+    "id": "gpt-5.1-codex",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.1-codex-max": {
+    "provider": "openai",
+    "id": "gpt-5.1-codex-max",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.1-codex-mini": {
+    "provider": "openai",
+    "id": "gpt-5.1-codex-mini",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.25,
+      "output": 2,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.2": {
+    "provider": "openai",
+    "id": "gpt-5.2",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.75,
+      "output": 14,
+      "cache_read": 0.175,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.2-chat-latest": {
+    "provider": "openai",
+    "id": "gpt-5.2-chat-latest",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 1.75,
+      "output": 14,
+      "cache_read": 0.175,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.2-codex": {
+    "provider": "openai",
+    "id": "gpt-5.2-codex",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.75,
+      "output": 14,
+      "cache_read": 0.175,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.2-pro": {
+    "provider": "openai",
+    "id": "gpt-5.2-pro",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 21,
+      "output": 168,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.3-chat-latest": {
+    "provider": "openai",
+    "id": "gpt-5.3-chat-latest",
+    "context_window": 128000,
+    "max_tokens": 16384,
+    "cost": {
+      "input": 1.75,
+      "output": 14,
+      "cache_read": 0.175,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.3-codex": {
+    "provider": "openai",
+    "id": "gpt-5.3-codex",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 1.75,
+      "output": 14,
+      "cache_read": 0.175,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.3-codex-spark": {
+    "provider": "openai",
+    "id": "gpt-5.3-codex-spark",
+    "context_window": 128000,
+    "max_tokens": 32000,
+    "cost": {
+      "input": 1.75,
+      "output": 14,
+      "cache_read": 0.175,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.4": {
+    "provider": "openai",
+    "id": "gpt-5.4",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 2.5,
+      "output": 15,
+      "cache_read": 0.25,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.4-mini": {
+    "provider": "openai",
+    "id": "gpt-5.4-mini",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.75,
+      "output": 4.5,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.4-nano": {
+    "provider": "openai",
+    "id": "gpt-5.4-nano",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.2,
+      "output": 1.25,
+      "cache_read": 0.02,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.4-pro": {
+    "provider": "openai",
+    "id": "gpt-5.4-pro",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 30,
+      "output": 180,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.5": {
+    "provider": "openai",
+    "id": "gpt-5.5",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 30,
+      "cache_read": 0.5,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.5-pro": {
+    "provider": "openai",
+    "id": "gpt-5.5-pro",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 30,
+      "output": 180,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6": {
+    "provider": "openai",
+    "id": "gpt-5.6",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.4,
+      "cache_write": 5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-cyber": {
+    "provider": "openai",
+    "id": "gpt-5.6-cyber",
+    "context_window": 400000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 12.5,
+      "output": 75,
+      "cache_read": 1.25,
+      "cache_write": 15.625
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-luna": {
+    "provider": "openai",
+    "id": "gpt-5.6-luna",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.2,
+      "output": 1.2,
+      "cache_read": 0.02,
+      "cache_write": 0.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-luna-pro": {
+    "provider": "openai",
+    "id": "gpt-5.6-luna-pro",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.2,
+      "output": 1.2,
+      "cache_read": 0.02,
+      "cache_write": 0.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-sol": {
+    "provider": "openai",
+    "id": "gpt-5.6-sol",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.4,
+      "cache_write": 5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-sol-pro": {
+    "provider": "openai",
+    "id": "gpt-5.6-sol-pro",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.4,
+      "cache_write": 5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-terra": {
+    "provider": "openai",
+    "id": "gpt-5.6-terra",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-5.6-terra-pro": {
+    "provider": "openai",
+    "id": "gpt-5.6-terra-pro",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-6-astra": {
+    "provider": "openai",
+    "id": "gpt-6-astra",
+    "context_window": 1050000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:gpt-realtime-2.1": {
+    "provider": "openai",
+    "id": "gpt-realtime-2.1",
+    "context_window": 128000,
+    "max_tokens": 32000,
+    "cost": {
+      "input": 4,
+      "output": 24,
+      "cache_read": 0.4,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o1": {
+    "provider": "openai",
+    "id": "o1",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 15,
+      "output": 60,
+      "cache_read": 7.5,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o1-pro": {
+    "provider": "openai",
+    "id": "o1-pro",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 150,
+      "output": 600,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o3": {
+    "provider": "openai",
+    "id": "o3",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 2,
+      "output": 8,
+      "cache_read": 0.5,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o3-deep-research": {
+    "provider": "openai",
+    "id": "o3-deep-research",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 10,
+      "output": 40,
+      "cache_read": 2.5,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o3-mini": {
+    "provider": "openai",
+    "id": "o3-mini",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 1.1,
+      "output": 4.4,
+      "cache_read": 0.55,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": false,
+    "tool_calls": true
+  },
+  "openai:o3-pro": {
+    "provider": "openai",
+    "id": "o3-pro",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 20,
+      "output": 80,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o4-mini": {
+    "provider": "openai",
+    "id": "o4-mini",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 1.1,
+      "output": 4.4,
+      "cache_read": 0.275,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "openai:o4-mini-deep-research": {
+    "provider": "openai",
+    "id": "o4-mini-deep-research",
+    "context_window": 200000,
+    "max_tokens": 100000,
+    "cost": {
+      "input": 2,
+      "output": 8,
+      "cache_read": 0.5,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "codex:gpt-5.5": {
+    "provider": "codex",
+    "id": "gpt-5.5",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 30,
+      "cache_read": 0.5,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "codex:gpt-5.6-luna": {
+    "provider": "codex",
+    "id": "gpt-5.6-luna",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 0.2,
+      "output": 1.2,
+      "cache_read": 0.02,
+      "cache_write": 0.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "codex:gpt-5.6-sol": {
+    "provider": "codex",
+    "id": "gpt-5.6-sol",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 4,
+      "output": 20,
+      "cache_read": 0.4,
+      "cache_write": 5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "codex:gpt-5.6-terra": {
+    "provider": "codex",
+    "id": "gpt-5.6-terra",
+    "context_window": 1000000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "codex:gpt-6-astra": {
+    "provider": "codex",
+    "id": "gpt-6-astra",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "codex:gpt-daybreak-blue-latest": {
+    "provider": "codex",
+    "id": "gpt-daybreak-blue-latest",
+    "context_window": 272000,
+    "max_tokens": 128000,
+    "cost": {
+      "input": 5,
+      "output": 30,
+      "cache_read": 0.5,
+      "cache_write": 6.25
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:deep-research-max-preview-04-2026": {
+    "provider": "google",
+    "id": "deep-research-max-preview-04-2026",
+    "context_window": 131072,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:deep-research-preview-04-2026": {
+    "provider": "google",
+    "id": "deep-research-preview-04-2026",
+    "context_window": 131072,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-1.5-flash": {
+    "provider": "google",
+    "id": "gemini-1.5-flash",
+    "context_window": 1000000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0.075,
+      "output": 0.3,
+      "cache_read": 0.01875,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-1.5-flash-8b": {
+    "provider": "google",
+    "id": "gemini-1.5-flash-8b",
+    "context_window": 1000000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0.0375,
+      "output": 0.15,
+      "cache_read": 0.01,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-1.5-pro": {
+    "provider": "google",
+    "id": "gemini-1.5-pro",
+    "context_window": 1000000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 1.25,
+      "output": 5,
+      "cache_read": 0.3125,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.0-flash": {
+    "provider": "google",
+    "id": "gemini-2.0-flash",
+    "context_window": 1048576,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0.1,
+      "output": 0.4,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.0-flash-lite": {
+    "provider": "google",
+    "id": "gemini-2.0-flash-lite",
+    "context_window": 1048576,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0.075,
+      "output": 0.3,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-computer-use-preview-10-2025": {
+    "provider": "google",
+    "id": "gemini-2.5-computer-use-preview-10-2025",
+    "context_window": 131072,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash": {
+    "provider": "google",
+    "id": "gemini-2.5-flash",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash-lite": {
+    "provider": "google",
+    "id": "gemini-2.5-flash-lite",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.1,
+      "output": 0.4,
+      "cache_read": 0.01,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash-lite-preview-06-17": {
+    "provider": "google",
+    "id": "gemini-2.5-flash-lite-preview-06-17",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.1,
+      "output": 0.4,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash-lite-preview-09-2025": {
+    "provider": "google",
+    "id": "gemini-2.5-flash-lite-preview-09-2025",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.1,
+      "output": 0.4,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash-preview-04-17": {
+    "provider": "google",
+    "id": "gemini-2.5-flash-preview-04-17",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.15,
+      "output": 0.6,
+      "cache_read": 0.0375,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash-preview-05-20": {
+    "provider": "google",
+    "id": "gemini-2.5-flash-preview-05-20",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.15,
+      "output": 0.6,
+      "cache_read": 0.0375,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-flash-preview-09-2025": {
+    "provider": "google",
+    "id": "gemini-2.5-flash-preview-09-2025",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-pro": {
+    "provider": "google",
+    "id": "gemini-2.5-pro",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.125,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-pro-preview-05-06": {
+    "provider": "google",
+    "id": "gemini-2.5-pro-preview-05-06",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.31,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-2.5-pro-preview-06-05": {
+    "provider": "google",
+    "id": "gemini-2.5-pro-preview-06-05",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 1.25,
+      "output": 10,
+      "cache_read": 0.31,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3-flash-preview": {
+    "provider": "google",
+    "id": "gemini-3-flash-preview",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.5,
+      "output": 3,
+      "cache_read": 0.05,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3-pro-preview": {
+    "provider": "google",
+    "id": "gemini-3-pro-preview",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.1-flash-lite": {
+    "provider": "google",
+    "id": "gemini-3.1-flash-lite",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.25,
+      "output": 1.5,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.1-flash-lite-image": {
+    "provider": "google",
+    "id": "gemini-3.1-flash-lite-image",
+    "context_window": 65536,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.25,
+      "output": 30,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.1-flash-lite-preview": {
+    "provider": "google",
+    "id": "gemini-3.1-flash-lite-preview",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.25,
+      "output": 1.5,
+      "cache_read": 0.025,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.1-flash-live-preview": {
+    "provider": "google",
+    "id": "gemini-3.1-flash-live-preview",
+    "context_window": 131072,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.75,
+      "output": 4.5,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.1-pro-preview": {
+    "provider": "google",
+    "id": "gemini-3.1-pro-preview",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.1-pro-preview-customtools": {
+    "provider": "google",
+    "id": "gemini-3.1-pro-preview-customtools",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 2,
+      "output": 12,
+      "cache_read": 0.2,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.5-flash": {
+    "provider": "google",
+    "id": "gemini-3.5-flash",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 1.5,
+      "output": 9,
+      "cache_read": 0.15,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.5-flash-lite": {
+    "provider": "google",
+    "id": "gemini-3.5-flash-lite",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.6-flash": {
+    "provider": "google",
+    "id": "gemini-3.6-flash",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.7-flash": {
+    "provider": "google",
+    "id": "gemini-3.7-flash",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-3.8-flash": {
+    "provider": "google",
+    "id": "gemini-3.8-flash",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-flash-latest": {
+    "provider": "google",
+    "id": "gemini-flash-latest",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.75,
+      "output": 3.75,
+      "cache_read": 0.075,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-flash-lite-latest": {
+    "provider": "google",
+    "id": "gemini-flash-lite-latest",
+    "context_window": 1048576,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-live-2.5-flash": {
+    "provider": "google",
+    "id": "gemini-live-2.5-flash",
+    "context_window": 128000,
+    "max_tokens": 8000,
+    "cost": {
+      "input": 0.5,
+      "output": 2,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemini-live-2.5-flash-preview-native-audio": {
+    "provider": "google",
+    "id": "gemini-live-2.5-flash-preview-native-audio",
+    "context_window": 131072,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 0.5,
+      "output": 2,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": false,
+    "tool_calls": true
+  },
+  "google:gemini-robotics-er-1.6-preview": {
+    "provider": "google",
+    "id": "gemini-robotics-er-1.6-preview",
+    "context_window": 131072,
+    "max_tokens": 65536,
+    "cost": {
+      "input": 1,
+      "output": 5,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-3-27b-it": {
+    "provider": "google",
+    "id": "gemma-3-27b-it",
+    "context_window": 131072,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": false,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-26b": {
+    "provider": "google",
+    "id": "gemma-4-26b",
+    "context_window": 256000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-26b-a4b-it": {
+    "provider": "google",
+    "id": "gemma-4-26b-a4b-it",
+    "context_window": 262144,
+    "max_tokens": 32768,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-26b-it": {
+    "provider": "google",
+    "id": "gemma-4-26b-it",
+    "context_window": 256000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-31b": {
+    "provider": "google",
+    "id": "gemma-4-31b",
+    "context_window": 256000,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-31b-it": {
+    "provider": "google",
+    "id": "gemma-4-31b-it",
+    "context_window": 262144,
+    "max_tokens": 32768,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-E2B-it": {
+    "provider": "google",
+    "id": "gemma-4-E2B-it",
+    "context_window": 131072,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  },
+  "google:gemma-4-E4B-it": {
+    "provider": "google",
+    "id": "gemma-4-E4B-it",
+    "context_window": 131072,
+    "max_tokens": 8192,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cache_read": 0,
+      "cache_write": 0
+    },
+    "thinking": true,
+    "vision": true,
+    "tool_calls": true
+  }
+}

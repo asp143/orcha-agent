@@ -54,7 +54,9 @@ def register_builtin_overlays(registry: Any) -> None:
 
     factories = {
         "settings": lambda ctx, **_payload: __getattr__("SettingsOverlay")(ctx),
-        "model": lambda ctx, **_payload: __getattr__("ModelOverlay")(ctx),
+        "model": lambda ctx, **payload: __getattr__("ModelOverlay")(
+            ctx, browse=payload.get("browse", False)
+        ),
         "session": lambda ctx, **_payload: __getattr__("SessionOverlay")(ctx),
         "hub": lambda ctx, **_payload: __getattr__("HubOverlay")(ctx),
         "tree": lambda ctx, **_payload: __getattr__("TreeOverlay")(ctx),

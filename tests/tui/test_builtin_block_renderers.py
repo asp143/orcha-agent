@@ -28,6 +28,7 @@ def test_builtin_registers_native_block_renderers_only() -> None:
         "diff",
         "banner",
         "marker",
+        "compaction",
         "queue",
         "todo",
         "welcome",

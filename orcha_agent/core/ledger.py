@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
-    HumanMessage,
     SystemMessage,
     ToolMessage,
     messages_from_dict,
@@ -70,6 +69,8 @@ class CompactionEntry(Entry):
     summary: str
     first_kept_id: str | None = None
     tokens_before: int | None = None
+    short_summary: str = ""
+    method: str = "summary"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -116,9 +117,7 @@ class AmbiguousEntry(LookupError):
     def __init__(self, prefix: str, candidates: Iterable[str]) -> None:
         self.prefix = prefix
         self.candidates = tuple(sorted(candidates))
-        super().__init__(
-            f"Ambiguous entry prefix {prefix}: {', '.join(self.candidates)}"
-        )
+        super().__init__(f"Ambiguous entry prefix {prefix}: {', '.join(self.candidates)}")
 
 
 class LedgerCycleError(RuntimeError):
@@ -135,6 +134,7 @@ _ENTRY_TYPES: dict[str, type[Entry]] = {
     "reset_boundary": ResetBoundaryEntry,
     "custom": CustomEntry,
 }
+
 
 class _KeepCurrentThread:
     __slots__ = ()
@@ -155,6 +155,8 @@ def _entry_type_and_payload(entry: Entry) -> tuple[str, dict[str, Any]]:
             "summary": entry.summary,
             "first_kept_id": entry.first_kept_id,
             "tokens_before": entry.tokens_before,
+            "short_summary": entry.short_summary,
+            "method": entry.method,
         }
     if isinstance(entry, ResetBoundaryEntry):
         return "reset_boundary", {}
@@ -191,22 +193,15 @@ def _decode_entry(
         serialized_message = dict(message)
         validated_message = messages_from_dict([serialized_message])[0]
         return MessageEntry(
-            message=serialized_message,
-            _validated_message=validated_message,
-            **common
+            message=serialized_message, _validated_message=validated_message, **common
         )
     if entry_type == "model_change":
         model = payload["model"]
         if not (
             isinstance(model, str)
-            or (
-                isinstance(model, list)
-                and all(isinstance(candidate, str) for candidate in model)
-            )
+            or (isinstance(model, list) and all(isinstance(candidate, str) for candidate in model))
         ):
-            raise TypeError(
-                "Model change entry model must be a string or list of strings"
-            )
+            raise TypeError("Model change entry model must be a string or list of strings")
         return ModelChangeEntry(model=model, **common)
     if entry_type == "mode_change":
         mode = payload["mode"]
@@ -220,19 +215,17 @@ def _decode_entry(
         if not isinstance(summary, str):
             raise TypeError("Compaction entry summary must be a string")
         if first_kept_id is not None and not isinstance(first_kept_id, str):
-            raise TypeError(
-                "Compaction entry first_kept_id must be a string or null"
-            )
+            raise TypeError("Compaction entry first_kept_id must be a string or null")
         if tokens_before is not None and (
             not isinstance(tokens_before, int) or isinstance(tokens_before, bool)
         ):
-            raise TypeError(
-                "Compaction entry tokens_before must be an integer or null"
-            )
+            raise TypeError("Compaction entry tokens_before must be an integer or null")
         return CompactionEntry(
             summary=summary,
             first_kept_id=first_kept_id,
             tokens_before=tokens_before,
+            short_summary=str(payload.get("short_summary", "")),
+            method=str(payload.get("method", "summary")),
             **common,
         )
     if entry_type == "reset_boundary":
@@ -264,16 +257,13 @@ def _entry_from_row(row: sqlite3.Row) -> Entry:
         return _decode_entry(entry_type, payload, **common)
     except Exception as error:
         if isinstance(raw_payload, (bytes, bytearray)):
-            diagnostic_payload = bytes(raw_payload).decode(
-                "utf-8", errors="backslashreplace"
-            )
+            diagnostic_payload = bytes(raw_payload).decode("utf-8", errors="backslashreplace")
         elif isinstance(raw_payload, str):
             diagnostic_payload = raw_payload
         else:
             diagnostic_payload = repr(raw_payload)
         logger.warning(
-            "Recovering corrupt ledger entry "
-            "session_id=%r entry_id=%r type=%r: %s",
+            "Recovering corrupt ledger entry session_id=%r entry_id=%r type=%r: %s",
             row["session_id"],
             row["id"],
             entry_type,
@@ -322,10 +312,7 @@ class Ledger:
                 if key not in cache:
                     cache[key] = entry, payload_size
                     self.store._ledger_message_cache_bytes += payload_size
-                while (
-                    len(cache) > 2048
-                    or self.store._ledger_message_cache_bytes > 8 * 1024 * 1024
-                ):
+                while len(cache) > 2048 or self.store._ledger_message_cache_bytes > 8 * 1024 * 1024:
                     _, (_, evicted_size) = cache.popitem(last=False)
                     self.store._ledger_message_cache_bytes -= evicted_size
         return entry
@@ -343,9 +330,7 @@ class Ledger:
                 reserved.add(entry_id)
                 return entry_id
 
-    def _append_in_transaction(
-        self, session_id: str, entries: list[Entry]
-    ) -> list[Entry]:
+    def _append_in_transaction(self, session_id: str, entries: list[Entry]) -> list[Entry]:
         connection = self.store._connection
         leaf_row = connection.execute(
             "SELECT leaf_id FROM sessions WHERE thread_id = ?", (session_id,)
@@ -364,9 +349,7 @@ class Ledger:
         for offset, entry in enumerate(entries):
             entry_id = entry.id or self._new_id(session_id, reserved)
             timestamp = entry.ts or _timestamp()
-            actual_parent = (
-                entry.parent_id if entry.parent_id is not None else parent_id
-            )
+            actual_parent = entry.parent_id if entry.parent_id is not None else parent_id
             persisted = replace(
                 entry,
                 id=entry_id,
@@ -560,7 +543,8 @@ class Ledger:
             raise ValueError("captured must be non-negative")
         message_ids = tuple(captured_message_ids)
         encoded_message_ids = (
-            "[]" if isinstance(entries, CaptureBatch)
+            "[]"
+            if isinstance(entries, CaptureBatch)
             else self.store._encode_captured_message_ids(message_ids)
         )
         batch = list(entries)
@@ -675,9 +659,7 @@ class Ledger:
             raise AmbiguousEntry(prefix, (row["id"] for row in rows))
         return _entry_from_row(rows[0])
 
-    def _path_from_rows(
-        self, rows: Iterable[sqlite3.Row], leaf_id: str | None
-    ) -> list[Entry]:
+    def _path_from_rows(self, rows: Iterable[sqlite3.Row], leaf_id: str | None) -> list[Entry]:
         if leaf_id is None:
             return []
         by_id = {row["id"]: row for row in rows}
@@ -751,7 +733,6 @@ class Ledger:
             if isinstance(value, str):
                 latest[value] = entry
         return latest
-
 
     def all(self, session_id: str) -> list[Entry]:
         with self.store.saver.lock:
@@ -831,13 +812,13 @@ def _after_last_reset(path: list[Entry]) -> list[Entry]:
             elif entry.custom_type == "checkpoint_reset":
                 reset_at = index
                 retained_state = state
-    return ([retained_state] if retained_state is not None else []) + path[reset_at + 1:]
+    return ([retained_state] if retained_state is not None else []) + path[reset_at + 1 :]
 
 
 def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
     for compact_at in range(len(path) - 1, -1, -1):
         entry = path[compact_at]
-        if not isinstance(entry, CompactionEntry):
+        if not isinstance(entry, CompactionEntry) or entry.method == "shake":
             continue
         if entry.first_kept_id is None:
             return path[compact_at + 1 :], entry.summary
@@ -893,14 +874,10 @@ def _remove_dangling_tools(
     dangling: list[ToolCallRef] = []
     for assistant_at, calls in assistant_calls.items():
         matched = matched_calls.get(assistant_at, set())
-        unmatched = [
-            (call_id, name) for call_id, name in calls if call_id not in matched
-        ]
+        unmatched = [(call_id, name) for call_id, name in calls if call_id not in matched]
         if unmatched:
             dropped_assistants.add(assistant_at)
-            dangling.extend(
-                ToolCallRef(id=call_id, name=name) for call_id, name in unmatched
-            )
+            dangling.extend(ToolCallRef(id=call_id, name=name) for call_id, name in unmatched)
 
     retained = [
         message
@@ -908,18 +885,13 @@ def _remove_dangling_tools(
         if index not in dropped_assistants
         and (
             not isinstance(message, ToolMessage)
-            or (
-                tool_owners.get(index) is not None
-                and tool_owners[index] not in dropped_assistants
-            )
+            or (tool_owners.get(index) is not None and tool_owners[index] not in dropped_assistants)
         )
     ]
     return retained, dangling
 
 
-def build_context(
-    path: list[Entry], *, strip: set[str] | frozenset[str] = frozenset()
-) -> Context:
+def build_context(path: list[Entry], *, strip: set[str] | frozenset[str] = frozenset()) -> Context:
     """Reconstruct live agent state from one root-to-leaf entry path."""
     post_reset = _after_last_reset(path)
     message_entries, summary = _apply_last_compaction(post_reset)
@@ -930,7 +902,9 @@ def build_context(
     if summary is not None:
         kept_ids = {entry.id for entry in message_entries}
         kept_rules = {
-            name for entry in message_entries if isinstance(entry, MessageEntry)
+            name
+            for entry in message_entries
+            if isinstance(entry, MessageEntry)
             for name in _message_from_entry(entry).additional_kwargs.get("orcha_rules", [])
         }
         for entry in post_reset:
@@ -945,7 +919,9 @@ def build_context(
                             retained_rules[name] = message
     messages: list[BaseMessage] = list({id(m): m for m in retained_rules.values()}.values())
     if summary is not None:
-        messages.append(HumanMessage(content=f"[Conversation summary]\n{summary}"))
+        from .summary import create_summary_message
+
+        messages.append(create_summary_message(summary))
     positions: dict[str, int] = {}
     for entry in message_entries:
         if isinstance(entry, MessageEntry):
@@ -982,7 +958,9 @@ def build_context(
                 durable_rules = raw_rules if isinstance(raw_rules, dict) else {}
 
     attached = {
-        name for message in messages if isinstance(message, SystemMessage)
+        name
+        for message in messages
+        if isinstance(message, SystemMessage)
         for name in message.additional_kwargs.get("orcha_rules", [])
     }
     for name, serialized in durable_rules.items():

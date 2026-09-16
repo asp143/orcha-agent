@@ -2,5 +2,18 @@
 │  demo                                                                    │
 │  › ● demo  small *  128k ctx                                             │
 │    ● demo  large  128k ctx                                               │
-│  (1/2)  J/K navigate · PgUp/PgDn page · Enter select · Esc close         │
+│  Roles                                                                   │
+│    @main  main (inherited)                                               │
+│    @subagent  main (inherited)                                           │
+│    @summarizer  main (inherited)                                         │
+│    @smol  main (inherited)                                               │
+│    @slow  main (inherited)                                               │
+│    @plan  main (inherited)                                               │
+│    @vision  main (inherited)                                             │
+│    @task  main (inherited)                                               │
+│    @commit  main (inherited)                                             │
+│    @advisor  main (inherited)                                            │
+│  Catalog                                                                 │
+│    Browse catalog… (search context, cost, thinking and vision)           │
+│  (1/13)  J/K navigate · PgUp/PgDn page · Enter select · Esc close        │
 ╰──────────────────────────────────────────────────────────────────────────╯

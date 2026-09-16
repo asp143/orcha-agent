@@ -103,6 +103,7 @@ class BlockRendererDispatcher:
         else:
             self._renderers = {entry.kind: entry.render for entry in renderers}
         self._renderers.setdefault("advisory", render_advisory)
+        self._renderers.setdefault("compaction", render_compaction)
         self._renderers.setdefault("review", render_review)
         self._cache: dict[
             str,
@@ -213,6 +214,7 @@ def render_queue(
 from .assistant import render as render_assistant
 from .advisory import render as render_advisory
 from .banner import render as render_banner
+from .compaction import render as render_compaction
 from .diff import render as render_diff
 from .hud import render_todo
 from .image import render as render_image
@@ -230,6 +232,7 @@ DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
     "user": render_user,
     "assistant": render_assistant,
     "advisory": render_advisory,
+    "compaction": render_compaction,
     "review": render_review,
     "thinking": render_thinking,
     "tool": render_tool,

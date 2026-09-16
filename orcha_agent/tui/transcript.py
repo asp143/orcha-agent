@@ -222,6 +222,11 @@ class Transcript:
         else:
             self.scheduler.request_commit()
 
+    def append_compaction(self, data: dict[str, Any]) -> Block:
+        block = self.frame.add("compaction", data)
+        self._commit(block)
+        return block
+
     def append_raw(
         self,
         renderable: Any,

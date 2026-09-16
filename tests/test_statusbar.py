@@ -58,6 +58,8 @@ def test_adapter_registers_every_builtin_as_explicit_segments(tmp_path: Path) ->
     assert isinstance(registry.status_segments[0].render(ctx), Segment)
     assert "status" in registry.commands
     assert {entry.event_type.__name__ for entry in bus.handlers} == {
+        "AppStart",
+        "ModelSwitch",
         "ModelChunk",
         "SessionSwitch",
         "ThreadSwitch",

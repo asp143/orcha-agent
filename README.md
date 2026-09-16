@@ -155,6 +155,151 @@ Optional watchdog instructions are loaded from the nearest `WATCHDOG.md` or
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
 
+## Compaction
+
+`/compact [instructions]` condenses older history while retaining recent messages.
+For example, `/compact Preserve the migration plan and failing test names` adds
+instructions to the summary. Compactions are saved in the session ledger, so
+resuming a session reconstructs the summary and retained history.
+
+```toml
+[compaction]
+enabled = true
+threshold_ratio = 0.8
+# threshold_tokens = 100000  # overrides the ratio when set
+keep_recent_tokens = 20000
+# reserve_tokens defaults to max(16384, 15% of the context window)
+supersede_reads = true
+drop_useless = true
+method_order = ["summary", "handoff", "shake"]
+speculative = true
+idle_seconds = 60
+```
+
+Automatic maintenance checks context after turns, between tool calls, and while
+idle. Provider context-overflow errors trigger compaction and one retry;
+length-limited responses also trigger maintenance. The threshold uses the
+selected model's catalog context window and leaves the configured token reserve.
+Provider token counts are used when available, with text-size estimates as a
+fallback. Speculative summarization prepares a reusable summary below the
+threshold. Setting `enabled = false` disables automatic maintenance; manual
+`/compact` remains available. `idle_seconds` is the quiet interval after a main
+turn before the idle threshold check (default 60 seconds); new activity cancels
+pending idle work. `speculative` enables background summary preparation at 75%
+of the compaction threshold (default true). Preparation does not change history
+or show a foreground compaction status; a later compaction may reuse it.
+
+`summary` produces a concise continuation summary; `handoff` uses a structured
+note covering decisions, progress, and next steps. `shake` only removes
+superseded tool content. Repeated file reads can replace older read results
+without breaking tool-call/result pairing. A transcript card records compaction,
+and the context gauge turns amber near the configured threshold.
+
+`drop_useless` is a plugin hook: middleware can set
+`ToolMessage.additional_kwargs["superseded"] = True` on a result that is no
+longer needed. Compaction replaces that payload with a superseded-result marker
+while preserving its tool-call pairing. Native repeated-read detection is
+controlled separately by `supersede_reads`; native tools do not set the plugin
+flag. Set `drop_useless = false` to retain plugin-marked payloads.
+
+## Models, catalog, and roles
+
+`/models` lists the bundled model catalog; `/model` opens the model picker.
+Use `/models openai thinking` to filter or `/models browse` to open the searchable
+catalog browser. The picker also includes a **Browse catalog** entry.
+The catalog includes context and output limits, input/output/cache prices per
+million tokens, and thinking, vision, and tool-call capabilities. It is bundled
+with orcha and loaded lazily; it does not fetch model metadata at startup.
+`langchain:` supports model specifications beyond the bundled providers.
+The upstream snapshot contains no Ollama entries; add your installed local
+models and their context limits through the override file.
+
+Model aliases remain available under `[models]`. Configure roles under
+`[model_roles]` or `[models.roles]`:
+
+```toml
+[model_roles]
+smol = "anthropic:claude-haiku-4-5"
+slow = "anthropic:claude-opus-5"
+plan = "anthropic:claude-sonnet-4-5"
+vision = "google:gemini-2.5-pro"
+task = "@smol"
+commit = "@smol"
+advisor = "@slow"
+summarizer = "@smol"
+```
+
+Use `@role` or `@role:effort` anywhere a model specification is accepted, including
+`/model @smol`, subagents, advisor configuration, and `core.summarizer_model`.
+Effort values are `off`, `low`, `medium`, `high`, and `max`, subject to provider
+support. `orcha --smol`, `orcha --slow`, and `orcha --plan` select those model
+roles for a run. The `--plan` model flag is separate from `--mode plan`, which
+restricts the tools available to the agent. Unset roles fall back to the current
+main model; `/model @smol` and `--smol` print
+`role smol is not configured, using main` when taking that fallback. The same
+notice applies to other unset role selections.
+
+User catalog overrides live in `~/.config/orcha-agent/models.yml`; trusted
+projects can add `.orcha-agent/models.yml`. Project overrides are ignored unless
+the working directory is trusted. Provider entries can add `models`, change
+`model_overrides`, and obtain an `api_key` from an environment-variable name or
+an explicitly configured `!command` in the **user-scope** file only. Project
+files may name an environment variable, but cannot run credential commands,
+even when the project is trusted. Credential commands run only when the provider
+is resolved and its accepted environment variables are not already set, never
+while browsing models. Command output is cached for the process lifetime per
+provider and user-file stamp; changing the user file invalidates that cache.
+Commands receive closed standard input and a ten-second timeout. Prices come
+from this merged catalog; `[pricing."provider:model"]` remains the final price override.
+
+For example:
+
+```yaml
+providers:
+  openai:
+    api_key: OPENAI_API_KEY
+    models:
+      custom-model:
+        context_window: 32000
+        max_tokens: 4096
+        cost: {input: 1, output: 2, cache_read: 0.1, cache_write: 0}
+        thinking: true
+        vision: false
+        tool_calls: true
+    model_overrides:
+      gpt-4.1:
+        context_window: 64000
+```
+
+To use a credential helper, replace the `api_key` value with
+`!command "your-secret-helper"`. Its standard output supplies the key.
+
+## Cumulative usage
+
+`/usage today`, `/usage week`, `/usage session`, and `/usage all` show totals and
+a per-model breakdown. Usage is recorded per provider request in the session
+SQLite database, including the session, model, provider, agent role, input and
+output tokens, cache reads/writes, estimated cost, time to first token, duration,
+and stop reason. Model switches retain each request's original cost.
+TTFT measures time from request start to the first visible token, excluding
+empty or reasoning-only chunks. Requests with no visible token callback
+(including nonstreaming responses) show an unavailable TTFT rather than using
+the total request duration.
+
+Use `orcha stats today` or `orcha stats all` to inspect usage without starting a
+model; `orcha stats session --session SESSION` selects a saved session. `week`
+means the current calendar week, starting Monday in the local timezone. Add the
+`usage` segment to a status-line group to see session cost and today's total:
+
+```toml
+[tui.statusline]
+right = ["usage", "context"]
+```
+
+Database writes and summary queries run outside terminal rendering. Costs are
+estimates from the local catalog and price overrides, rather than billing
+statements; unknown prices contribute zero cost.
+
 ## Tools
 
 Native tools are enabled by default with the local shell backend. Other backends
@@ -710,10 +855,11 @@ Interactive pickers are used by `/help`, `/settings`, `/theme`, `/model`, `/sess
 remain available:
 
 - session and persistence: `/clear`, `/new`, `/sessions`, `/resume [session-id]`,
-  `/tree [--all]`, `/branch [--exact] <id-prefix>`, `/fork`, `/compact`,
+  `/tree [--all]`, `/branch [--exact] <id-prefix>`, `/fork`, `/compact [instructions]`,
   `/export [--force] [path]`, `/sync`, and `/memory ...`
-- model and UI: `/model [provider:model[,provider:model...]]`, `/mode <name>`,
+- model and UI: `/model [provider:model[,provider:model...]]`, `/models [filters|browse]`, `/mode <name>`,
   `/thinking on|off`, `/theme [name]`, `/settings`, `/keys`, and `/status`
+- usage: `/usage [today|week|session|all]` and `orcha stats [period]`
 - providers and runtime: `/providers [prefix]`, `/plugins`,
   `/login <prefix> [browser|device|paste]`, `/logout <prefix>`, `/help`,
   and `/exit`

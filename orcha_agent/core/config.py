@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .compaction_config import CompactionConfig, compaction_config
 from .tools.common import DEFAULT_DENY
 
 DEFAULT_MODEL = "anthropic:claude-opus-5"
@@ -374,6 +375,8 @@ class Config:
     trust_all_cwd: bool = False
     user_config_path: Path | None = None
     command: str = "repl"
+    stats_period: str = "all"
+    stats_session: str | None = None
     login_prefix: str | None = None
     login_mode: str = "auto"
     gallery_tool: str | None = None
@@ -392,8 +395,10 @@ class Config:
     tui: TuiConfig = field(default_factory=TuiConfig)
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
     model_roles: dict[str, str | list[str]] = field(default_factory=dict)
+    model_role_default: str | list[str] | None = None
     agents: AgentsConfig = field(default_factory=AgentsConfig)
 
+    compaction: CompactionConfig = field(default_factory=CompactionConfig)
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
     advisor: AdvisorConfig = field(default_factory=AdvisorConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
@@ -408,6 +413,15 @@ class Config:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="orcha", description="Pluggable terminal coding agent")
     parser.add_argument("--model", metavar="PREFIX:MODEL")
+    role_flags = parser.add_mutually_exclusive_group()
+    for role in ("smol", "slow", "plan"):
+        role_flags.add_argument(
+            f"--{role}",
+            dest="model_role",
+            action="store_const",
+            const=role,
+            help=f"use the @{role} model role",
+        )
     parser.add_argument("--mode")
     parser.add_argument(
         "--yolo",
@@ -428,6 +442,11 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser("repl", help="start the interactive terminal agent")
     subcommands.add_parser("setup", help="run the first-run setup wizard")
     subcommands.add_parser("sync", help="synchronize configured Turso stores")
+    stats = subcommands.add_parser("stats", help="show cumulative model usage")
+    stats.add_argument(
+        "period", nargs="?", default="all", choices=("today", "week", "session", "all")
+    )
+    stats.add_argument("--session", dest="stats_session")
     login = subcommands.add_parser("login", help="log in to a provider")
     login.add_argument("prefix")
     modes = login.add_mutually_exclusive_group()
@@ -755,8 +774,13 @@ def load_config(
         if env_name in environ:
             memory_store_values[key] = environ[env_name]
 
+    default_role_model = core.get("model", DEFAULT_MODEL)
     if args.model is not None:
         core["model"] = args.model
+    if args.model_role:
+        if args.model is not None:
+            parser.error("--model conflicts with model role flags")
+        core["model"] = "@" + args.model_role
     if args.yolo:
         if args.mode not in (None, "yolo"):
             parser.error("--yolo conflicts with --mode " + args.mode)
@@ -839,6 +863,10 @@ def load_config(
     raw_roles = models.get("roles", {})
     if not isinstance(raw_roles, Mapping):
         parser.error("[models.roles] must be a TOML table")
+    extra_roles = values.get("model_roles", {})
+    if not isinstance(extra_roles, Mapping):
+        parser.error("[model_roles] must be a TOML table")
+    raw_roles = {**raw_roles, **extra_roles}
     model_aliases = {key: value for key, value in models.items() if key != "roles"}
     model_roles = {
         str(role): normalize_model_spec(spec)
@@ -884,6 +912,10 @@ def load_config(
     notify = ui.get("notify", False)
 
 
+    try:
+        compact_config = compaction_config(values.get("compaction", {}))
+    except ValueError as exc:
+        parser.error(str(exc))
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
         hooks=(_hooks_config(user_values.get("hooks", []), "user", parser)
@@ -897,6 +929,8 @@ def load_config(
         db_path=db_path,
         cwd=resolved_cwd,
         command=args.command or "repl",
+        stats_period=getattr(args, "period", "all"),
+        stats_session=getattr(args, "stats_session", None),
         login_prefix=getattr(args, "prefix", None),
         login_mode=getattr(args, "login_mode", "auto"),
         gallery_tool=getattr(args, "tool", None),
@@ -914,7 +948,9 @@ def load_config(
         composer=composer,
         tui=tui_config,
         statusline=statusline,
+        compaction=compact_config,
         model_roles=model_roles,
+        model_role_default=normalize_model_spec(default_role_model) if not (isinstance(default_role_model, str) and default_role_model.startswith("@")) else DEFAULT_MODEL,
         agents=agent_config,
         advisor=advisor_config,
         persistence=persistence_config,
@@ -940,7 +976,7 @@ def load_config(
         providers={key: dict(value) for key, value in providers.items() if isinstance(value, Mapping)},
         plugins=dict(plugins),
         trust_cwd=trust_cwd,
-        model_overridden=args.model is not None,
+        model_overridden=args.model is not None or args.model_role is not None,
         trusted_dirs=trusted_dirs,
         trust_all_cwd=args.trust_cwd,
         user_config_path=user_path,

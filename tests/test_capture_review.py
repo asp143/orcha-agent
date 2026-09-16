@@ -1,4 +1,5 @@
 from pathlib import Path
+from orcha_agent.core.summary import create_summary_message
 
 from langchain_core.messages import HumanMessage
 
@@ -201,5 +202,8 @@ def test_same_id_summary_edit_updates_compaction(tmp_path: Path) -> None:
             only_if_new=True,
         )
         path = Ledger(store).path(session.thread_id)
-        assert build_context(path).messages[0].content == "[Conversation summary]\nchanged summary"
+        assert (
+            build_context(path).messages[0].content
+            == create_summary_message("changed summary").content
+        )
         assert len([entry for entry in path if isinstance(entry, MessageEntry)]) == 3

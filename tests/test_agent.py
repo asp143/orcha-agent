@@ -12,7 +12,7 @@ from deepagents import (
 )
 from deepagents.backends import LocalShellBackend, StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware
+from orcha_agent.core.compaction import CompactionMiddleware as SummarizationMiddleware
 from langchain.agents.middleware import ModelFallbackMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import (

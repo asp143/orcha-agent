@@ -51,6 +51,8 @@ def entry_to_envelope(entry: Entry) -> dict[str, Any]:
                 "summary": payload["summary"],
                 "firstKeptId": payload["first_kept_id"],
                 "tokensBefore": payload["tokens_before"],
+                **({"shortSummary": payload["short_summary"]} if payload["short_summary"] else {}),
+                **({"method": payload["method"]} if payload["method"] != "summary" else {}),
             }
         )
     elif entry_type == "custom":
@@ -87,6 +89,8 @@ def entry_from_envelope(envelope: Mapping[str, Any]) -> Entry:
             "summary": envelope["summary"],
             "first_kept_id": envelope.get("firstKeptId"),
             "tokens_before": envelope.get("tokensBefore"),
+            "short_summary": envelope.get("shortSummary", ""),
+            "method": envelope.get("method", "summary"),
         }
     elif entry_type == "custom":
         payload = {

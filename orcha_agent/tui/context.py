@@ -13,7 +13,6 @@ from typing import Any
 
 from langchain_core.messages import (
     AIMessage,
-    HumanMessage,
     messages_from_dict,
 )
 
@@ -22,7 +21,11 @@ from orcha_agent.core.agent import build_agent
 from orcha_agent.core.agents import AgentRegistry
 from orcha_agent.core.capture import capture_graph_values
 from orcha_agent.core.config import Config, is_trusted_cwd
-from orcha_agent.core.events import Compaction, ModelSwitch, SessionSwitch, ThreadSwitch
+from orcha_agent.core.events import (
+    AppExit, Compaction, CompactionStatus, ModelSwitch, SessionSwitch,
+    ThreadSwitch, TurnStart, TurnEnd,
+)
+from orcha_agent.core.compaction import Compactor
 from orcha_agent.core.ledger import (
     CompactionEntry,
     CustomEntry,
@@ -82,8 +85,10 @@ def _model_specs(
 def _primary_provider_prefix(
     spec: str | list[str],
     aliases: Mapping[str, str | list[str]],
+    config: Config | None = None,
 ) -> str | None:
-    specs = _model_specs(spec, aliases)
+    from orcha_agent.core.models import expand_model_spec
+    specs = expand_model_spec(spec, config) if config is not None else _model_specs(spec, aliases)
     if not specs:
         return None
     prefix, separator, _ = specs[0].partition(":")
@@ -92,7 +97,8 @@ def _primary_provider_prefix(
 
 def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
     foreign: set[str] = set()
-    for spec in _model_specs(cfg.model, cfg.models):
+    from orcha_agent.core.models import expand_model_spec
+    for spec in expand_model_spec(cfg.model, cfg):
         prefix, separator, _ = spec.partition(":")
         if not separator:
             continue
@@ -104,7 +110,8 @@ def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
 
 def _reseed_foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
     target_providers: set[str] = set()
-    for spec in _model_specs(cfg.model, cfg.models):
+    from orcha_agent.core.models import expand_model_spec
+    for spec in expand_model_spec(cfg.model, cfg):
         prefix, separator, _ = spec.partition(":")
         if separator:
             target_providers.add(prefix)
@@ -197,6 +204,10 @@ class AppContext:
     queue: Any = None
     agents: AgentRegistry | None = None
     _title_written: bool = False
+    compaction_status: str = ""
+    _idle_compaction: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _shown_compactions: set[str] = field(default_factory=set, init=False, repr=False)
+    _compaction_leaf: str | None = field(default=None, init=False, repr=False)
     _pending_switch_old_thread: str | None = field(
         default=None, init=False, repr=False
     )
@@ -233,6 +244,15 @@ class AppContext:
             self._registry = self.registry._registry
         self._bus = self.bus._bus if isinstance(self.bus, EventBusView) else self.bus
         self.bus = EventBusView(self._bus)
+        if callable(getattr(self._bus, "on", None)):
+            self._bus.on(TurnStart, self._compaction_activity, plugin="compaction")
+            self._bus.on(TurnEnd, self._compaction_activity, plugin="compaction")
+            self._bus.on(AppExit, self._compaction_activity, plugin="compaction")
+            self._bus.on(SessionSwitch, self._compaction_activity, plugin="compaction")
+            self._bus.on(ModelSwitch, self._compaction_activity, plugin="compaction")
+            self._bus.on(ThreadSwitch, self._compaction_activity, plugin="compaction")
+            self._bus.on(CompactionStatus, self._compaction_status_changed, plugin="compaction")
+        self._seed_compaction_cards()
         if self.agents is None:
             self.agents = AgentRegistry(
                 self._registry,
@@ -301,7 +321,8 @@ class AppContext:
         if _primary_provider_prefix(
             source_model,
             self.cfg.models,
-        ) == _primary_provider_prefix(target_model, self.cfg.models):
+            self.cfg,
+        ) == _primary_provider_prefix(target_model, self.cfg.models, self.cfg):
             return
         source_cfg = replace(self.cfg, model=source_model)
         foreign = _foreign_block_types(self.registry, source_cfg)
@@ -801,7 +822,10 @@ class AppContext:
         old_model = self.cfg.model
         old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
         new_label = spec if isinstance(spec, str) else ",".join(spec)
-        candidate_cfg = replace(self.cfg, model=spec)
+        candidate_cfg = replace(
+            self.cfg, model=spec,
+            model_role_default=self.cfg.model if not isinstance(self.cfg.model, str) or not self.cfg.model.startswith("@") else self.cfg.model_role_default,
+        )
         candidate_agent = await _compat("build_agent", build_agent)(
             self.registry,
             candidate_cfg,
@@ -815,7 +839,8 @@ class AppContext:
         provider_changed = _primary_provider_prefix(
             self.cfg.model,
             self.cfg.models,
-        ) != _primary_provider_prefix(spec, self.cfg.models)
+            self.cfg,
+        ) != _primary_provider_prefix(spec, candidate_cfg.models, candidate_cfg)
         foreign = (
             _foreign_block_types(self.registry, self.cfg)
             if provider_changed
@@ -916,31 +941,116 @@ class AppContext:
         self.rebuild_requested = False
         self._retarget_agents()
 
-    async def compact(self) -> None:
+    async def _compaction_status_changed(self, event: CompactionStatus) -> None:
+        self.compaction_status = "compacting" if event.active else ""
+
+    async def _compaction_activity(self, event: Any) -> None:
+        if getattr(event, "source_id", "main") != "main":
+            return
+        if self._idle_compaction is not None:
+            task, self._idle_compaction = self._idle_compaction, None
+            if task is not asyncio.current_task():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        if isinstance(event, (SessionSwitch, ThreadSwitch)):
+            self._seed_compaction_cards()
+        if isinstance(event, TurnEnd):
+            leaf = self.ledger.leaf(self.session_id)
+            unseen = []
+            cursor = leaf
+            while cursor is not None and cursor != self._compaction_leaf:
+                entry = self.ledger.get(self.session_id, cursor)
+                if entry is None:
+                    break
+                if isinstance(entry, CompactionEntry) and entry.id not in self._shown_compactions:
+                    unseen.append(entry)
+                cursor = entry.parent_id
+            self._compaction_leaf = leaf
+            for entry in reversed(unseen):
+                self._compaction_card(entry)
+            if self.cfg.compaction.enabled:
+                self._idle_compaction = asyncio.create_task(self._compact_when_idle())
+
+    def _seed_compaction_cards(self) -> None:
+        self._compaction_leaf = self.ledger.leaf(self.session_id)
+        self._shown_compactions = {entry.id for entry in self.ledger.path(self.session_id) if isinstance(entry, CompactionEntry)}
+
+    async def _compact_when_idle(self) -> None:
+        await asyncio.sleep(self.cfg.compaction.idle_seconds)
+        try:
+            await self.maybe_compact("idle")
+        except Exception as exc:
+            self.console.warning(f"Idle compaction failed: {type(exc).__name__}: {exc}")
+
+    async def maybe_compact(self, trigger: str) -> None:
+        if self.agent is None:
+            return
+        from orcha_agent.core.catalog import get_model
+        from orcha_agent.core.models import expand_model_spec
+        spec = expand_model_spec(self.cfg.model, self.cfg)[0]
+        info = get_model(spec, self.cfg)
+        messages = build_context(self.ledger.path(self.session_id)).messages
+        policy = Compactor(None, self.cfg.compaction, (info.context_window or 128_000) if info else 128_000)
+        if policy.needed(messages, trigger):
+            await self.compact()
+
+    def _compaction_card(self, entry: CompactionEntry) -> None:
+        from orcha_agent.tui.blocks.compaction import render
+        from orcha_agent.tui.blocks import DEFAULT_THEME
+        from orcha_agent.tui.frame import Block
+        self._shown_compactions.add(entry.id)
+        data = {"summary": entry.short_summary or entry.summary[:160], "method": entry.method, "tokens_before": entry.tokens_before or 0}
+        transcript = getattr(self.console, "transcript", None)
+        if transcript is not None:
+            transcript.append_compaction(data)
+        else:
+            self.console.print(render(Block(id=entry.id, kind="compaction", data=data), DEFAULT_THEME, 80, 20, False))
+
+    async def compact(self, instructions: str = "") -> None:
+        if self._idle_compaction is not None and self._idle_compaction is not asyncio.current_task():
+            task, self._idle_compaction = self._idle_compaction, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.compaction_status = "compacting"
+        try:
+            await self._compact(instructions)
+        finally:
+            self.compaction_status = ""
+
+    async def _compact(self, instructions: str) -> None:
         if self.agent is None and not await self.ensure_agent(seed_pending=False):
             return
-        instruction = (
-            "Summarize the conversation for continuation. Preserve decisions, current files, "
-            "constraints, failures, and remaining work."
-        )
         messages = filter_foreign_blocks(
             build_context(self.ledger.path(self.session_id)).messages,
             {"reasoning", "thinking"},
         )
         if self.summarizer is None and self.registry.providers:
             self.summarizer = ModelResolver(self.registry, self.cfg).resolve(
-                self.cfg.summarizer_model or self.cfg.model, "summarizer"
+                self.cfg.summarizer_model or self.cfg.model_roles.get("summarizer") or self.cfg.model, "summarizer"
             )
         if self.summarizer is None:
             raise RuntimeError("summarizer model is unavailable")
-        summary = await self.summarizer.ainvoke(
-            [*messages, HumanMessage(content=instruction)]
-        )
-        summary_text = (
-            summary.content
-            if isinstance(summary.content, str)
-            else str(summary.content)
-        )
+        from langchain_core.language_models import BaseChatModel
+        from orcha_agent.core.usage_store import UsageCallback
+        summarizer = self.summarizer
+        if isinstance(summarizer, BaseChatModel):
+            summarizer = summarizer.with_config(callbacks=[UsageCallback(self.session, self.cfg, session_id=self.session_id, role="summarizer", bus=self.bus)])
+        result = await Compactor(summarizer, self.cfg.compaction).compact(messages, instructions)
+        if result.method == "shake":
+            # Persist arbitrary payload replacements using normal graph capture.
+            from orcha_agent.core.compaction import _update
+            await self.agent.aupdate_state(self.thread_config, _update(result.messages))
+            self.capture_turn()
+            entry = next((item for item in reversed(self.ledger.path(self.session_id)) if isinstance(item, CompactionEntry) and item.method == "shake"), None)
+            if entry is not None and entry.id not in self._shown_compactions:
+                self._compaction_card(entry)
+                await self._bus.emit(Compaction(self.session_id, entry.summary))
+            return
+        summary_text = result.summary
+        retained = result.messages[1:]
+        from orcha_agent.core.capture import first_kept_marker
+        path = self.ledger.path(self.session_id)
+        first_kept_id = first_kept_marker(path, retained[0]) if retained else None
         ledger = self.ledger
         prior_leaf = ledger.leaf(self.session_id)
         prior_thread = self.thread_id
@@ -951,11 +1061,17 @@ class AppContext:
             self.session_id,
             CompactionEntry(
                 summary=summary_text,
-                first_kept_id=None,
-                tokens_before=None,
+                first_kept_id=first_kept_id,
+                tokens_before=result.tokens_before,
+                short_summary=result.short_summary,
+                method=result.method,
             ),
             thread_id=None,
         )
+        snapshots = []
+        if retained and first_kept_id is None:
+            from langchain_core.messages import message_to_dict
+            snapshots = ledger.append_many(self.session_id, [MessageEntry(message=message_to_dict(message)) for message in retained], thread_id=None)
         if not was_pending:
             self.thread_id = self.session.next_thread_id(self.session_id)
             self._pending_switch_old_thread = prior_thread
@@ -963,6 +1079,8 @@ class AppContext:
             await self._seed_ready_thread("compact")
         except BaseException:
             if self._reseed_pending():
+                for snapshot in reversed(snapshots):
+                    ledger.set_position(self.session_id, leaf_id=snapshot.parent_id, thread_id=None, discard_entry_id=snapshot.id)
                 ledger.set_position(
                     self.session_id,
                     leaf_id=prior_leaf,
@@ -972,8 +1090,14 @@ class AppContext:
                 self.thread_id = prior_thread
                 self._pending_switch_old_thread = prior_switch_old_thread
             raise
+        if retained:
+            # Preserve pruning and invalidate pre-compaction usage on the kept tail.
+            seeded = self.agent.get_state(self.thread_config).values.get("messages", [])
+            retained = [message.model_copy(update={"id": current.id}) if message.id is None else message for message, current in zip(retained, seeded[-len(retained):], strict=True)]
+            await self.agent.aupdate_state(self.thread_config, {"messages": retained}, as_node="__start__")
+            self.capture_turn()
+        self._compaction_card(appended)
         await self._bus.emit(Compaction(self.session_id, summary_text))
-        self.console.print("Conversation compacted.")
 
     def _capture_values(
         self,

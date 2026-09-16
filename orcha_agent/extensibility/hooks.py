@@ -171,6 +171,7 @@ async def run_hook(
 
 class HooksState(AgentState):
     _orcha_hook_summary_before: Annotated[NotRequired[str], PrivateStateAttr]
+    _orcha_hook_compactions_before: Annotated[NotRequired[list[str]], PrivateStateAttr]
 
 
 def _summary_signature(event: Any) -> str:
@@ -183,20 +184,48 @@ def _summary_signature(event: Any) -> str:
     ).hexdigest()
 
 
+def _committed_compactions(state: Any) -> dict[str, str]:
+    from orcha_agent.core.summary import extract_summary
+
+    markers = {}
+    for message in state.get("messages", ()):
+        metadata = getattr(message, "additional_kwargs", {})
+        for key in ("compaction", "compaction_shake"):
+            marker = metadata.get(key)
+            if not isinstance(marker, dict):
+                continue
+            signature = hashlib.sha256(
+                json.dumps([message.id, key, marker], sort_keys=True, default=str).encode()
+            ).hexdigest()
+            markers[signature] = (
+                extract_summary(str(message.text))
+                if key == "compaction"
+                else "Superseded tool results removed."
+            )
+    return markers
+
+
 class HooksMiddleware(AgentMiddleware):
     state_schema = HooksState
 
     async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any]:
         # Baseline is graph state, so parallel threads/subgraphs cannot share it.
         # Establish it on every model call, including resumed checkpoints.
-        return {"_orcha_hook_summary_before": _summary_signature(state.get("_summarization_event"))}
+        return {
+            "_orcha_hook_summary_before": _summary_signature(state.get("_summarization_event")),
+            "_orcha_hook_compactions_before": list(_committed_compactions(state)),
+        }
 
     async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         event = state.get("_summarization_event")
         signature = _summary_signature(event)
-        if not signature or signature == state.get("_orcha_hook_summary_before", ""):
+        markers = _committed_compactions(state)
+        previous = set(state.get("_orcha_hook_compactions_before", ()))
+        summaries = [summary for key, summary in markers.items() if key not in previous]
+        if signature and signature != state.get("_orcha_hook_summary_before", ""):
+            summaries.append(str(getattr(event.get("summary_message"), "text", "")))
+        if not summaries:
             return None
-        message = event.get("summary_message")
         thread_id = getattr(getattr(runtime, "execution_info", None), "thread_id", None)
         if thread_id is None:
             from langgraph.config import get_config
@@ -205,8 +234,12 @@ class HooksMiddleware(AgentMiddleware):
                 thread_id = get_config().get("configurable", {}).get("thread_id", "")
             except RuntimeError:
                 thread_id = ""
-        await self.emit(Compaction(str(thread_id), str(getattr(message, "text", ""))))
-        return {"_orcha_hook_summary_before": signature}
+        for summary in summaries:
+            await self.emit(Compaction(str(thread_id), summary))
+        return {
+            "_orcha_hook_summary_before": signature,
+            "_orcha_hook_compactions_before": list(markers),
+        }
 
     def __init__(self, emit: Callable[[Event], Awaitable[Any]]) -> None:
         self.emit = emit

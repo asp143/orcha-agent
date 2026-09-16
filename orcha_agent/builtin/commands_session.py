@@ -313,9 +313,10 @@ async def _resume(ctx: Any, args: str) -> None:
 
 
 async def _compact(ctx: Any, args: str) -> None:
-    if not _require_no_args(ctx, args, "/compact"):
-        return
-    await ctx.compact()
+    if args.strip():
+        await ctx.compact(args.strip())
+    else:
+        await ctx.compact()
 
 
 async def _export(ctx: Any, args: str) -> None:

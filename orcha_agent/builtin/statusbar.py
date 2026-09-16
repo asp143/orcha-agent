@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from orcha_agent.core.events import (
+    AppStart,
+    ModelSwitch,
     ModelChunk,
     SessionSwitch,
     ThreadSwitch,
@@ -37,6 +39,7 @@ from orcha_agent.tui.statusline import (
     reset_git_state,
     reset_session_state,
     refresh_session_snapshot,
+    refresh_model_snapshot,
     record_usage,
     reset_accounting,
     reset_usage_dedup,
@@ -81,8 +84,27 @@ def register(api: PluginAPI) -> None:
     for priority, (name, render) in enumerate(BUILTIN_SEGMENTS, start=1):
         api.add_status_segment(name, render, priority=priority * 10)
 
+    app: dict[str, Any] = {}
+
+    async def started(event: AppStart) -> None:
+        if not hasattr(event.ctx, "cfg"):
+            return
+        app["ctx"] = event.ctx
+        await refresh_model_snapshot(event.ctx)
+
+    async def model_changed(_event: ModelSwitch) -> None:
+        if "ctx" in app:
+            await refresh_model_snapshot(app["ctx"])
+
     async def track(event: ModelChunk) -> None:
         record_usage(event, api.state)
+        if (
+            event.role == "main"
+            and event.model_name
+            and "ctx" in app
+            and event.model_name != api.state.get("_model_spec")
+        ):
+            await refresh_model_snapshot(app["ctx"], event.model_name)
 
     async def reset_usage(_event: ThreadSwitch) -> None:
         reset_accounting(api.state)
@@ -91,6 +113,8 @@ def register(api: PluginAPI) -> None:
     async def reset_session(_event: SessionSwitch) -> None:
         reset_git_state(api.state)
         reset_session_state(api.state)
+        if "ctx" in app:
+            await refresh_model_snapshot(app["ctx"])
 
     async def turn_started(_event: TurnStart) -> None:
         record_turn_start(api.state)
@@ -105,6 +129,8 @@ def register(api: PluginAPI) -> None:
         for name, segment in visible_segments(ctx):
             ctx.console.print(f"{name}: {segment.text}")
 
+    api.on(AppStart, started, priority=10)
+    api.on(ModelSwitch, model_changed, priority=10)
     api.on(ModelChunk, track, priority=10)
     api.on(ThreadSwitch, reset_usage, priority=10)
     api.on(SessionSwitch, reset_session, priority=10)

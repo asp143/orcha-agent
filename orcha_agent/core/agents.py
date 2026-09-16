@@ -214,6 +214,7 @@ class _RunEventBus:
                     self._run.model_label,
                     usage,
                     self._run.cfg.pricing,
+                    config=self._run.cfg,
                 )
                 persist = True
         if persist:
@@ -318,7 +319,10 @@ class AgentRun:
 
     @property
     def thread_config(self) -> dict[str, dict[str, str]]:
-        return {"configurable": {"thread_id": self.thread_id}}
+        return {
+            "configurable": {"thread_id": self.thread_id},
+            "metadata": {"orcha_agent_type": self.agent_type.name},
+        }
 
     @property
     def terminal(self) -> bool:

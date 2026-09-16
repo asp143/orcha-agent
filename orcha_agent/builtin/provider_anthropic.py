@@ -28,7 +28,7 @@ def _factory(
     options = dict(config)
     options.pop("thinking", None)
     effort = options.pop("reasoning_effort", None)
-    if thinking_on:
+    if thinking_on and effort not in {"off", "none"}:
         if effort in _THINKING_EFFORTS:
             options["reasoning_effort"] = effort
         options["thinking"] = {

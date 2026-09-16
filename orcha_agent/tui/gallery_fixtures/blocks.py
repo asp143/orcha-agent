@@ -186,6 +186,10 @@ GALLERY_FIXTURES: dict[
         "success": _settled(text="## Done\n\nEvery renderer produced output."),
         "error": _settled(text="> Gallery render recovered from an error."),
     },
+    "compaction": {
+        state: _settled(summary="Preserved decisions and next steps.", method="handoff", tokens_before=84000)
+        for state in GALLERY_STATES
+    },
     "advisory": {
         "streaming": _active(
             note="Check the active implementation assumption.",

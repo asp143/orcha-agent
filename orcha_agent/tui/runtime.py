@@ -1533,7 +1533,7 @@ class ApplicationRuntime:
         if self.registry is None or self.ctx is None:
             return None
         cfg = self.ctx.cfg
-        prefix = _primary_provider_prefix(cfg.model, getattr(cfg, "models", {}))
+        prefix = _primary_provider_prefix(cfg.model, getattr(cfg, "models", {}), cfg)
         registration = self.registry.providers.get(prefix) if prefix else None
         if registration is None or not registration.capabilities.thinking:
             return None

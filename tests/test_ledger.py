@@ -1,3 +1,4 @@
+from orcha_agent.core.summary import create_summary_message
 import errno
 import json
 import re
@@ -394,9 +395,7 @@ def test_build_context_with_null_first_kept_starts_after_compaction() -> None:
     context = build_context(path)
 
     assert context.messages == [
-        HumanMessage(
-            content="[Conversation summary]\nFacts retained from the old conversation."
-        ),
+        create_summary_message("Facts retained from the old conversation."),
         HumanMessage(content="new human"),
     ]
     assert context.compacted is True
@@ -418,7 +417,7 @@ def test_build_context_with_first_kept_id_starts_after_that_entry() -> None:
     context = build_context(path)
 
     assert context.messages == [
-        HumanMessage(content="[Conversation summary]\nEarlier work was summarized."),
+        create_summary_message("Earlier work was summarized."),
         HumanMessage(content="retained after marker"),
     ]
     assert context.compacted is True
@@ -444,9 +443,7 @@ def test_build_context_uses_latest_compaction_when_its_kept_marker_is_missing() 
     context = build_context(path)
 
     assert context.messages == [
-        HumanMessage(
-            content="[Conversation summary]\nLatest summary is authoritative."
-        ),
+        create_summary_message("Latest summary is authoritative."),
         HumanMessage(content="after latest"),
     ]
     assert context.compacted is True
@@ -626,7 +623,7 @@ def test_build_context_keeps_post_reset_state_discarded_by_compaction() -> None:
     context = build_context(path)
 
     assert context.messages == [
-        HumanMessage(content="[Conversation summary]\nMessages were compacted.")
+        create_summary_message("Messages were compacted.")
     ]
     assert context.model == ["fake:primary", "fake:fallback"]
     assert context.mode == "plan"
@@ -803,7 +800,7 @@ def test_version_3_jsonl_entries_parse_losslessly_and_rebuild_equal_context(
         ToolCallRef(id="call-pending", name="write_file")
     ]
     assert [message.content for message in source_context.messages] == [
-        "[Conversation summary]\nThe fixture was compacted.",
+        create_summary_message("The fixture was compacted.").content,
         "Continue after summary",
         "The compacted work is ready.",
     ]
