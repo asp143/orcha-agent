@@ -167,6 +167,28 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
                 if renderable is not None:
                     console.print(renderable)
     if selected is None:
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.output.vt100 import Vt100_Output
+        from prompt_toolkit.data_structures import Size
+        from prompt_toolkit.shortcuts import print_formatted_text
+        from .gallery_fixtures.composer import polish_examples
+        from .gallery_fixtures.runtime import runtime_examples
+        from .gallery_fixtures.overlay_palette import overlay_frame_fixture, selection_fixture
+
+        console.print(selection_fixture(theme))
+        for surface in ("help", "hub", "models", "tree", "settings"):
+            console.print(f"  · {surface} overlay", style="dim")
+            console.print(overlay_frame_fixture(theme, width, surface))
+
+        for label, fragments in polish_examples(theme, width):
+            console.print(f"  · {label}", style="dim")
+            stream = StringIO()
+            output = Vt100_Output(stream, lambda: Size(rows=40, columns=width))
+            print_formatted_text(FormattedText(fragments), style=theme.pt, output=output)
+            console.print(Text.from_ansi(stream.getvalue()))
+        for label, panel in runtime_examples(theme, width):
+            console.print(f"  · {label}", style="dim")
+            console.print(panel)
         console.rule("composer", style=theme.colors.get("accent", "cyan"))
         for shape in COMPOSER_SHAPES:
             console.print(f"  · {shape}", style="dim")
@@ -182,7 +204,11 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
             rendered = Text(line)
             start = line.find(composer.buffer.text)
             if start >= 0:
-                rendered.stylize("dim", start, start + len(composer.buffer.text))
+                rendered.stylize(
+                    f"{theme.colors.get('bg', 'black')} on {theme.colors.get('accent', 'cyan')}",
+                    start,
+                    start + len(composer.buffer.text),
+                )
             console.print(rendered)
         console.print("  · paste peek (Ctrl+X Ctrl+P)", style="dim")
         console.print(
@@ -190,7 +216,7 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
                 "\n".join(
                     Overlay.render_lines(
                         "Pasted text",
-                        PASTE_EXAMPLE.split("\n"),
+                        PASTE_EXAMPLE.splitlines(),
                         width=min(76, width),
                         height=8,
                     )

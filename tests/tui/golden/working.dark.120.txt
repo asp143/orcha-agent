@@ -1,0 +1,1 @@
+<ESC>[38;2;249;226;175m⠼ <ESC>[0m<ESC>[38;2;108;112;134mRetrying in 2s… (Esc to cancel)<ESC>[0m

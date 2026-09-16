@@ -126,8 +126,15 @@ def register(api: PluginAPI) -> None:
 
     async def show(ctx: Any, _args: str) -> None:
         await refresh_session_snapshot(ctx)
-        for name, segment in visible_segments(ctx):
-            ctx.console.print(f"{name}: {segment.text}")
+        from orcha_agent.tui.panels import summary_panel
+
+        ctx.console.print(
+            summary_panel(
+                "Status",
+                ("Segment", "Value"),
+                ((name, segment.text) for name, segment in visible_segments(ctx)),
+            )
+        )
 
     api.on(AppStart, started, priority=10)
     api.on(ModelSwitch, model_changed, priority=10)

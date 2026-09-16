@@ -11,6 +11,7 @@ from rich.console import Console
 
 from orcha_agent.tui.blocks import DEFAULT_RENDERERS
 from orcha_agent.tui.frame import Block, BlockState
+from orcha_agent.tui.gallery_fixtures.blocks import GALLERY_FIXTURES
 
 GOLDEN_DIR = Path(__file__).with_name("golden")
 
@@ -87,6 +88,22 @@ def _block(
 
 
 SAMPLES = (
+    *(
+        Sample(
+            kind,
+            _block(
+                kind,
+                kind,
+                **GALLERY_FIXTURES[kind]["success" if kind == "advisory" else "error"].data,
+            ),
+        )
+        for kind in ("advisory", "review")
+    ),
+    Sample("working", _block("working", "working", **GALLERY_FIXTURES["working"]["progress"].data)),
+    Sample(
+        "todo-progress",
+        _block("todo-progress", "todo", **GALLERY_FIXTURES["todo"]["progress"].data),
+    ),
     Sample("user", _block("user", "user", text="Run **focused** tests for `blocks`.")),
     Sample(
         "assistant",

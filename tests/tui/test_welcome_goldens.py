@@ -116,3 +116,33 @@ def test_first_run_welcome_golden(update_goldens: bool) -> None:
     if update_goldens:
         golden.write_text(actual)
     assert golden.read_text() == actual
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_welcome_full_sessions_golden(width: int, update_goldens: bool) -> None:
+    actual = _capture(
+        width, {**SAMPLE, "logo": WIDE_LOGO, "sessions": ["one", "two", "three", "four"]}
+    )
+    golden = GOLDEN_DIR / f"welcome-full-sessions.{width}.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+    for tip in ("/ commands", "@ files", "! shell", "Alt+A agents"):
+        assert tip in actual
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_welcome_long_cwd_is_centered_at_segment_boundary(width: int, update_goldens: bool) -> None:
+    from orcha_agent.tui.gallery_fixtures.blocks import GALLERY_FIXTURES
+
+    data = {**GALLERY_FIXTURES["welcome"]["success"].data, "logo": WIDE_LOGO}
+    actual = _capture(width, data)
+    path_row = next(row for row in actual.splitlines() if "/home/" in row)
+    cell = path_row.split("│")[1]
+    assert cell.strip() == "/home/developer/workspaces/orcha-agent…"
+    assert cell.startswith(" ") and cell.endswith(" ")
+    assert abs((len(cell) - len(cell.lstrip())) - (len(cell) - len(cell.rstrip()))) <= 1
+    golden = GOLDEN_DIR / f"welcome-long-cwd.{width}.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual

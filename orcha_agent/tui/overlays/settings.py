@@ -11,11 +11,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 
+from orcha_agent.core.config import user_config_dir
+
 from .select import SelectList
+from .hints import key_hints
 
 CATEGORIES = {
     "Appearance": (
@@ -27,16 +30,21 @@ CATEGORIES = {
         ("separator", ("powerline-thin", "powerline", "slash", "pipe", "none", "ascii")),
         ("transparent", (False, True)),
     ),
-    "Behaviour": (("notify", (False, True)),),
-    "Terminal": (
-        ("vim", (False, True)),
+    "Behaviour": (
+        ("mode", ("ask", "yolo")),
+        ("auto_compact", (True, False)),
+        ("notify", (False, True)),
         ("hyperlinks", (True, False)),
         ("mouse", ("scroll", "full", "off")),
+        ("vim", (False, True)),
         ("colorblind", (False, True)),
         ("synchronized_output", (True, False)),
-        ("resize", ("preserve", "rebuild")),
     ),
+    "Terminal": (("resize", ("preserve", "rebuild")),),
 }
+
+
+_TUI_SETTINGS = {"vim", "hyperlinks", "mouse", "colorblind", "synchronized_output", "resize"}
 
 
 def persist_setting(path: Path, section: str, key: str, value: str | bool) -> None:
@@ -49,7 +57,16 @@ def persist_setting(path: Path, section: str, key: str, value: str | bool) -> No
     header_pattern = re.compile(rf"^\s*\[\s*{re.escape(section)}\s*\]\s*(?:#.*)?$")
     start = next((i for i, line in enumerate(lines) if header_pattern.match(line)), None)
     assignment = f"{key} = {json.dumps(value)}\n"
-    if start is None:
+    if not section:
+        end = next((i for i, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
+        found = next(
+            (i for i in range(end) if re.match(rf"\s*{re.escape(key)}\s*=", lines[i])), None
+        )
+        if found is None:
+            lines.insert(end, assignment)
+        else:
+            lines[found] = assignment
+    elif start is None:
         lines.extend(
             ["\n" if original and not original.endswith("\n\n") else "", heading + "\n", assignment]
         )
@@ -84,6 +101,8 @@ def persist_setting(path: Path, section: str, key: str, value: str | bool) -> No
 
 
 def _setting_section(path: Path, key: str, *, status: bool, terminal: bool) -> str:
+    if key == "mode":
+        return "core"
     if terminal:
         return "tui"
     values = tomllib.loads(path.read_text()) if path.exists() else {}
@@ -101,8 +120,21 @@ class SettingsOverlay(SelectList[str]):
         tabs = Window(FormattedTextControl(self._tabs), height=1)
         super().__init__("Settings", (), label=self._label, show_filter=False, prefix=tabs)
         self._load()
-        self.footer_control.text = FormattedText(
-            [("class:muted", " Tab category · ↑/↓ setting · Enter change · Esc close")]
+        self._body.children.insert(
+            -1,
+            Window(
+                FormattedTextControl(self._description), wrap_lines=True, dont_extend_height=True
+            ),
+        )
+        self.footer_control.text = lambda: key_hints(
+            (
+                ("↑↓", "move"),
+                ("PgUp/PgDn", "page"),
+                ("Enter", "change"),
+                ("Esc", "close"),
+                ("Tab", "category"),
+            ),
+            width=self.inner_width,
         )
 
         @self.bindings.add("tab")
@@ -120,8 +152,41 @@ class SettingsOverlay(SelectList[str]):
     def render_text(self) -> str:
         return (
             "".join(fragment[1] for fragment in self._fragments())
-            + " Tab category · ↑/↓ setting · Enter change · Esc close"
+            + "".join(fragment[1] for fragment in self._description())
+            + "\n"
+            + "".join(
+                fragment[1]
+                for fragment in key_hints(
+                    (
+                        ("↑↓", "move"),
+                        ("PgUp/PgDn", "page"),
+                        ("Enter", "change"),
+                        ("Esc", "close"),
+                        ("Tab", "category"),
+                    )
+                )
+            )
         )
+
+    def _description(self) -> StyleAndTextTuples:
+        descriptions = {
+            "composer": "Choose the input border style.",
+            "theme": "Choose the terminal colour palette.",
+            "mode": "Choose when tools require approval.",
+            "auto_compact": "Compact long conversations automatically.",
+            "notify": "Notify when a turn finishes while unfocused.",
+            "vim": "Use Vim insert and normal modes.",
+            "hyperlinks": "Make file paths clickable.",
+            "mouse": "Choose terminal mouse behaviour.",
+            "colorblind": "Use a colourblind-friendly palette.",
+            "synchronized_output": "Reduce flicker during terminal updates.",
+            "resize": "Choose how the transcript responds to resizing.",
+            "preset": "Choose status line information.",
+            "separator": "Choose status segment separators.",
+            "transparent": "Use the terminal background.",
+        }
+        key = self.items[self.index] if self.items else ""
+        return [("class:muted", descriptions.get(key, ""))]
 
     def _tabs(self) -> StyleAndTextTuples:
         return [
@@ -137,27 +202,28 @@ class SettingsOverlay(SelectList[str]):
         config = (
             self.ctx.cfg.statusline if self.categories[self.category] == "Status" else self.ctx.cfg
         )
-        if self.categories[self.category] == "Terminal":
+        if key in _TUI_SETTINGS:
             config = self.ctx.cfg.tui
-        return getattr(config, key)
+        return getattr(config, key, True if key == "auto_compact" else "ask")
 
     def _label(self, key: str) -> str:
-        return f"{key.replace('_', ' '):<18} {self._setting_value(key)}"
+        value = self._setting_value(key)
+        label = "on" if value is True else "off" if value is False else str(value)
+        return f"{key.replace('_', ' '):<18} {label}"
 
     def _accept(self, value: str | list[str], event: Any) -> None:
         key = str(value)
         options = dict(CATEGORIES[self.categories[self.category]])[key]
         if key == "theme":
             options = tuple(getattr(self.ctx.ui, "themes", {})) or options
+        if key == "mode":
+            options = tuple(getattr(self.ctx.registry, "modes", {})) or options
         current = self._setting_value(key)
         index = options.index(current) if current in options else -1
         selected = options[(index + 1) % len(options)]
         status = self.categories[self.category] == "Status"
-        terminal = self.categories[self.category] == "Terminal"
-        path = (
-            getattr(self.ctx.cfg, "user_config_path", None)
-            or Path.home() / ".config/orcha-agent/config.toml"
-        )
+        terminal = key in _TUI_SETTINGS
+        path = getattr(self.ctx.cfg, "user_config_path", None) or user_config_dir() / "config.toml"
         try:
             persist_setting(
                 Path(path),
@@ -165,7 +231,9 @@ class SettingsOverlay(SelectList[str]):
                 key,
                 selected,
             )
-            if status:
+            if key == "mode":
+                event.app.create_background_task(self.ctx.switch_mode(str(selected)))
+            elif status:
                 self.ctx.cfg = replace(
                     self.ctx.cfg, statusline=replace(self.ctx.cfg.statusline, **{key: selected})
                 )
@@ -175,6 +243,8 @@ class SettingsOverlay(SelectList[str]):
                 )
             else:
                 self.ctx.cfg = replace(self.ctx.cfg, **{key: selected})
+            if key == "auto_compact":
+                self.ctx.rebuild_requested = True
             if key == "theme":
                 self.ctx.ui.set_theme(selected)
                 states = getattr(self.ctx, "plugin_states", None)

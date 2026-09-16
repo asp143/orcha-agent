@@ -124,8 +124,8 @@ def test_completion_surface_is_bounded_and_keeps_selected_item_visible() -> None
     rendered = "".join(text for _style, text in fragments)
     lines = rendered.splitlines()
 
-    assert len(lines) == 5
-    assert any(line.startswith("→ /hello") and "(6/7)" in line for line in lines)
+    assert len(lines) == 7
+    assert any(line.startswith("│ → /hello") and "(6/7)" in line for line in lines)
     assert all(sum(get_cwidth(character) for character in line) <= 48 for line in lines)
 
 
@@ -155,7 +155,7 @@ def test_at_completion_highlights_each_fuzzy_matched_character() -> None:
     composer.buffer.complete_state.complete_index = 0
 
     fragments = composer.completion_fragments(80)
-    matched = "".join(text for style, text in fragments if style == "class:completion.match")
+    matched = "".join(text for style, text in fragments if "class:completion.match" in style)
 
     assert matched == "ap"
 

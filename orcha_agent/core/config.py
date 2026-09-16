@@ -18,6 +18,15 @@ from .tools.common import DEFAULT_DENY
 DEFAULT_MODEL = "anthropic:claude-opus-5"
 DEFAULT_MEMORY = ("AGENTS.md", "CLAUDE.md")
 
+
+def user_config_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Resolve the writable user configuration without assuming ~/.config."""
+    environ = os.environ if env is None else env
+    if directory := environ.get("ORCHA_CONFIG_DIR"):
+        return Path(directory).expanduser()
+    home = Path(environ.get("HOME", str(Path.home())))
+    return Path(environ.get("XDG_CONFIG_HOME", str(home / ".config"))) / "orcha-agent"
+
 STATUSLINE_PRESETS = frozenset(
     {"default", "minimal", "compact", "full", "nerd", "ascii", "powerline"}
 )
@@ -386,6 +395,7 @@ class Config:
     gallery_plain: bool = False
     banner: bool = True
     notify: bool = False
+    auto_compact: bool = True
     statusbar: bool = True
     icons: bool = True
     thinking: str = "summary"
@@ -703,7 +713,7 @@ def load_config(
     environ = os.environ if env is None else env
     home = Path(environ.get("HOME", str(Path.home())))
     launch_dir = Path(args.cwd or cwd or Path.cwd()).resolve()
-    user_path = user_config_path or home / ".config/orcha-agent/config.toml"
+    user_path = user_config_path or user_config_dir(environ) / "config.toml"
     user_values = _read_toml(user_path)
     trusted_dirs = _trusted_directories(user_values, home)
     user_core = user_values.get("core", {})
@@ -910,6 +920,9 @@ def load_config(
         parser.error("[ui] notify must be true or false")
     banner = ui.get("banner", core.get("banner", True))
     notify = ui.get("notify", False)
+    auto_compact = ui.get("auto_compact", True)
+    if not isinstance(auto_compact, bool):
+        parser.error("[ui] auto_compact must be true or false")
 
 
     try:
@@ -940,6 +953,7 @@ def load_config(
         gallery_plain=getattr(args, "plain", False),
         banner=bool(banner),
         notify=bool(notify),
+        auto_compact=auto_compact,
         statusbar=bool(ui.get("statusbar", True)),
         icons=bool(ui.get("icons", True)),
         thinking=thinking,

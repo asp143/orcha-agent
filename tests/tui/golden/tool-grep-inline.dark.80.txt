@@ -1,5 +1,5 @@
 
-🔍 Grep: needle  3 matches · 2 files · in src
-  ├─ a.py:1:needle
-  ├─ b.py:2:needle
-  └─ b.py:4:needle
+<ESC>[38;2;166;227;161m⌕ <ESC>[0m<ESC>[1;38;2;137;180;250mGrep<ESC>[0m<ESC>[38;2;205;214;244m: needle  3 matches · 2 files · in src<ESC>[0m
+<ESC>[38;2;166;227;161m  ├─ a.py:1:needle<ESC>[0m
+<ESC>[38;2;166;227;161m  ├─ b.py:2:needle<ESC>[0m
+<ESC>[38;2;166;227;161m  └─ b.py:4:needle<ESC>[0m

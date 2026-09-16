@@ -2,13 +2,10 @@
 │ Appearance | Status | Behaviour | Terminal                               │
 │  › composer           box                                                │
 │    theme              dark                                               │
-│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+│ Choose the input border style.                                           │
+│ ↑↓ move · PgUp/PgDn page · Enter change · Esc close · Tab category       │
 │ Terminal                                                                 │
-│  › vim                False                                              │
-│    hyperlinks         True                                               │
-│    mouse              scroll                                             │
-│    colorblind         False                                              │
-│    synchronized output True                                              │
-│    resize             preserve                                           │
-│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+│  › resize             preserve                                           │
+│ Choose how the transcript responds to resizing.                          │
+│ ↑↓ move · PgUp/PgDn page · Enter change · Esc close · Tab category       │
 ╰──────────────────────────────────────────────────────────────────────────╯

@@ -89,11 +89,16 @@ The same modes are available in the REPL:
 
 ## Configuration
 
-Precedence is CLI, `ORCHA_*` environment variables,
-`./.orcha-agent/config.toml`, `~/.config/orcha-agent/config.toml`, then
-defaults. Core behavior uses `[core]`, native tools use `[tools]`, terminal
-settings use `[tui]`, and orchestration uses `[agents]`. Plugin-specific options
-use `[plugins.<name>]`; the examples below can share one `config.toml`. Example:
+Precedence is CLI, `ORCHA_*` environment variables, trusted-project
+`./.orcha-agent/config.toml`, user configuration, then defaults. The user directory
+is `ORCHA_CONFIG_DIR` when set, otherwise `$XDG_CONFIG_HOME/orcha-agent`, defaulting
+to `~/.config/orcha-agent`. These overrides relocate `config.toml` and settings writes; extension discovery
+paths below remain the documented home/project paths. See the
+[trust model](#trust-model) before enabling project configuration.
+
+This single reference combines the feature settings. Copy the tables you need
+into one `config.toml`; the hook command is an example that requires your own
+script. Model names are examples, not a requirement to use those providers.
 
 ```toml
 [core]
@@ -108,11 +113,19 @@ fast = "anthropic:claude-haiku-4-5"
 
 [plugins]
 disabled = []
-```
 
-Agent orchestration is configured independently from the main model:
+[model_roles]
+smol = "anthropic:claude-haiku-4-5"
+slow = "anthropic:claude-opus-5"
+plan = "anthropic:claude-sonnet-4-5"
+vision = "google:gemini-2.5-pro"
+task = "anthropic:claude-sonnet-4-5"
+scout = "fast"
+reviewer = "@slow"
+commit = "@smol"
+advisor = "@slow"
+summarizer = "@smol"
 
-```toml
 [agents]
 max_concurrency = 8
 max_live_runs = 32
@@ -121,18 +134,70 @@ idle_ttl_s = 420
 max_runtime_s = 0       # 0 disables the deadline
 soft_request_budget = 200
 
-[models.roles]
-task = "anthropic:claude-sonnet-4-5"
-scout = "fast"
-reviewer = "anthropic:claude-opus-5"
-advisor = "fast"
-
 [advisor]
 enabled = false
 model = "@advisor"
 tools = ["read", "grep", "glob"]
 immune_turns = 3
 timeout_s = 30
+
+[tools]
+native = true
+edit_format = "replace"  # "replace" or "hashline"
+read_summary = false    # opt in to outlines for eligible bare Python reads
+max_read_bytes = 67108864  # 64 MB maximum source-file size
+allowed_roots = []      # additional directories native file tools may access
+shell_env_passthrough = []  # explicitly inherit these parent environment names
+# Setting deny replaces the defaults; include every pattern you want to retain.
+# deny = [".env*", "Credentials/", "*.pem", "*.key", "*.p12", "*.pfx",
+#         ".ssh/id_*", "secrets.*", "credentials.json", "serviceAccountKey.json"]
+
+[tui]
+theme = "dark"
+symbols = "nerd"
+icons = true
+thinking = "summary"
+composer = "box"
+banner = true
+notify = false
+statusbar = true
+hyperlinks = true
+vim = false
+colorblind = false
+mouse = "scroll"
+synchronized_output = true
+resize = "preserve"
+auto_compact = true
+
+[tui.statusline]
+preset = "default"
+separator = "powerline-thin"
+transparent = false
+# left and right are omitted by default; lists override the preset groups.
+
+[compaction]
+enabled = true
+threshold_ratio = 0.8
+# threshold_tokens = 100000  # overrides the ratio when set
+keep_recent_tokens = 20000
+# reserve_tokens defaults to max(16384, 15% of the context window)
+supersede_reads = true
+drop_useless = true
+method_order = ["summary", "handoff", "shake"]
+speculative = true
+idle_seconds = 60
+
+[plugins.mcp]
+import_claude = true
+import_codex = true
+
+[[hooks]]
+event = "tool_call_before"
+matcher = "write*"
+command = "python scripts/check_write.py"
+timeout = 10
+blocking = true
+env_passthrough = ["HOOK_COLOR"] # optional non-secret environment names
 ```
 
 Role models fall back to the main model. The `task` role also falls back to the
@@ -145,7 +210,7 @@ awaited hub sends use a positive `max_runtime_s` as their wait bound, or a
 300-second safety bound when runtime deadlines are disabled.
 
 When enabled, the advisor is one hidden, persistent worker per session.
-`model="@advisor"` uses `[models.roles].advisor`, then the main model. It
+`model="@advisor"` uses `[model_roles].advisor`, then the main model. It
 checks completed main turns without delaying new prompts; `concern` and
 `blocker` notes may trigger a follow-up no more often than once per
 `immune_turns`, while `nit` is display-only. `timeout_s` bounds each check.
@@ -162,19 +227,7 @@ For example, `/compact Preserve the migration plan and failing test names` adds
 instructions to the summary. Compactions are saved in the session ledger, so
 resuming a session reconstructs the summary and retained history.
 
-```toml
-[compaction]
-enabled = true
-threshold_ratio = 0.8
-# threshold_tokens = 100000  # overrides the ratio when set
-keep_recent_tokens = 20000
-# reserve_tokens defaults to max(16384, 15% of the context window)
-supersede_reads = true
-drop_useless = true
-method_order = ["summary", "handoff", "shake"]
-speculative = true
-idle_seconds = 60
-```
+See `[compaction]` in the [configuration reference](#configuration).
 
 Automatic maintenance checks context after turns, between tool calls, and while
 idle. Provider context-overflow errors trigger compaction and one retry;
@@ -182,8 +235,9 @@ length-limited responses also trigger maintenance. The threshold uses the
 selected model's catalog context window and leaves the configured token reserve.
 Provider token counts are used when available, with text-size estimates as a
 fallback. Speculative summarization prepares a reusable summary below the
-threshold. Setting `enabled = false` disables automatic maintenance; manual
-`/compact` remains available. `idle_seconds` is the quiet interval after a main
+threshold. Setting `[compaction] enabled = false` or `[tui] auto_compact = false` disables
+automatic maintenance, including idle checks and speculative preparation; manual
+`/compact` remains available. Both switches must be enabled for automatic compaction. `idle_seconds` is the quiet interval after a main
 turn before the idle threshold check (default 60 seconds); new activity cancels
 pending idle work. `speculative` enables background summary preparation at 75%
 of the compaction threshold (default true). Preparation does not change history
@@ -214,20 +268,11 @@ with orcha and loaded lazily; it does not fetch model metadata at startup.
 The upstream snapshot contains no Ollama entries; add your installed local
 models and their context limits through the override file.
 
-Model aliases remain available under `[models]`. Configure roles under
-`[model_roles]` or `[models.roles]`:
+Model aliases use `[models]`; configure roles under `[model_roles]`. The legacy
+`[models.roles]` table remains supported, with `[model_roles]` taking precedence
+when both define the same role.
 
-```toml
-[model_roles]
-smol = "anthropic:claude-haiku-4-5"
-slow = "anthropic:claude-opus-5"
-plan = "anthropic:claude-sonnet-4-5"
-vision = "google:gemini-2.5-pro"
-task = "@smol"
-commit = "@smol"
-advisor = "@slow"
-summarizer = "@smol"
-```
+See `[model_roles]` in the [configuration reference](#configuration).
 
 Use `@role` or `@role:effort` anywhere a model specification is accepted, including
 `/model @smol`, subagents, advisor configuration, and `core.summarizer_model`.
@@ -291,10 +336,7 @@ model; `orcha stats session --session SESSION` selects a saved session. `week`
 means the current calendar week, starting Monday in the local timezone. Add the
 `usage` segment to a status-line group to see session cost and today's total:
 
-```toml
-[tui.statusline]
-right = ["usage", "context"]
-```
+Set `right = ["usage", "context"]` in the reference's `[tui.statusline]` table.
 
 Database writes and summary queries run outside terminal rendering. Costs are
 estimates from the local catalog and price overrides, rather than billing
@@ -305,18 +347,7 @@ statements; unknown prices contribute zero cost.
 Native tools are enabled by default with the local shell backend. Other backends
 retain their deepagents tools. Configure them in the project or user config:
 
-```toml
-[tools]
-native = true
-edit_format = "replace"  # "replace" or "hashline"
-read_summary = false    # opt in to outlines for eligible bare Python reads
-max_read_bytes = 67108864  # 64 MB maximum source-file size
-allowed_roots = []      # additional directories native file tools may access
-shell_env_passthrough = []  # explicitly inherit these parent environment names
-# Setting deny replaces the defaults; include every pattern you want to retain.
-# deny = [".env*", "Credentials/", "*.pem", "*.key", "*.p12", "*.pfx",
-#         ".ssh/id_*", "secrets.*", "credentials.json", "serviceAccountKey.json"]
-```
+See `[tools]` in the [configuration reference](#configuration).
 
 Set `native = false` to use the original deepagents filesystem tools
 (`read_file`, `write_file`, `edit_file`, `execute`, `grep`, `glob`, and `ls`).
@@ -537,8 +568,38 @@ dirs = ["/path/to/trusted/project"]
 uv run orcha --trust-cwd
 ```
 
-Project plugins execute Python with the same filesystem and shell access as
-orcha, so do not trust repositories you have not reviewed.
+User configuration and user-owned extensions are trusted. Trusting a project
+also authorizes its executable extensions with orcha's filesystem and shell
+access. Review that code before enabling project trust.
+
+| Source | Untrusted project behavior | Trusted project behavior |
+| --- | --- | --- |
+| Config, plugins, hooks, `.env`, MCP servers, themes, model catalog | Not loaded | Project settings and extensions load; hooks and plugins may execute code |
+| Skills and rules | Listed for explicit invocation; automatic bodies, glob attachments, and stream rules are disabled | Automatic skill/rule behavior is enabled |
+| File commands | Explicit invocation uses restricted expansion; shell interpolation and project aliases are disabled | Shell interpolation and unambiguous aliases are enabled |
+| Context files | Imports stay inside the project boundary; sensitive paths remain excluded | Imports may resolve outside the project; sensitive paths remain excluded |
+| Catalog credential commands | Not loaded from project catalogs | Still restricted to user-owned catalog configuration |
+
+Tool approval mode is separate from project trust: `ask`, `edit`, `yolo`, and
+`plan` control available tools and approvals. Hook blocking and configured tool
+path restrictions remain in effect. Hooks receive prompt/tool data, so only enable
+hooks you trust with that content. The feature sections below describe payloads,
+precedence, and limits within these boundaries.
+
+The native discovery paths are:
+
+| Feature | Project path | User path |
+| --- | --- | --- |
+| Skills | `.orcha-agent/skills/<name>/SKILL.md` | `~/.config/orcha-agent/skills/<name>/SKILL.md` |
+| Rules | `RULES.md`, `.orcha-agent/rules/*.md` | `~/.config/orcha-agent/rules/*.md` |
+| Commands | `.orcha-agent/commands/*.md` | `~/.config/orcha-agent/commands/*.md` |
+| Context | `.orcha-agent/AGENTS.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules` | `~/.config/orcha-agent/AGENTS.md` |
+| MCP | `.orcha-agent/mcp.json` | `~/.config/orcha-agent/mcp.json` |
+
+The individual sections cover imported Claude, Cursor, Codex, and GitHub formats
+and the context ladder's additional paths. For an isolated smoke session, set
+`XDG_CONFIG_HOME` to a temporary directory; a temporary `HOME` additionally
+isolates discovery of compatibility directories and saved provider sessions.
 
 ## Terminal UI
 
@@ -553,31 +614,9 @@ scheduling events, so the TUI cannot show a retry countdown for them.
 
 ### UI configuration
 
-Terminal settings and their defaults:
+Terminal settings and defaults are included in the shared reference.
 
-```toml
-[tui]
-theme = "dark"
-symbols = "nerd"
-icons = true
-thinking = "summary"
-composer = "box"
-banner = true
-notify = false
-statusbar = true
-hyperlinks = true
-vim = false
-colorblind = false
-mouse = "scroll"
-synchronized_output = true
-resize = "preserve"
-
-[tui.statusline]
-preset = "default"
-separator = "powerline-thin"
-transparent = false
-# left and right are omitted by default; lists override the preset groups.
-```
+See `[tui]` and `[tui.statusline]` in the [configuration reference](#configuration).
 
 `theme` is a theme name or `auto`; `symbols` is `nerd`, `unicode`, `ascii`,
 or `colorblind`; `thinking` is `summary`, `off`, or `all`; and `composer` is
@@ -599,7 +638,7 @@ visible display on resize.
 
 The status line presets and their left/right groups are:
 
-- `default`: `brand model mode path git context cost` / `subagents session`
+- `default`: `brand vim model cost mode path git context` / `compaction subagents session`
 - `ascii`: `brand model mode path git` / `subagents context cost`
 - `minimal`: `brand model path` / `context`
 - `powerline`: `brand model path git pr` / `token_rate usage context`
@@ -609,18 +648,14 @@ The status line presets and their left/right groups are:
 
 Available built-in segments are `brand`, `model`, `mode`, `path`, `git`, `pr`,
 `session`, `subagents`, `tokens`, `cache`, `cost`, `context`, `time`, `token_rate`,
-`cache_hit`, `time_spent`, `hostname`, `vim`, and `usage`; plugins may add more. Separators are `powerline`, `powerline-thin`, `slash`, `pipe`, `block`,
+`cache_hit`, `time_spent`, `hostname`, `vim`, `compaction`, and `usage`; plugins may add more. Separators are `powerline`, `powerline-thin`, `slash`, `pipe`, `block`,
 `none`, and `ascii`; the `ascii` preset also forces ASCII-safe output.
 Override either group, remove status backgrounds, or both:
 
-```toml
-[tui.statusline]
-preset = "compact"
-separator = "pipe"
-left = ["model", "mode", "path", "git"]
-right = ["tokens", "context", "cost"]
-transparent = true
-```
+For example, set `preset = "compact"`, `separator = "pipe"`, and
+`transparent = true` in `[tui.statusline]`. Explicit `left` and `right` arrays
+replace the preset groups; `left = ["model", "mode", "path", "git"]` and
+`right = ["tokens", "context", "cost"]` show a compact custom layout.
 
 `/status` prints the effective visible segments vertically when the status
 line is enabled. Pricing overrides still use the top-level pricing table:
@@ -639,6 +674,7 @@ each lifecycle state without starting a model session:
 
 ```bash
 uv run orcha gallery
+uv run orcha gallery --theme light
 uv run orcha gallery --tool tool --state error --width 100 --expanded
 uv run orcha gallery --plain > /tmp/orcha-gallery.txt
 ```
@@ -913,6 +949,18 @@ For an unknown entry type, import unwraps this exact marker-and-payload pair.
 This preserves the original object losslessly even when its keys collide with
 envelope metadata, without mistaking ordinary unknown fields for a wrapper.
 
+### HTML session export
+
+`/export --html [path]` saves a standalone HTML transcript using the active theme
+colours. Markdown is rendered locally; tool calls and results use expandable
+cards, with added/removed lines highlighted only for unified diffs or edit/patch
+tool output. Ordinary signed numbers and bullets keep their normal colours.
+Every ledger branch is included
+in chronological order. No scripts, remote assets, or image requests are needed.
+The default filename is `<session-id>.html`; paths may contain spaces.
+As with JSONL export, existing files require `--force`, for example
+`/export --html --force review.html`. The output file is private (0600).
+
 ## Skills
 
 Put a `SKILL.md` in `.orcha-agent/skills/<name>/` or
@@ -958,11 +1006,7 @@ Set `enabled`, `import_claude`, `import_codex`, or `import_github` to `false` un
 MCP plugin options belong in `config.toml` under `[plugins.mcp]`; a top-level
 `[mcp]` table is not supported. Server definitions live in the separate JSON file:
 
-```toml
-[plugins.mcp]
-import_claude = true
-import_codex = true
-```
+See `[plugins.mcp]` in the [configuration reference](#configuration).
 
 Configure `~/.config/orcha-agent/mcp.json` or trusted-project
 `.orcha-agent/mcp.json`:
@@ -1082,18 +1126,6 @@ structured-only. To try it, add `AGENTS.md` at the repository root and a closer
 `.orcha-agent/AGENTS.md`, launch from that directory, and ask the agent which
 repository instructions apply.
 
-### HTML session export
-
-`/export --html [path]` saves a standalone HTML transcript using the active theme
-colours. Markdown is rendered locally; tool calls and results use expandable
-cards, with added/removed lines highlighted only for unified diffs or edit/patch
-tool output. Ordinary signed numbers and bullets keep their normal colours.
-Every ledger branch is included
-in chronological order. No scripts, remote assets, or image requests are needed.
-The default filename is `<session-id>.html`; paths may contain spaces.
-As with JSONL export, existing files require `--force`, for example
-`/export --html --force review.html`. The output file is private (0600).
-
 ## Declarative hooks
 
 Add `[[hooks]]` entries to `~/.config/orcha-agent/config.toml` or trusted
@@ -1101,15 +1133,7 @@ Add `[[hooks]]` entries to `~/.config/orcha-agent/config.toml` or trusted
 existing trusted directory; user and project hooks are combined. `/hooks` lists
 active hooks.
 
-```toml
-[[hooks]]
-event = "tool_call_before"
-matcher = "write*"
-command = "python scripts/check_write.py"
-timeout = 10
-blocking = true
-env_passthrough = ["HOOK_COLOR"] # optional non-secret environment names
-```
+The [configuration reference](#configuration) includes a blocking write-hook example.
 
 Events are `session_start`, `session_end`, `turn_start`, `turn_end`,
 `tool_call_before`, `tool_call_after`, `model_switch`, `compaction`,
@@ -1193,7 +1217,7 @@ Keywords inside fenced or inline code, XML/HTML sections, identifiers, paths,
 filenames, and immediate function calls remain literal. The notices enter only
 the model request and do not appear as extra conversation messages.
 
-### Rulebook and time-traveling stream rules
+## Rules and time-traveling stream rules
 
 Put always-active instructions in `RULES.md`, or named Markdown rules in
 `.orcha-agent/rules/*.md`. User rules live in `~/.config/orcha-agent/rules/`.

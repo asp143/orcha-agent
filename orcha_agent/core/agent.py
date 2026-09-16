@@ -31,7 +31,9 @@ from .tools.backend import GuardedLocalShellBackend
 from .tools.common import PathPolicy
 from .tools.middleware import NativeFilesystemMiddleware, NativeOutputMiddleware
 
-DEFAULT_SYSTEM_PROMPT = "You are a careful terminal coding agent. Use tools deliberately and report concrete results."
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a careful terminal coding agent. Use tools deliberately and report concrete results."
+)
 FILESYSTEM_TOOL_NAMES = {
     "ls",
     "read_file",
@@ -62,7 +64,9 @@ def _native_interrupts(interrupts: Mapping[str, Any]) -> dict[str, Any]:
     return mapped
 
 
-def _filesystem_middleware(backend: Any, names: set[str], native: bool = False) -> FilesystemMiddleware:
+def _filesystem_middleware(
+    backend: Any, names: set[str], native: bool = False
+) -> FilesystemMiddleware:
     middleware_type = NativeFilesystemMiddleware if native else FilesystemMiddleware
     filesystem = middleware_type(backend=backend, tools=sorted(names | {"read_file"}))
     # deepagents 0.7.9 requires read_file at construction, even when all of its
@@ -70,7 +74,6 @@ def _filesystem_middleware(backend: Any, names: set[str], native: bool = False) 
     filesystem._enabled_tools = frozenset(names)
     filesystem.tools = [tool for tool in filesystem.tools if tool.name in names]
     return filesystem
-
 
 
 def _memory_sources(cfg: Config) -> list[str]:
@@ -146,7 +149,6 @@ def _structured_memory_prompt(cfg: Config, session: SessionStore) -> str:
     return "\n".join(lines)
 
 
-
 def _configured_model_specs(
     spec: str | list[str],
     aliases: Mapping[str, str | list[str]],
@@ -154,9 +156,7 @@ def _configured_model_specs(
 ) -> tuple[str, ...]:
     if isinstance(spec, list):
         return tuple(
-            resolved
-            for item in spec
-            for resolved in _configured_model_specs(item, aliases, seen)
+            resolved for item in spec for resolved in _configured_model_specs(item, aliases, seen)
         )
     target = aliases.get(spec)
     if target is None or spec in seen:
@@ -199,9 +199,7 @@ def _subagents(
     for entry in registry.subagents:
         spec = entry.spec
         if filesystem is not None and (
-            not isinstance(spec, dict)
-            or "runnable" in spec
-            or "graph_id" in spec
+            not isinstance(spec, dict) or "runnable" in spec or "graph_id" in spec
         ):
             continue
         model = (
@@ -217,7 +215,9 @@ def _subagents(
                     configured_spec["interrupt_on"] = _native_interrupts(spec["interrupt_on"])
                     if policy is not None:
                         configured_spec["interrupt_on"] = approval_configs(
-                            configured_spec["interrupt_on"], policy, registry.tools,
+                            configured_spec["interrupt_on"],
+                            policy,
+                            registry.tools,
                         )
                 requested = spec.get("tools")
                 if requested is None:
@@ -227,11 +227,15 @@ def _subagents(
                         item if isinstance(item, str) else item.name for item in requested
                     )
                     configured_spec["tools"] = [
-                        item for item in requested if not isinstance(item, str)
+                        item
+                        for item in requested
+                        if not isinstance(item, str)
                         and item.name not in {tool.name for tool in native_tools}
                     ] + [tool for tool in native_tools if tool.name in requested_names]
                     selected_names = {tool.name for tool in configured_spec["tools"]}
-                    filesystem_names = {tool.name for tool in filesystem.tools} if filesystem else set()
+                    filesystem_names = (
+                        {tool.name for tool in filesystem.tools} if filesystem else set()
+                    )
                     for requested_name in requested_names - selected_names - filesystem_names:
                         if requested_name not in registry.tools:
                             raise ValueError(f"Unknown subagent tool: {requested_name}")
@@ -348,8 +352,11 @@ async def build_agent(
     interrupts = {name: value for name, value in mode.interrupt_on.items() if name not in allowed}
     if policy is not None:
         interrupts = approval_configs(interrupts, policy, registry.tools)
-    middleware = [entry.middleware for entry in registry.middleware
-                  if native or entry.plugin != "tools_native"]
+    middleware = [
+        entry.middleware
+        for entry in registry.middleware
+        if native or entry.plugin != "tools_native"
+    ]
     middleware.append(TodoListMiddleware())
     filesystem: FilesystemMiddleware | None = None
     if native or mode.allowed_tools is not None or tool_scope is not None:
@@ -380,19 +387,26 @@ async def build_agent(
         middleware.append(ModelFallbackMiddleware(*main_models[1:]))
     from .catalog import get_model
     from .models import expand_model_spec
+
     catalog_model = get_model(expand_model_spec(cfg.model, cfg)[0], cfg)
     compactor = Compactor(
-        roles["summarizer"], cfg.compaction,
+        roles["summarizer"],
+        dataclass_replace(cfg.compaction, enabled=cfg.auto_compact and cfg.compaction.enabled),
         (catalog_model.context_window or 128_000) if catalog_model else 128_000,
     )
+    # Keep the replacement even when disabled: omitting it restores deepagents'
+    # built-in summarizer, which does not know about either user setting.
     middleware.append(CompactionMiddleware(compactor))
 
     prompt = "\n\n".join(
         value
         for value in (
             system_prompt,
-            *(fragment.text for fragment in registry.prompt_fragments
-              if native or fragment.plugin != "tools_native"),
+            *(
+                fragment.text
+                for fragment in registry.prompt_fragments
+                if native or fragment.plugin != "tools_native"
+            ),
             _structured_memory_prompt(cfg, session),
         )
         if value
@@ -410,9 +424,14 @@ async def build_agent(
                 subagent_model,
                 filesystem,
                 _general_purpose_enabled(registry, cfg),
-                [tool for tool in tools if tool.name in {
-                    "read", "write", "edit", "bash", "bash_jobs", "grep", "glob", "ls"
-                }] if native else None,
+                [
+                    tool
+                    for tool in tools
+                    if tool.name
+                    in {"read", "write", "edit", "bash", "bash_jobs", "grep", "glob", "ls"}
+                ]
+                if native
+                else None,
                 policy,
             )
         ),
@@ -421,7 +440,8 @@ async def build_agent(
             []
             if getattr(getattr(cfg, "memory_store", None), "backend", "files") == "turso"
             else [str(cfg.cwd / path.lstrip("/")) for path in _memory_sources(cfg)]
-            if native else _memory_sources(cfg)
+            if native
+            else _memory_sources(cfg)
         ),
         "interrupt_on": interrupts,
         "system_prompt": prompt or DEFAULT_SYSTEM_PROMPT,
@@ -432,16 +452,16 @@ async def build_agent(
         effective_scope = set(mode.allowed_tools)
         if tool_scope is not None:
             effective_scope &= tool_scope
-    await bus.emit(AgentBuildBefore(
-        kwargs,
-        tool_scope=effective_scope,
-        always_allowed=frozenset(allowed),
-        mode_interrupt_on=dict(mode.interrupt_on),
-    ))
-    compactor.attach_bus(bus)
-    graph = _create_graph(
-        kwargs, exclude_general_purpose=exclude_general_purpose
+    await bus.emit(
+        AgentBuildBefore(
+            kwargs,
+            tool_scope=effective_scope,
+            always_allowed=frozenset(allowed),
+            mode_interrupt_on=dict(mode.interrupt_on),
+        )
     )
+    compactor.attach_bus(bus)
+    graph = _create_graph(kwargs, exclude_general_purpose=exclude_general_purpose)
     await bus.emit(AgentBuildAfter(graph))
     from .usage_store import UsageCallback
 

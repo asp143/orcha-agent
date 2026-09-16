@@ -99,7 +99,7 @@ def test_user_bubble_emits_full_width_background_cells_to_a_terminal() -> None:
     terminal_text = Text.from_ansi(raw).plain
 
     assert "48;5;236" in raw
-    assert terminal_text == (f"{' ' * 40}\n visible terminal bubble{' ' * 16}\n{' ' * 40}\n")
+    assert terminal_text == (f"{' ' * 40}\n  visible terminal bubble{' ' * 15}\n{' ' * 40}\n")
     assert all(len(line) == 40 for line in terminal_text.splitlines())
 
 
@@ -242,10 +242,10 @@ def test_bash_preview_keeps_ten_output_tail_lines_until_expanded() -> None:
     assert "line 14" not in collapsed
     assert "line 15" in collapsed
     assert "showing 10 of 25" in collapsed
-    assert "ctrl+o to expand" in collapsed
+    assert "Ctrl+O to expand" in collapsed
     assert "line 24" in expanded
-    assert "Exit: 3" in expanded
-    assert "ctrl+o to expand" not in expanded
+    assert "exit 3" in expanded
+    assert "Ctrl+O to expand" not in expanded
 
 
 def test_grouped_read_files_share_one_card() -> None:
@@ -265,7 +265,7 @@ def test_grouped_read_files_share_one_card() -> None:
     )
     output = plain(rendered)
 
-    assert "• Read (2)" in output
+    assert "≡ Read (2)" in output
     assert "a.py" in output
     assert "b.py" in output
 
@@ -302,7 +302,7 @@ def test_streaming_diff_suppresses_trailing_unbalanced_removals() -> None:
 
 def test_banner_caps_error_at_eight_lines() -> None:
     rendered = render_banner(
-        block("banner", message="\n".join(f"line {i}" for i in range(12)), level="error"),
+        block("banner", message="\n".join(f"line {i}" for i in range(12)), level="error", pinned=True),
         THEME,
         80,
         20,

@@ -42,6 +42,8 @@ _KEY_LABELS = {
     "escape": "Esc",
     "home": "Home",
     "left": "Left",
+    "pgdn": "PgDn",
+    "pgup": "PgUp",
     "pagedown": "PgDn",
     "pageup": "PgUp",
     "right": "Right",
@@ -58,6 +60,8 @@ _MODIFIER_LABELS = {
 
 
 def _format_key_part(part: str) -> str:
+    if "/" in part and part != "/":
+        return "/".join(_format_key_part(value) for value in part.split("/"))
     lower = part.casefold()
     label = _KEY_LABELS.get(lower)
     if label is not None:

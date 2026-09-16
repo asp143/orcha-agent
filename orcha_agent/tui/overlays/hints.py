@@ -21,14 +21,20 @@ def key_hint(
     return [("class:dim", label), ("class:muted", f" {description}")]
 
 
-def key_hints(hints: Iterable[tuple[str, str]]) -> StyleAndTextTuples:
+def key_hints(hints: Iterable[tuple[str, str]], *, width: int | None = None) -> StyleAndTextTuples:
     """Render multiple key hints separated by a muted middle dot."""
 
     fragments: StyleAndTextTuples = []
+    column = 0
     for key, description in hints:
+        hint = key_hint(key, description)
+        size = sum(len(part[1]) for part in hint)
         if fragments:
-            fragments.append(("class:muted", " · "))
-        fragments.extend(key_hint(key, description))
+            separator = "\n" if width is not None and column + 3 + size > width else " · "
+            fragments.append(("class:muted", separator))
+            column = 0 if separator == "\n" else column + 3
+        fragments.extend(hint)
+        column += size
     return fragments
 
 

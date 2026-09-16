@@ -27,7 +27,7 @@ def _render(message: str, width: int) -> tuple[str, list[str]]:
     block = Block(
         id="provider-error",
         kind="banner",
-        data={"level": "error", "message": message},
+        data={"level": "error", "message": message, "pinned": True},
     )
 
     console.print(render(block, THEME, width, 20, False))

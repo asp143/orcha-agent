@@ -51,7 +51,11 @@ class _SelectControl(FormattedTextControl):
             if not pairs:
                 return [("class:overlay.empty", f"  {picker.empty_text}")]
             original, item = pairs[index]
-            return picker._item_fragments(index, original, item)
+            fragments = picker._item_fragments(index, original, item)
+            if index == picker.index:
+                used = sum(len(part[1]) for part in fragments)
+                fragments.append(("class:overlay.selection", " " * max(0, width - used)))
+            return fragments
 
         return UIContent(
             get_line=line,
@@ -103,18 +107,34 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         if show_filter:
             body_parts.extend(
                 [
-                    Window(self.filter_control, height=1, style="class:overlay.filter"),
-                    Window(char="─", height=1, style="class:overlay.divider"),
+                    Window(
+                        self.filter_control,
+                        height=lambda: 1 if self.filter.text else 0,
+                        dont_extend_height=True,
+                        style="class:overlay.filter",
+                    ),
+                    Window(
+                        char="─",
+                        height=lambda: 1 if self.filter.text else 0,
+                        dont_extend_height=True,
+                        style="class:overlay.divider",
+                    ),
                 ]
             )
         if prefix is not None:
             body_parts.extend([prefix, Window(char="─", height=1, style="class:overlay.divider")])
-        self.list_window = Window(self.list_control, always_hide_cursor=True)
+        self.list_window = Window(
+            self.list_control, always_hide_cursor=True,
+            get_vertical_scroll=lambda window: max(
+                self.index // self.page_size * self.page_size,
+                self.index - (window.render_info.window_height if window.render_info else self.page_size) + 1,
+            ),
+        )
         self.footer_control = FormattedTextControl(lambda: self._scroll_footer("select"))
         body_parts.extend(
             [
                 self.list_window,
-                Window(self.footer_control, height=1, wrap_lines=False),
+                Window(self.footer_control, wrap_lines=True, dont_extend_height=True),
             ]
         )
         bindings = KeyBindings()

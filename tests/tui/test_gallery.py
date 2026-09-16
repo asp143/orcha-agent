@@ -42,6 +42,7 @@ def test_tool_gallery_covers_every_builtin_tool_in_every_state(tmp_path: Path) -
         "execute",
         "ls",
         "read_file",
+        "long_read_file",
         "write_file",
         "edit_file",
         "delete",
@@ -63,7 +64,7 @@ def test_tool_gallery_covers_every_builtin_tool_in_every_state(tmp_path: Path) -
             assert f"· {name}" in output
 
 
-def test_tool_gallery_frames_keep_exact_width_with_nerd_and_emoji_symbols() -> None:
+def test_tool_gallery_frames_keep_exact_width_with_consistent_symbols() -> None:
     theme = {
         **DEFAULT_THEME,
         "symbols": {
@@ -85,9 +86,7 @@ def test_tool_gallery_frames_keep_exact_width_with_nerd_and_emoji_symbols() -> N
                 plain=plain,
             )
             decoded = rendered if plain else Text.from_ansi(rendered).plain
-            seen_symbols.update(
-                symbol for symbol in ("󰄬", "󰅖", "⏳", "📂", "🔍") if symbol in decoded
-            )
+            seen_symbols.update(symbol for symbol in ("≡", "✎", "±", "▤", "⌕") if symbol in decoded)
             border_rows = [
                 line for line in decoded.splitlines() if line.startswith(("╭", "├", "╰"))
             ]
@@ -96,9 +95,9 @@ def test_tool_gallery_frames_keep_exact_width_with_nerd_and_emoji_symbols() -> N
                 assert "\r" not in row and "\n" not in row
                 assert cell_len(row) == 100, (state, plain, repr(row))
                 if row.startswith("╰"):
-                    assert row.endswith(" ⟦Ctrl+O: Collapse⟧ ╯"), (state, plain, repr(row))
+                    assert row.endswith(" Ctrl+O to collapse ╯"), (state, plain, repr(row))
 
-    assert seen_symbols == {"󰄬", "󰅖", "⏳", "📂", "🔍"}
+    assert seen_symbols == {"≡", "✎", "±", "▤", "⌕"}
 
 
 def test_gallery_cli_parses_filters_and_plain_output(tmp_path: Path) -> None:

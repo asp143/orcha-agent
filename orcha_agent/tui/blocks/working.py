@@ -8,7 +8,7 @@ from rich.text import Text
 
 from orcha_agent.tui.frame import Block
 
-from . import theme_value
+from . import theme_spinner, theme_value
 
 
 _FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -25,7 +25,7 @@ def render(
     level = str(block.data.get("level", "accent"))
     color = str(theme_value(theme, "warning" if level == "warning" else "accent"))
     frame = int(block.data.get("spinner_frame", 0))
-    rendered = Text(_FRAMES[frame % len(_FRAMES)], style=color)
+    rendered = Text(theme_spinner(theme, "spinner.activity", frame, _FRAMES), style=color)
     rendered.append(" ")
     rendered.append(
         str(block.data.get("message", "Working… (Esc to interrupt)")),

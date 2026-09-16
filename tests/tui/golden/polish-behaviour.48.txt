@@ -1,0 +1,12 @@
+╭─ Behaviour ──────────────────────────────────╮
+│  › mode               ask                    │
+│    auto compact       on                     │
+│    notify             off                    │
+│    hyperlinks         on                     │
+│    mouse              scroll                 │
+│    vim                off                    │
+│    colorblind         off                    │
+│    synchronized output on                    │
+│ Choose when tools require approval.          │
+│ ↑↓ move · PgUp/PgDn page · Enter change · Es │
+╰──────────────────────────────────────────────╯

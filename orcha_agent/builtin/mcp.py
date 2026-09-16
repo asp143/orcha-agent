@@ -31,16 +31,21 @@ async def command(manager: MCPManager, ctx: Any, args: str) -> None:
         action = words[0] if words else "list"
         await manager.loaded.wait()
         if action == "list":
+            from orcha_agent.tui.panels import summary_panel
+
+            rows = [
+                (name, connection.status, str(len(connection.tools)), connection.error or "")
+                for name, connection in manager.connections.items()
+            ]
             if manager.error:
-                ctx.console.print(manager.error, markup=False)
-            for name, connection in manager.connections.items():
-                ctx.console.print(
-                    f"{name}: {connection.status} ({len(connection.tools)} tools)"
-                    + (f" — {connection.error}" if connection.error else ""),
-                    markup=False,
+                rows.append(("Discovery", "error", "", manager.error))
+            ctx.console.print(
+                summary_panel(
+                    "MCP servers",
+                    ("Name", "Status", "Tools", "Details"),
+                    rows or [("No MCP servers configured.", "", "", "")],
                 )
-            if not manager.connections and not manager.error:
-                ctx.console.print("No MCP servers configured.")
+            )
             return
         if action == "reload":
             await manager.reload()

@@ -68,10 +68,47 @@ class HelpOverlay(ScrollableOverlay):
             [("class:overlay.section", "Commands")],
         ]
         plain_lines = ["Commands"]
+        groups: dict[str, list[tuple[str, Any]]] = {
+            name: [] for name in ("Core", "Session", "Models", "Plugins/MCP", "Skills", "Custom")
+        }
         for name, command in sorted(ctx.registry.commands.items()):
-            line = f"/{name:<14} {command.help}"
-            rows.append([("class:muted", line)])
-            plain_lines.append(line)
+            plugin = getattr(command, "plugin", "")
+            if name in {"skills", "skill"} or "skill" in plugin:
+                group = "Skills"
+            elif name in {"mcp", "plugins", "plugin"} or plugin in {
+                "commands_plugins",
+                "commands_mcp",
+            }:
+                group = "Plugins/MCP"
+            elif (
+                name in {"model", "models", "providers", "login", "logout", "thinking"}
+                or plugin == "commands_model"
+            ):
+                group = "Models"
+            elif plugin == "commands_session" or name in {
+                "new",
+                "resume",
+                "sessions",
+                "compact",
+                "branch",
+                "tree",
+            }:
+                group = "Session"
+            elif plugin and not plugin.startswith("commands_"):
+                group = "Custom"
+            else:
+                group = "Core"
+            groups[group].append((name, command))
+        for group, commands in groups.items():
+            if not commands:
+                continue
+            rows.append([("class:overlay.section", group)])
+            plain_lines.append(group)
+            padding = max(len(name) for name, _ in commands) + 2
+            for name, command in commands:
+                label = f"/{name:<{padding}} "
+                rows.append([("class:text", label), ("class:muted", command.help)])
+                plain_lines.append(label + command.help)
         rows.extend(
             [
                 [("", "")],

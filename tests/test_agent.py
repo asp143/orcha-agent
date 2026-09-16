@@ -191,10 +191,7 @@ async def test_main_model_fallback_is_middleware_and_role_models_remain_chat_mod
     subagent_models = [spec["model"] for spec in captured["subagents"]]
     assert subagent_models
     assert all(isinstance(model, BaseChatModel) for model in subagent_models)
-    assert all(
-        any(model is primary for primary in created["primary"])
-        for model in subagent_models
-    )
+    assert all(any(model is primary for primary in created["primary"]) for model in subagent_models)
 
     summarizers = [
         middleware
@@ -203,9 +200,7 @@ async def test_main_model_fallback_is_middleware_and_role_models_remain_chat_mod
     ]
     assert len(summarizers) == 1
     assert isinstance(summarizers[0].model, BaseChatModel)
-    assert any(
-        summarizers[0].model is primary for primary in created["primary"]
-    )
+    assert any(summarizers[0].model is primary for primary in created["primary"])
     assert result["messages"][-1].content == "fallback succeeded"
 
 
@@ -479,11 +474,7 @@ async def test_build_agent_uses_configured_model_for_general_purpose_subagent(
     with SessionStore(tmp_path / "sessions.db") as session:
         await build_agent(registry, _config(tmp_path, "yolo"), session, bus)
 
-    general_purpose = [
-        spec
-        for spec in captured["subagents"]
-        if spec["name"] == "general-purpose"
-    ]
+    general_purpose = [spec for spec in captured["subagents"] if spec["name"] == "general-purpose"]
     assert len(general_purpose) == 1
     model = general_purpose[0]["model"]
     assert isinstance(model, FakeListChatModel)
@@ -518,7 +509,6 @@ async def test_disabled_general_purpose_harness_profile_is_honored(
     assert all(spec["name"] != "general-purpose" for spec in captured["subagents"])
 
 
-
 @pytest.mark.asyncio
 async def test_plan_mode_omits_unrestrictable_compiled_subagents(
     tmp_path: Path,
@@ -544,7 +534,6 @@ async def test_plan_mode_omits_unrestrictable_compiled_subagents(
     assert all(spec["name"] != "compiled-writer" for spec in captured["subagents"])
 
 
-
 @pytest.mark.asyncio
 async def test_plan_mode_excludes_plugin_tools_outside_allowlist(
     tmp_path: Path,
@@ -566,6 +555,8 @@ async def test_plan_mode_excludes_plugin_tools_outside_allowlist(
         await build_agent(registry, _config(tmp_path, "plan"), session, bus)
 
     assert captured["tools"] == []
+
+
 @pytest.mark.asyncio
 async def test_build_agent_uses_configured_model_for_main_summarization(
     tmp_path: Path,
@@ -696,16 +687,10 @@ async def test_build_agent_injects_structured_turso_memories_with_scope_metadata
     assert "Run uv run pytest." in prompt
     assert "Run the wrong test command." not in prompt
     assert "Do not inject me." not in prompt
-    assert (
-        '<memory scope="path" name="frontend-style" path="web/frontend">'
-        in prompt
-    )
+    assert '<memory scope="path" name="frontend-style" path="web/frontend">' in prompt
     assert "Use frontend conventions." in prompt
     assert "sibling paths do not inherit it" in prompt
-    assert (
-        '<memory-suppression name="generated-files" path="generated" />'
-        in prompt
-    )
+    assert '<memory-suppression name="generated-files" path="generated" />' in prompt
 
 
 @pytest.mark.asyncio
@@ -761,3 +746,73 @@ async def test_harness_profiles_are_registered_once_across_resolvers_and_builds(
         ("testalpha", alpha_profile),
         ("testbeta", beta_profile),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("policy_enabled", [True, False])
+async def test_auto_compact_setting_controls_summarization_middleware(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool, policy_enabled: bool
+) -> None:
+    registry, bus, _ = _kernel()
+    captured: dict[str, Any] = {}
+
+    def fake_create(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("orcha_agent.core.agent.create_deep_agent", fake_create)
+    cfg = replace(_config(tmp_path, "ask"), auto_compact=enabled)
+    cfg = replace(cfg, compaction=replace(cfg.compaction, enabled=policy_enabled))
+    with SessionStore(cfg.db_path) as session:
+        await build_agent(registry, cfg, session, bus)
+    replacements = [
+        item for item in captured["middleware"] if isinstance(item, SummarizationMiddleware)
+    ]
+    assert len(replacements) == 1
+    assert replacements[0].compactor.policy.enabled is (enabled and policy_enabled)
+
+
+@pytest.mark.asyncio
+async def test_disabled_auto_compaction_replaces_deepagents_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orcha_agent.core import agent as agent_module
+    from orcha_agent.core.events import AppExit
+
+    registry, bus, api = _kernel()
+    calls: list[str] = []
+
+    class CountedModel(ToolCallingFakeModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            calls.append(str(self.metadata["orcha_role"]))
+            return super()._generate(messages, stop, run_manager, **kwargs)
+
+    api.add_provider(
+        "fake",
+        lambda *_: CountedModel(messages=iter([AIMessage(content="finished")])),
+        capabilities=_caps(),
+        replace=True,
+    )
+    assembled: list[Any] = []
+    create_agent = agent_module.deepagents_graph.create_agent
+
+    def inspect_graph(*args: Any, **kwargs: Any) -> Any:
+        assembled.extend(kwargs["middleware"])
+        return create_agent(*args, **kwargs)
+
+    monkeypatch.setattr(agent_module.deepagents_graph, "create_agent", inspect_graph)
+    cfg = replace(_config(tmp_path, "yolo"), auto_compact=False)
+    cfg = replace(cfg, compaction=replace(cfg.compaction, threshold_tokens=1))
+    with SessionStore(cfg.db_path) as session:
+        graph = await build_agent(registry, cfg, session, bus, exclude_general_purpose=True)
+        await graph.ainvoke(
+            {"messages": [{"role": "user", "content": "context " * 1000}]},
+            {"configurable": {"thread_id": "disabled"}},
+        )
+        await bus.emit(AppExit())
+    replacements = [item for item in assembled if item.name == "SummarizationMiddleware"]
+    assert len(replacements) == 1
+    assert isinstance(replacements[0], SummarizationMiddleware)
+    assert not replacements[0].compactor.policy.enabled
+    assert calls == ["main"]

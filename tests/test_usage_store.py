@@ -273,3 +273,43 @@ def test_stats_cli_isolated_database_without_provider_startup(tmp_path):
     invalid = run("session", "--session", "unknown")
     assert invalid.returncode != 0
     assert "Traceback" not in invalid.stderr
+
+
+@pytest.mark.asyncio
+async def test_rule_interrupt_preserves_partial_usage_once_across_retry(tmp_path):
+    from orcha_agent.extensibility.stream_rules import StreamInterrupt, StreamRetry
+
+    with SessionStore(tmp_path / "usage.db") as session:
+        info = session.create(tmp_path, "fake:model")
+        cfg = SimpleNamespace(model="fake:model", pricing={"fake:model": {"input": 1, "output": 2}})
+        callback = UsageCallback(session, cfg)
+        interrupted, retry = uuid4(), uuid4()
+        partial = AIMessage(
+            content="forbidden",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 3,
+                "total_tokens": 103,
+                "input_token_details": {"cache_read": 40, "cache_creation": 10},
+            },
+        )
+        error = StreamInterrupt(StreamRetry([]), [partial])
+        response = LLMResult(generations=[[ChatGeneration(message=partial)]])
+        await callback.on_chat_model_start(
+            {}, [], run_id=interrupted, metadata={"thread_id": info.current_thread}
+        )
+        await callback.on_llm_error(error, run_id=interrupted)
+        await callback.on_llm_error(error, run_id=interrupted)
+        await callback.on_llm_end(response, run_id=interrupted)
+        await callback.on_chat_model_start(
+            {}, [], run_id=retry, metadata={"thread_id": info.current_thread}
+        )
+        await callback.on_llm_end(response, run_id=retry)
+        rows = session._connection.execute("SELECT * FROM usage_requests ORDER BY ts").fetchall()
+        assert len(rows) == 2
+        assert [row["stop_reason"] for row in rows] == ["error", ""]
+        assert [row["input_tokens"] for row in rows] == [100, 100]
+        assert [row["output_tokens"] for row in rows] == [3, 3]
+        assert rows[0]["cache_read"] == 40 and rows[0]["cache_write"] == 10
+        assert rows[0]["cost"] == pytest.approx(0.000106)
+        assert callback.pending == {}

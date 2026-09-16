@@ -1,0 +1,38 @@
+╭─ Themes ─────────────────────────────────────╮
+│  › ansi                                      │
+│    catppuccin-frappe                         │
+│    catppuccin-latte                          │
+│    catppuccin-latte-mauve                    │
+│    catppuccin-macchiato                      │
+│    catppuccin-mocha                          │
+│    dark (current)                            │
+│    dracula                                   │
+│    dracula-purple                            │
+│    everforest                                │
+│    forest-dark                               │
+│    forest-light                              │
+│    github-dark                               │
+│    github-light                              │
+│    gruvbox                                   │
+│    gruvbox-dark                              │
+│    gruvbox-light                             │
+│    kanagawa                                  │
+│    light                                     │
+│    monokai-dark                              │
+│    nord                                      │
+│    nord-muted                                │
+│    ocean-dark                                │
+│    one-dark                                  │
+│    one-light                                 │
+│    paper-light                               │
+│    rose-pine                                 │
+│    rose-pine-dawn                            │
+│    rose-pine-moon                            │
+│    rose-pine-raised                          │
+│    solarized-dark                            │
+│    solarized-light                           │
+│    tokyo-night                               │
+│    tokyo-night-day                           │
+│    tokyo-night-storm                         │
+│  (1/35)  ↑↓ move · PgUp/PgDn page · Enter se │
+╰──────────────────────────────────────────────╯

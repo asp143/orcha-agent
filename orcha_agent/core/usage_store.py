@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -139,6 +140,14 @@ def usage_table(rows: list[dict[str, Any]], period: str) -> Table:
     return table
 
 
+def _add_usage(total: dict[str, Any], values: Mapping[str, Any]) -> None:
+    for key in ("input_tokens", "output_tokens"):
+        total[key] = total.get(key, 0) + values.get(key, 0)
+    details = total.setdefault("input_token_details", {})
+    for key, value in values.get("input_token_details", {}).items():
+        details[key] = details.get(key, 0) + (value or 0)
+
+
 class UsageCallback(AsyncCallbackHandler):
     """One row per model run; callbacks are inherited by nested model requests."""
 
@@ -204,11 +213,7 @@ class UsageCallback(AsyncCallbackHandler):
             for generation in group:
                 message = getattr(generation, "message", None)
                 values = getattr(message, "usage_metadata", None) or {}
-                for key in ("input_tokens", "output_tokens"):
-                    usage[key] = usage.get(key, 0) + values.get(key, 0)
-                details = usage.setdefault("input_token_details", {})
-                for key, value in values.get("input_token_details", {}).items():
-                    details[key] = details.get(key, 0) + (value or 0)
+                _add_usage(usage, values)
                 metadata = getattr(message, "response_metadata", None) or {}
                 stop = str(
                     metadata.get("stop_reason")
@@ -221,7 +226,16 @@ class UsageCallback(AsyncCallbackHandler):
     async def on_llm_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         pending = self.pending.pop(run_id, None)
         if pending is not None:
-            await self._record(run_id, pending, {}, "error")
+            from orcha_agent.extensibility.stream_rules import StreamInterrupt
+
+            usage: dict[str, Any] = {}
+            if isinstance(error, StreamInterrupt):
+                # The authoritative rule callback may abort on a chunk that
+                # already reports billable usage. Keep those deltas on this
+                # failed request; the retry receives its own run ID and row.
+                for message in error.usage:
+                    _add_usage(usage, message.usage_metadata or {})
+            await self._record(run_id, pending, usage, "error")
 
     async def _record(
         self, run_id: UUID, pending: dict[str, Any], usage: dict[str, Any], stop: str

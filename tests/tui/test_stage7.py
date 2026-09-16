@@ -267,7 +267,7 @@ async def test_hud_clips_each_section_to_eight_rendered_rows(
 
 
 @pytest.mark.asyncio
-async def test_startup_warnings_are_replayed_only_after_welcome(tmp_path: Path) -> None:
+async def test_startup_warnings_precede_the_welcome(tmp_path: Path) -> None:
     keys = tmp_path / "keys.toml"
     keys.write_text(
         '[bindings]\nsubmit = "c-x"\nqueue = "c-x"\n',
@@ -286,8 +286,8 @@ async def test_startup_warnings_are_replayed_only_after_welcome(tmp_path: Path) 
         runtime.flush_early_notifications()
 
         assert [block.kind for block in runtime.frame.blocks] == [
-            "welcome",
             "banner",
+            "welcome",
         ]
         await runtime.scheduler.aclose()
 

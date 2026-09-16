@@ -41,7 +41,9 @@ def register(api: PluginAPI) -> None:
             ctx.console.error("Usage: /usage [today|week|session|all]")
             return
         rows = await asyncio.to_thread(UsageStore(ctx.session).report, period, ctx.session_id)
-        ctx.console.print(usage_table(rows, period))
+        from orcha_agent.tui.panels import table_panel
+
+        ctx.console.print(table_panel(usage_table(rows, period)))
 
     api.on(AppStart, started)
     api.on(TurnEnd, refresh)

@@ -122,5 +122,35 @@ def test_untrusted_welcome_wraps_at_eighty_columns_without_changing_height() -> 
 
     assert "Untrusted folder · project" in rendered
     assert "config skipped" in rendered
-    assert len(lines) == 14
+    assert len(lines) == 16
     assert all(Text(line).cell_len == 78 for line in lines)
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_full_recent_sessions_keep_all_command_tips(width: int) -> None:
+    rendered = _capture(
+        {
+            "logo": WIDE_LOGO,
+            "sessions": ["one", "two", "three", "four"],
+            "model": "model",
+            "mode": "ask",
+            "cwd": "~/project",
+            "tip": "Use /help",
+        },
+        width=width,
+    )
+    for caption in ("/ commands", "@ files", "! shell", "Alt+A agents", "four"):
+        assert caption in rendered
+    assert len(rendered.splitlines()) == 16
+    cwd_row = next(row for row in rendered.splitlines() if "~/project" in row)
+    left = cwd_row.split("│")[1]
+    assert abs(len(left) - len(left.lstrip()) - (len(left) - len(left.rstrip()))) <= 1
+
+
+def test_welcome_uses_installed_distribution_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("orcha_agent.builtin.banner.metadata.version", lambda package: "9.8.7")
+    data = build_welcome(_context(tmp_path, trusted=True))
+    assert data["version"] == "9.8.7"
+    assert "orcha v9.8.7" in _capture(data)

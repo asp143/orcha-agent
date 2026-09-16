@@ -18,7 +18,7 @@ def render(
     budget_rows: int,
     expanded: bool,
 ) -> Text:
-    del width, budget_rows, expanded
+    del budget_rows, expanded
     supplied = block.data.get("text")
     if supplied:
         label = str(supplied)
@@ -30,4 +30,10 @@ def render(
             "branch": f"⎇ branched to {block.data.get('new', '')}".rstrip(),
         }
         label = labels.get(reason, reason)
-    return Text(label, style=f"dim {theme_value(theme, 'muted')}")
+    caption = Text(f" {label} ")
+    caption.truncate(max(1, width - 2), overflow="ellipsis")
+    remaining = max(0, width - caption.cell_len)
+    return Text(
+        "─" * (remaining // 2) + caption.plain + "─" * (remaining - remaining // 2),
+        style=f"dim {theme_value(theme, 'muted')}",
+    )

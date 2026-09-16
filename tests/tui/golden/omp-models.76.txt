@@ -15,5 +15,5 @@
 │    @advisor  main (inherited)                                            │
 │  Catalog                                                                 │
 │    Browse catalog… (search context, cost, thinking and vision)           │
-│  (1/13)  J/K navigate · PgUp/PgDn page · Enter select · Esc close        │
+│  (1/13)  ↑↓ move · PgUp/PgDn page · Enter select · Esc close             │
 ╰──────────────────────────────────────────────────────────────────────────╯

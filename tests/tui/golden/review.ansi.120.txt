@@ -1,0 +1,13 @@
+<ESC>[1;31m+-<ESC>[0m<ESC>[1;31m Review · 2 findings · Incorrect <ESC>[0m<ESC>[1;31m-----------------------------------------------------------------------------------<ESC>[0m<ESC>[1;31m-+<ESC>[0m
+<ESC>[1;31m|<ESC>[0m <ESC>[1;31mP0 · 1 finding<ESC>[0m                                                                                                       <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m   <ESC>[1;31mUnbounded finding output<ESC>[0m                                                                                           <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m     <ESC>[2;90morcha_agent/tui/blocks/review.py:132-151<ESC>[0m<ESC>[2;90m · confidence 99%<ESC>[0m                                                        <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m     <ESC>[37mLarge reviews must respect the viewport budget.<ESC>[0m                                                                  <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m <ESC>[1;31mP1 · 1 finding<ESC>[0m                                                                                                       <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m   <ESC>[1;31mCard can hide the verdict<ESC>[0m                                                                                          <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m     <ESC>[2;90morcha_agent/tui/blocks/review.py:142-151<ESC>[0m<ESC>[2;90m · confidence 97%<ESC>[0m                                                        <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m     <ESC>[37mA cropped card must retain the overall review result.<ESC>[0m                                                            <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m                                                                                                                      <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m Verdict · <ESC>[1;31mIncorrect<ESC>[0m                                                                                                  <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m|<ESC>[0m <ESC>[37mBlocking findings remain in the review renderer.<ESC>[0m                                                                     <ESC>[1;31m|<ESC>[0m
+<ESC>[1;31m+----------------------------------------------------------------------------------------------------------------------+<ESC>[0m

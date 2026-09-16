@@ -6,6 +6,9 @@ import subprocess
 import threading
 import time
 import weakref
+from io import StringIO
+
+from rich.console import Console
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -54,7 +57,9 @@ class _Console:
         self.output: list[str] = []
 
     def print(self, value: object, **_kwargs: Any) -> None:
-        self.output.append(str(value))
+        stream = StringIO()
+        Console(file=stream, width=self.width, color_system=None).print(value)
+        self.output.extend(stream.getvalue().splitlines())
 
 
 class _Session:
@@ -164,7 +169,7 @@ def test_segment_protocol_wraps_legacy_strings_and_preserves_explicit_segments()
 def test_preset_groups_are_stable() -> None:
     assert PRESETS == {
         "default": (
-            ("brand", "model", "mode", "path", "git", "context", "cost"),
+            ("brand", "vim", "model", "cost", "mode", "path", "git", "context"),
             ("compaction", "subagents", "session"),
         ),
         "minimal": (("brand", "model", "path"), ("context",)),
@@ -192,10 +197,10 @@ def test_every_preset_resolves_and_renders(preset: str, tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, registry=registry, cfg=_cfg(tmp_path, preset=preset))
     statusbar.register(_api(registry, EventBus(), ctx.plugin_states["statusbar"]))
 
-    rendered = _plain(render_statusline(ctx, _Theme(), width=120, composer_shape="borderless"))
+    rendered = _plain(render_statusline(ctx, _Theme(), width=200, composer_shape="borderless"))
 
     assert rendered
-    assert len(rendered) <= 120
+    assert len(rendered) <= 200
     if preset == "ascii":
         assert rendered.isascii()
     if preset == "default":
@@ -210,7 +215,7 @@ def test_every_preset_resolves_and_renders(preset: str, tmp_path: Path) -> None:
         ("none", ""),
         ("pipe", ""),
         ("powerline", ""),
-        ("powerline-thin", "│"),
+        ("powerline-thin", "·"),
         ("slash", "/"),
     ],
 )
@@ -288,13 +293,13 @@ def test_box_context_uses_gap_gauge_while_other_shapes_use_segment(tmp_path: Pat
     cfg = _cfg(tmp_path, separator="none", left=("left",), right=("context", "right"))
     ctx = _ctx(tmp_path, registry=registry, cfg=cfg)
 
-    box = _plain(render_statusline(ctx, _Theme(), width=48, composer_shape="box"))
+    box = _plain(render_statusline(ctx, _Theme(), width=120, composer_shape="box"))
     borderless = _plain(render_statusline(ctx, _Theme(), width=48, composer_shape="borderless"))
     narrow = _plain(render_statusline(ctx, _Theme(), width=7, composer_shape="box"))
 
     assert box.index("LEFT") < box.index("50%") < box.index("RIGHT")
     assert "50.0%/100k" in borderless
-    assert len(box) == 48
+    assert len(box) == 120
     assert len(narrow) == 7
 
 
@@ -644,7 +649,13 @@ async def test_status_command_prints_effective_segments_without_markup(tmp_path:
 
     await registry.commands["status"].handler(ctx, "")
 
-    assert [line.partition(":")[0] for line in ctx.console.output] == ["model", "mode", "tokens"]
+    rows = [line.strip("│ ") for line in ctx.console.output if line.startswith("│")]
+    assert [row.split()[0] for row in rows if row and not row.startswith("Segment")] == [
+        "model",
+        "mode",
+        "tokens",
+    ]
+    assert ctx.console.output[0].startswith("╭")
     assert all("<style" not in line and "class:" not in line for line in ctx.console.output)
     assert [name for name, _segment in visible_segments(ctx)] == ["model", "mode", "tokens"]
 

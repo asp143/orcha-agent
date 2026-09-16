@@ -249,7 +249,7 @@ def test_task_cards_cover_running_done_and_failed_states(
     output = plain(render_task(task_block(status), THEME, 120, 100, expanded))
 
     assert "⇶ Task · 5 agents" in output
-    assert f"{marker} Worker-4 ⟨reviewer⟩: assignment 4 ⟦{status}⟧" in output
+    assert f"{marker} Worker-4 ⟨reviewer⟩: assignment 4 · {status}" in output
     assert footer in output
     assert "└ read:" in output
     assert "x" * 40 not in output
@@ -274,7 +274,7 @@ def test_task_row_without_agent_type_omits_type_brackets() -> None:
 
     output = plain(render_task(value, THEME, 120, 100, False))
 
-    assert "✔ Legacy: old task ⟦done⟧" in output
+    assert "✔ Legacy: old task · done" in output
     assert "⟨" not in output
 
 
@@ -296,7 +296,7 @@ def test_task_row_omits_matching_agent_type_case_insensitively() -> None:
 
     output = plain(render_task(value, THEME, 120, 100, False))
 
-    assert "✔ Scout: inspect code ⟦done⟧" in output
+    assert "✔ Scout: inspect code · done" in output
     assert "⟨" not in output
 
 

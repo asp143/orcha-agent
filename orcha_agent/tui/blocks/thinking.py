@@ -14,7 +14,7 @@ from .markdown import StreamingMarkdown as Markdown
 
 from . import theme_spinner, theme_symbol, theme_value, with_leading_spacer
 
-SPINNER_FRAMES = ("✻", "✼", "❉", "❊", "✺", "✹", "✸", "✶")
+SPINNER_FRAMES = tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 
 def render(
@@ -31,6 +31,7 @@ def render(
             str(block.data.get("text", "")),
             style=f"{'dim strike' if block.data.get('aborted') else 'italic'} {theme_value(theme, 'thinkingText')}",
             code_theme=syntax_style(theme),
+            heading_color=str(theme_value(theme, "accent")),
         )
     else:
         frame = int(block.data.get("spinner_frame", 0))

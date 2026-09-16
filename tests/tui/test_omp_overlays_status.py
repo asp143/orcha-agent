@@ -153,7 +153,7 @@ def test_vim_segment_reads_actual_application_mode_without_status_callback() -> 
         editing_mode=EditingMode.VI, vi_state=SimpleNamespace(input_mode=InputMode.NAVIGATION)
     )
     ctx = SimpleNamespace(ui=SimpleNamespace(application=application))
-    assert vim_segment(ctx).text == "VI-NAVIGATION"
+    assert vim_segment(ctx).text == "NORMAL"
     application.editing_mode = EditingMode.EMACS
     assert vim_segment(ctx) is None
 

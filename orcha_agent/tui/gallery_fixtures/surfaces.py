@@ -11,6 +11,9 @@ from typing import Any
 from orcha_agent.core.config import StatusLineConfig, TuiConfig
 from orcha_agent.tui.frame import Block
 from orcha_agent.tui.overlays.help import HelpOverlay
+from orcha_agent.tui.overlays.hub import HubOverlay
+from orcha_agent.tui.overlays.theme import ThemeOverlay
+from orcha_agent.tui.theme import load_themes
 from orcha_agent.tui.overlays.model import ModelOverlay
 from orcha_agent.tui.overlays.settings import SettingsOverlay
 from orcha_agent.tui.statusline import brand_segment, cache_hit_segment, token_rate_segment
@@ -22,6 +25,8 @@ class _Config:
     composer: str = "box"
     theme: str = "dark"
     notify: bool = False
+    mode: str = "ask"
+    auto_compact: bool = True
     model: str = "demo:small"
     tui: TuiConfig = field(default_factory=TuiConfig)
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
@@ -60,6 +65,13 @@ def surface_fixtures() -> dict[str, list[str]]:
     settings.category = 3
     settings._load()
     terminal_rows = settings.render_text().splitlines()
+    settings.category = 2
+    settings._load()
+    behaviour_rows = settings.render_text().splitlines()
+    ctx.ui.themes = load_themes(home=Path("/tmp/orcha-gallery-empty-home"))
+    ctx.ui.theme = ctx.ui.themes["dark"]
+    themes = ThemeOverlay(ctx)
+    hub = HubOverlay(ctx)
     activity_rows = []
     ctx.plugin_states["statusbar"]["_turn_started"] = monotonic()
     for kind, data in (("thinking", {}), ("tool", {"name": "bash"})):
@@ -79,6 +91,9 @@ def surface_fixtures() -> dict[str, list[str]]:
             "Terminal",
             *terminal_rows,
         ],
+        "Behaviour": behaviour_rows,
+        "Themes": themes.render_text().splitlines(),
+        "Agent Hub": hub.render_text().splitlines(),
         "Models": models.render_text().splitlines(),
         "Status": [" | ".join(segment.text for segment in segments if segment), *activity_rows],
         "Help": help_overlay.text.splitlines(),

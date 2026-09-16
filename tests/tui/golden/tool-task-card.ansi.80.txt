@@ -1,6 +1,6 @@
 
-<ESC>[90;40m+--- ⇶ Task · 2 agents <ESC>[0m<ESC>[90;40m--------------------------------------------------------+<ESC>[0m
-<ESC>[90;40m| ✔ a ⟨scout⟩: inspect ⟦success⟧ 3 req · 4s                                    <ESC>[0m<ESC>[90;40m|<ESC>[0m
-<ESC>[90;40m| ✘ b ⟨reviewer⟩: test ⟦error⟧ 2 req · 7s                                      <ESC>[0m<ESC>[90;40m|<ESC>[0m
-<ESC>[90;40m| ⟦1 succeeded · 1 failed · 5 req · 11s⟧                                       <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m+--- ⇶ Task · 2 agents<ESC>[0m<ESC>[90;40m -------------------------------------------------------<ESC>[0m<ESC>[90;40m-+<ESC>[0m
+<ESC>[90;40m| ✔ a ⟨scout⟩: inspect · success 3 req · 4s                                    <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| ✘ b ⟨reviewer⟩: test · error 2 req · 7s                                      <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| 1 succeeded · 1 failed · 5 req · 11s                                         <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m+------------------------------------------------------------------------------+<ESC>[0m

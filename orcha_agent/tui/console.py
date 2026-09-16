@@ -36,6 +36,18 @@ class ConsoleOutput:
             return
         self.console.print(Panel(Text(message), title="Error", border_style="red"))
 
+    def exception(self, exc: BaseException, *, message: str | None = None) -> None:
+        from .errors import humanize_error
+
+        text = message or humanize_error(exc)
+        if self.transcript is not None:
+            block = self.transcript.pin_error(text)
+            block.update(error_type=type(exc).__name__)
+            return
+        content = Text(text)
+        content.append(f"\n{type(exc).__name__}", style="dim")
+        self.console.print(Panel(content, title="Error", border_style="red"))
+
     def warning(self, message: str) -> None:
         if self.transcript is not None:
             self.transcript.append_banner(message, level="warning")

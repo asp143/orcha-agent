@@ -35,6 +35,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
+from rich.panel import Panel
 from orcha_agent.builtin.advisor import AdvisorService
 
 from orcha_agent.core.config import Config, is_trusted_cwd
@@ -62,6 +63,7 @@ from orcha_agent.core.persistence import TursoPersistenceError, open_session_sto
 from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
+from .errors import humanize_error
 from .blocks.image import image_protocol
 from .blocks.terminal import clear_terminal_cache
 from .blocks import (
@@ -92,7 +94,14 @@ from .queue import PromptQueue, split_submission
 from .notify import DesktopNotifier
 from .transcript import Transcript
 from .statusline import agent_counts, render_statusline
-from .theme import Theme, ThemeWatcher, apply_colorblind, load_themes, select_theme, theme_from_background
+from .theme import (
+    Theme,
+    ThemeWatcher,
+    apply_colorblind,
+    load_themes,
+    select_theme,
+    theme_from_background,
+)
 from .title import TerminalTitle
 from .turn import USER_PROMPT_ORIGIN, _run_cancellable_turn
 from .overlays import HubOverlay, KeyBindingsOverlay, register_builtin_overlays
@@ -104,8 +113,9 @@ from .overlays.hub import ledger_transcript_frame
 class StdoutStallWatchdog:
     """Track drain progress, rather than rejecting a large healthy frame."""
 
-    def __init__(self, arm_bytes: int = 262144, clear_bytes: int = 65536,
-                 stall_seconds: float = 1.0) -> None:
+    def __init__(
+        self, arm_bytes: int = 262144, clear_bytes: int = 65536, stall_seconds: float = 1.0
+    ) -> None:
         self.arm_bytes = arm_bytes
         self.clear_bytes = clear_bytes
         self.stall_seconds = stall_seconds
@@ -159,7 +169,7 @@ class _TerminalPump:
             try:
                 # Small chunks expose ongoing progress even for a large frame.
                 for offset in range(0, len(data), 1024):
-                    chunk = data[offset:offset + 1024]
+                    chunk = data[offset : offset + 1024]
                     self.stream.write(chunk)
                     self.stream.flush()
                     with self._lock:
@@ -214,10 +224,12 @@ class _TerminalReplies:
                     self.report(text[:3])
                     text = text[3:]
                     continue
-                match = re.match(r"\x1b\[\?2026;[0-4]\$y|\x1b\]11;[^\x07\x1b]*(?:\x07|\x1b\\)", text)
+                match = re.match(
+                    r"\x1b\[\?2026;[0-4]\$y|\x1b\]11;[^\x07\x1b]*(?:\x07|\x1b\\)", text
+                )
                 if match:
                     self.report(match[0])
-                    text = text[len(match[0]):]
+                    text = text[len(match[0]) :]
                     continue
                 prefixes = ("\x1b[?2026;", "\x1b]11;", "\x1b[200~", "\x1b[201~", "\x1b[I", "\x1b[O")
                 if any(prefix.startswith(text) for prefix in prefixes) or (
@@ -259,11 +271,12 @@ class _PaintOutput:
         terminal = os.environ.get("TERM", "").lower()
         program = os.environ.get("TERM_PROGRAM", "").lower()
         override = os.environ.get("ORCHA_SYNC_OUTPUT", "").lower()
-        self._detected_synchronized = (
-            override in {"1", "true"} or (override not in {"0", "false"} and (
+        self._detected_synchronized = override in {"1", "true"} or (
+            override not in {"0", "false"}
+            and (
                 any(name in terminal for name in ("kitty", "foot", "wezterm", "ghostty"))
                 or program in {"wezterm", "ghostty", "iterm.app", "vscode"}
-            ))
+            )
         )
         self.set_enabled(enabled)
         self._original_flush = self.output.flush
@@ -282,9 +295,11 @@ class _PaintOutput:
                 self._original_parser_flush = parser.flush
                 replies = _TerminalReplies(parser.feed, self.report)
                 parser.feed = replies
+
                 def flush_parser() -> None:
                     replies.flush()
                     self._original_parser_flush()
+
                 parser.flush = flush_parser
 
     def set_enabled(self, enabled: bool) -> None:
@@ -369,7 +384,9 @@ class _PaintOutput:
         degraded = stalled or lag > 0.25
         transitioned = degraded != self._degraded
         if degraded and transitioned:
-            self.logger.warning("Terminal repaint degraded: pending=%d loop_lag=%.3fs", pending, lag)
+            self.logger.warning(
+                "Terminal repaint degraded: pending=%d loop_lag=%.3fs", pending, lag
+            )
         self.application.min_redraw_interval = 0.1 if degraded else 1 / 60
         self._degraded = degraded
         # FrameScheduler owns activity ticks. An idle watchdog must not paint.
@@ -630,7 +647,10 @@ class ApplicationRuntime:
         self._tui_config = getattr(getattr(ctx, "cfg", None), "tui", None)
         self._base_theme = theme
         if isinstance(theme, Theme):
-            theme = replace(apply_colorblind(theme, getattr(self._tui_config, "colorblind", False)), hyperlinks=getattr(self._tui_config, "hyperlinks", True))
+            theme = replace(
+                apply_colorblind(theme, getattr(self._tui_config, "colorblind", False)),
+                hyperlinks=getattr(self._tui_config, "hyperlinks", True),
+            )
         self.theme: Any = theme
         self._render_theme_revision = 0
         self._viewport_scroll = 0
@@ -638,6 +658,9 @@ class ApplicationRuntime:
         self._todo_completed_at: dict[str, float] = {}
         self._expanded_tool_id: str | None = None
         self._last_tool_card: Block | None = None
+        # Settled command panels remain owned by the viewport until replaced.
+        # Writing them immediately would scroll them behind the full-height UI.
+        self._retained_panels: list[Block] = []
         self._theme_poll_task: asyncio.Task[Any] | None = None
         self.composer_shape = composer_shape
         self._themes = dict(themes or {})
@@ -744,7 +767,8 @@ class ApplicationRuntime:
 
         @core_bindings.add(
             "escape",
-            filter=Condition(lambda: self._active_overlay is None) & (~vi_mode | vi_navigation_mode),
+            filter=Condition(lambda: self._active_overlay is None)
+            & (~vi_mode | vi_navigation_mode),
         )
         def _escape(event: Any) -> None:
             self._escape_ladder(event)
@@ -829,12 +853,18 @@ class ApplicationRuntime:
             full_screen=False,
             min_redraw_interval=1 / 60,
             max_render_postpone_time=0.05,
-            mouse_support=Condition(lambda: self._active_overlay is not None or self._mouse_mode() == "full"),
-            editing_mode=EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS,
+            mouse_support=Condition(
+                lambda: self._active_overlay is not None or self._mouse_mode() == "full"
+            ),
+            editing_mode=EditingMode.VI
+            if getattr(self._tui_config, "vim", False)
+            else EditingMode.EMACS,
             cursor=ModalCursorShapeConfig(),
             **kwargs,
         )
-        self._paint_output = _PaintOutput(self.application, enabled=getattr(self._tui_config, "synchronized_output", True))
+        self._paint_output = _PaintOutput(
+            self.application, enabled=getattr(self._tui_config, "synchronized_output", True)
+        )
         self.ui.apply_settings = self._apply_settings
         self.ui.application = self.application
         self._original_scrollback_file = self._scrollback.file
@@ -842,12 +872,23 @@ class ApplicationRuntime:
             # Production passes an existing Rich console; it must use the same
             # ordered writer as PT so commits cannot race differential frames.
             self._scrollback.file = self._paint_output.pump
-        original_resize = self.application._on_resize
+
         def resize() -> None:
             if getattr(self._tui_config, "resize", "preserve") == "rebuild":
                 self._block_dispatcher.clear_cache()
                 self._viewport_scroll = 0
-            original_resize()
+            # Resize can reflow terminal rows before PT sees SIGWINCH, making
+            # its remembered relative cursor position stale. This fixed-height
+            # inline layout owns the bottom viewport: re-anchor there without
+            # clearing native scrollback or reserving another screen of rows.
+            renderer = self.application.renderer
+            output = self.application.output
+            output.cursor_goto(max(1, output.get_size().rows - self._root_height() + 1), 1)
+            output.erase_down()
+            renderer.reset(leave_alternate_screen=False)
+            renderer._min_available_height = self._root_height()
+            self.application._redraw()
+
         self.application._on_resize = resize
         self.application.ttimeoutlen = 0.1
         self.application.timeoutlen = 0.1
@@ -982,7 +1023,7 @@ class ApplicationRuntime:
         try:
             await send(run_id, text.strip())
         except Exception as exc:
-            self.ui.notify(f"{type(exc).__name__}: {exc}")
+            self.ui.notify(humanize_error(exc))
             return False
         self._refresh_drilled_frame(force=True)
         self.application.invalidate()
@@ -1018,7 +1059,11 @@ class ApplicationRuntime:
 
     def _has_spinner_activity(self) -> bool:
         outstanding = agent_counts(self.ctx)[2] if self.ctx is not None else 0
-        return self._turn_active or outstanding > 0 or any(time.monotonic() - value < 0.3 for value in self._todo_completed_at.values())
+        return (
+            self._turn_active
+            or outstanding > 0
+            or any(time.monotonic() - value < 0.3 for value in self._todo_completed_at.values())
+        )
 
     def _spinner_tick(self, frame: int) -> None:
         self._spinner_frame = frame
@@ -1027,10 +1072,20 @@ class ApplicationRuntime:
         self.title.set_spinner(spinner)
 
     def set_todos(self, todos: Any) -> None:
-        previous = {str(item.get("content", item.get("text", ""))): item.get("status") for item in self.ui.todos if isinstance(item, Mapping)}
+        previous = {
+            str(item.get("content", item.get("text", ""))): item.get("status")
+            for item in self.ui.todos
+            if isinstance(item, Mapping)
+        }
         self.ui.set_todos(todos)
-        current = {str(item.get("content", item.get("text", ""))): item for item in self.ui.todos if isinstance(item, Mapping)}
-        self._todo_completed_at = {key: value for key, value in self._todo_completed_at.items() if key in current}
+        current = {
+            str(item.get("content", item.get("text", ""))): item
+            for item in self.ui.todos
+            if isinstance(item, Mapping)
+        }
+        self._todo_completed_at = {
+            key: value for key, value in self._todo_completed_at.items() if key in current
+        }
         for key, item in current.items():
             if item.get("status") == "completed" and previous.get(key) != "completed":
                 self._todo_completed_at[key] = time.monotonic()
@@ -1055,7 +1110,9 @@ class ApplicationRuntime:
                     item = dict(item)
                     key = str(item.get("content", item.get("text", "")))
                     if key in self._todo_completed_at:
-                        item["completion_progress"] = min(1.0, (time.monotonic() - self._todo_completed_at[key]) / 0.25)
+                        item["completion_progress"] = min(
+                            1.0, (time.monotonic() - self._todo_completed_at[key]) / 0.25
+                        )
                 items.append(item)
             blocks.append(self._hud_block("todo", {"items": items}))
         if self.queue:
@@ -1268,7 +1325,11 @@ class ApplicationRuntime:
         return value[0] if isinstance(value, list) and value else str(value)
 
     def _status_text(self) -> Any:
-        self.ui.vim_mode = (str(self.application.vi_state.input_mode.value) if self.application.editing_mode == EditingMode.VI else None)
+        self.ui.vim_mode = (
+            str(self.application.vi_state.input_mode.value)
+            if self.application.editing_mode == EditingMode.VI
+            else None
+        )
         if self.ctx is None:
             if self._turn_active:
                 elapsed = int(time.monotonic() - self._turn_started)
@@ -1327,6 +1388,16 @@ class ApplicationRuntime:
     async def rebind_session(self, _event: SessionSwitch) -> None:
         """Restore editor-local state after AppContext activates a session."""
 
+        self.scheduler.commit_now()
+        await self._drain(self._terminal_pending)
+        if self._retained_panels:
+
+            def retire_panels() -> None:
+                previous, self._retained_panels = self._retained_panels, []
+                self._write_blocks(previous)
+                self._scrollback.print()
+
+            await self._run_in_app_terminal(retire_panels)
         self.buffer.reset(append_to_history=False)
         self.composer.forget_pastes()
         clear_terminal_cache()
@@ -1423,7 +1494,14 @@ class ApplicationRuntime:
 
     def _toggle_last_tool(self) -> None:
         frame = self._drilled_frame or self.frame
-        last = next((block for block in reversed(frame.blocks) if block.kind == "tool"), self._last_tool_card)
+        last = next(
+            (
+                block
+                for block in reversed(frame.blocks)
+                if block.kind == "tool" or block.data.get("details")
+            ),
+            self._last_tool_card,
+        )
         if last is not None:
             self._expanded_tool_id = None if self._expanded_tool_id == last.id else last.id
         self.ui.expand_tools(not self.ui.tools_expanded)
@@ -1722,6 +1800,7 @@ class ApplicationRuntime:
         self._shell_process = None
 
     async def _dispatch_submission(self, text: str) -> None:
+        self.transcript.release_startup()
         if text.strip() == "/settings":
             await self.ui.show("settings")
             return
@@ -1838,7 +1917,7 @@ class ApplicationRuntime:
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     self.transcript.append_banner("interrupted", level="warning")
                 except Exception as exc:
-                    self.transcript.pin_error(f"{type(exc).__name__}: {exc}")
+                    self._show_exception(exc)
                 finally:
                     self.queue.close_steering()
                     self._active_turn = None
@@ -1890,7 +1969,9 @@ class ApplicationRuntime:
         self.notifier.enabled = cfg.notify
         self.composer.set_shape(cfg.composer)
         self.composer_shape = cfg.composer
-        self.application.editing_mode = EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS
+        self.application.editing_mode = (
+            EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS
+        )
         self._paint_output.set_enabled(getattr(self._tui_config, "synchronized_output", True))
         self._apply_theme(self._base_theme)
 
@@ -1898,7 +1979,10 @@ class ApplicationRuntime:
         selected = self._themes.get(getattr(selected, "id", None), selected)
         self._base_theme = selected
         if isinstance(selected, Theme):
-            selected = replace(apply_colorblind(selected, getattr(self._tui_config, "colorblind", False)), hyperlinks=getattr(self._tui_config, "hyperlinks", True))
+            selected = replace(
+                apply_colorblind(selected, getattr(self._tui_config, "colorblind", False)),
+                hyperlinks=getattr(self._tui_config, "hyperlinks", True),
+            )
         self._render_theme_revision += 1
         self.composer.theme = selected
         self._block_dispatcher.clear_cache()
@@ -2047,7 +2131,10 @@ class ApplicationRuntime:
         return None
 
     def _viewport_fragments(self) -> Any:
-        return [(style, text, self._viewport_mouse) for style, text, *_ in self._viewport_text().__pt_formatted_text__()]
+        return [
+            (style, text, self._viewport_mouse)
+            for style, text, *_ in self._viewport_text().__pt_formatted_text__()
+        ]
 
     def _viewport_text(self) -> Any:
         size = self.application.output.get_size()
@@ -2067,14 +2154,29 @@ class ApplicationRuntime:
         # Working activity is represented by the status brand; retain retry
         # information as a distinct card and leave transcript accumulation alone.
         visible_frame = Frame()
-        visible_frame.blocks = [block for block in frame.blocks if block.kind != "working" or "retry_deadline" in block.data]
-        if self._last_tool_card is not None and self._last_tool_card.id == self._expanded_tool_id and not any(block.id == self._expanded_tool_id for block in visible_frame.blocks):
+        retained = self._retained_panels if frame is self.frame else []
+        visible_frame.blocks = [
+            *retained,
+            *[
+                block
+                for block in frame.blocks
+                if block.kind != "working" or "retry_deadline" in block.data
+            ],
+        ]
+        if (
+            self._last_tool_card is not None
+            and self._last_tool_card.id == self._expanded_tool_id
+            and not any(block.id == self._expanded_tool_id for block in visible_frame.blocks)
+        ):
             visible_frame.blocks.append(replace(self._last_tool_card, state=BlockState.SETTLED))
         if self._viewport_scroll or self._expanded_tool_id is not None:
-            all_lines = "\n".join(self._capture_block(block, width, 10000, force_terminal=True) for block in visible_frame.blocks).splitlines(keepends=True)
+            all_lines = "\n".join(
+                self._capture_block(block, width, 10000, force_terminal=True)
+                for block in visible_frame.blocks
+            ).splitlines(keepends=True)
             self._viewport_scroll = min(self._viewport_scroll, max(0, len(all_lines) - budget))
             end = len(all_lines) - self._viewport_scroll
-            return ANSI("".join(all_lines[max(0, end - budget):end]))
+            return ANSI("".join(all_lines[max(0, end - budget) : end]))
         rendered: list[str] = []
         plan = visible_frame.viewport_plan(
             budget,
@@ -2145,7 +2247,33 @@ class ApplicationRuntime:
 
     def _commit_blocks(self, blocks: list[Block]) -> None:
         def write_and_prune() -> None:
-            self._write_blocks(blocks)
+            first_panel = next(
+                (index for index, block in enumerate(blocks) if self._is_command_panel(block)), None
+            )
+            panels = blocks[first_panel:] if first_panel is not None else []
+            retire = bool(panels) or any(block.kind == "user" for block in blocks)
+            previous = self._retained_panels if retire else []
+            if retire:
+                self._retained_panels = [
+                    replace(block, state=BlockState.SETTLED) for block in panels
+                ]
+            if not retire and self._retained_panels:
+                # Preserve chronology: notices following a held panel retire
+                # with it, rather than reaching scrollback ahead of it.
+                self._retained_panels.extend(
+                    replace(block, state=BlockState.SETTLED) for block in blocks
+                )
+                written = []
+            else:
+                written = [
+                    *previous,
+                    *(blocks[:first_panel] if first_panel is not None else blocks),
+                ]
+            self._write_blocks(written)
+            if written and (panels or previous):
+                # The inline layout leaves one native terminal row above it.
+                # End the retired output on a blank line, not an orphan border.
+                self._scrollback.print()
             # Prune inside the suspended-app window: the redraw that follows
             # run_in_terminal must paint the frame WITHOUT the just-printed
             # blocks, or it re-renders them at full height and scrolls a
@@ -2172,6 +2300,13 @@ class ApplicationRuntime:
 
         self._track(write_and_release(), terminal=True)
 
+    @staticmethod
+    def _is_command_panel(block: Block) -> bool:
+        if block.kind != "raw":
+            return False
+        objects = block.data.get("objects", (block.data.get("renderable"),))
+        return any(isinstance(value, Panel) for value in objects)
+
     async def _clear_scrollback(self) -> None:
         self.scheduler.commit_now()
         await self._drain(self._terminal_pending)
@@ -2180,6 +2315,7 @@ class ApplicationRuntime:
             terminal=True,
         )
         self.transcript.clear()
+        self._retained_panels.clear()
         clear_terminal_cache()
         self._last_tool_card = None
         self._expanded_tool_id = None
@@ -2208,14 +2344,42 @@ class ApplicationRuntime:
                     self._apply_theme(self._themes[selected])
             if await asyncio.to_thread(watcher.changed, time.monotonic()):
                 warnings: list[str] = []
-                themes = await asyncio.to_thread(load_themes, cwd=cfg.cwd, trusted=cfg.trust_cwd,
-                                                 symbols=cfg.symbols, warn=warnings.append)
+                themes = await asyncio.to_thread(
+                    load_themes,
+                    cwd=cfg.cwd,
+                    trusted=cfg.trust_cwd,
+                    symbols=cfg.symbols,
+                    warn=warnings.append,
+                )
                 for warning in warnings:
                     self._notify(warning)
                 selected = themes.get(getattr(self.theme, "id", "dark"), themes["dark"])
                 self.replace_themes(themes, selected)
 
+    def _show_exception(self, exc: BaseException) -> None:
+        block = self.transcript.pin_error(humanize_error(exc))
+        block.update(error_type=type(exc).__name__)
+
+    def _loop_exception(self, _loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        import traceback
+
+        exc = context.get("exception")
+        if not isinstance(exc, BaseException):
+            exc = RuntimeError(str(context.get("message", "Unexpected background error")))
+        details = "".join(traceback.format_exception(exc))
+        descriptor, path = tempfile.mkstemp(prefix="orcha-error-", suffix=".log")
+        with os.fdopen(descriptor, "w") as output:
+            output.write(details)
+        self._show_exception(exc)
+        pinned = self.transcript._pinned_error
+        if pinned is not None:
+            pinned.update(details=details, log_path=path)
+        self.application.invalidate()
+
     async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(self._loop_exception)
         self._track(self._submit_serially(None))
         self.application.after_render += lambda _app: self._paint_output.start()
         self._theme_poll_task = asyncio.create_task(self._poll_themes())
@@ -2230,11 +2394,13 @@ class ApplicationRuntime:
                 ):
                     self.application.create_background_task(startup_setup(self.ctx))
 
-            await self.application.run_async(pre_run=start_setup)
+            await self.application.run_async(pre_run=start_setup, set_exception_handler=False)
         except EOFError:
             pass
         finally:
+            loop.set_exception_handler(previous_handler)
             self._shutting_down = True
+            self.transcript.release_startup()
             if self._theme_poll_task is not None:
                 self._theme_poll_task.cancel()
                 await asyncio.gather(self._theme_poll_task, return_exceptions=True)
@@ -2438,7 +2604,10 @@ async def _run_app(cfg: Config) -> int:
             except (KeyboardInterrupt, asyncio.CancelledError):
                 ctx.console.warning("interrupted")
             except Exception as exc:
-                ctx.console.error(f"{type(exc).__name__}: {exc}")
+                if isinstance(ctx.console, ConsoleOutput):
+                    ctx.console.exception(exc)
+                else:
+                    ctx.console.error(humanize_error(exc))
 
         available_themes, active_theme = _resolve_runtime_themes(
             ctx.cfg,

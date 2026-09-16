@@ -127,6 +127,12 @@ TOOL_GALLERY_FIXTURES: dict[
         result={"diff": _DIFF},
         error="edit did not apply",
     ),
+    "long_read_file": _tool_states(
+        "read_file",
+        args={"path": "src/" + "nested-module/" * 16 + "renderer_output.py"},
+        result="\n".join(f"source {index}" for index in range(15)),
+        error="file is not readable",
+    ),
     "delete": _tool_states(
         "delete",
         args={"path": "tmp/obsolete.txt"},
@@ -164,7 +170,7 @@ _WELCOME = {
     ],
     "model": "claude-opus-5",
     "mode": "ask",
-    "cwd": "~/src/orcha-agent",
+    "cwd": "/home/developer/workspaces/orcha-agent/fix-tui-polish-omp",
     "sessions": ["• gallery polish (now)", "• renderer parity (2h ago)"],
     "hints": ["✓ Trusted folder", "11 plugins loaded", "anthropic provider ready"],
 }
@@ -302,7 +308,9 @@ GALLERY_FIXTURES: dict[
         "streaming": _active(level="info", message="Gallery stream started."),
         "progress": _active(level="warning", message="Gallery render is still running."),
         "success": _settled(level="info", message="Gallery render completed."),
-        "error": _settled(level="error", message="Gallery renderer failed.\nFixture preserved."),
+        "error": _settled(
+            level="error", message="Gallery renderer failed.\nFixture preserved.", pinned=True
+        ),
     },
     "marker": {
         "streaming": _active(text="⊟ preparing gallery"),
@@ -315,7 +323,7 @@ GALLERY_FIXTURES: dict[
         "progress": _active(
             items=[
                 {"text": "render fixtures", "done": True, "completion_progress": 0.5},
-                {"text": "inspect output"},
+                {"text": "inspect output", "status": "in_progress"},
             ]
         ),
         "success": _settled(

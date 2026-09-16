@@ -312,7 +312,16 @@ async def test_rules_hooks_compaction_roles_and_usage_through_inline_runtime(
                     else [response.text]
                 )
                 for part in parts:
-                    yield ChatGenerationChunk(message=AIMessageChunk(content=part))
+                    yield ChatGenerationChunk(
+                        message=AIMessageChunk(
+                            content=part,
+                            usage_metadata=(
+                                {"input_tokens": 30, "output_tokens": 2, "total_tokens": 32}
+                                if part == "den"
+                                else None
+                            ),
+                        )
+                    )
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(
                         content="",
@@ -441,13 +450,22 @@ async def test_rules_hooks_compaction_roles_and_usage_through_inline_runtime(
         bus.on(Event, runtime.handle_presentation, plugin="presentation", priority=10_000)
         bus.on(Event, runtime.transcript.handle, plugin="transcript", priority=9_000)
 
+        def visible_text() -> str:
+            screen = runtime.application.renderer._last_screen
+            if screen is None:
+                return ""
+            return "\n".join(
+                "".join(screen.data_buffer[y][x].char for x in range(120))
+                for y in range(screen.height)
+            )
+
         def after_render(_application: Any) -> None:
             if (
                 completed.is_set()
                 and not runtime.streaming
                 and cards
                 and cards[0].state is BlockState.COMMITTED
-                and "WAVE2_COMPACTION_SUMMARY" in output.getvalue()
+                and "WAVE2_COMPACTION_SUMMARY" in output.getvalue() + visible_text()
             ):
                 painted.set()
 
@@ -481,10 +499,16 @@ async def test_rules_hooks_compaction_roles_and_usage_through_inline_runtime(
             rows = UsageStore(session).report("session", info.thread_id)
             assert {row["model"] for row in rows} == {"fake:small", "fake:summary"}
             assert sum(row["requests"] for row in rows) == 5
-            assert sum(row["input_tokens"] for row in rows) >= 1100
+            assert sum(row["input_tokens"] for row in rows) == 1150
+            interrupted = session._connection.execute(
+                "SELECT input_tokens, output_tokens FROM usage_requests WHERE stop_reason='error'"
+            ).fetchall()
+            assert [tuple(row) for row in interrupted] == [(30, 2)]
             assert "small" in resolved and "summary" in resolved
             assert any("Use safe wording instead." in messages[0].text for messages in received)
-            rendered = output.getvalue()
+            # Polish keeps the latest committed panels in the live viewport;
+            # older rows are written to scrollback. Assert their visible union.
+            rendered = output.getvalue() + visible_text()
             assert "WAVE2_COMPACTION_SUMMARY" in rendered
             assert "WAVE2_TURN_DONE" in rendered
             assert "REJECTED_SUFFIX" not in rendered

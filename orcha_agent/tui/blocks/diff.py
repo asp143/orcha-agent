@@ -136,7 +136,7 @@ def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: boo
         if output:
             output.append("\n")
         output.append(
-            f"… ({hidden_hunks} more hunks, {hidden_lines} more lines) ⟦Ctrl+O: Expand⟧",
+            f"… ({hidden_hunks} more hunks, {hidden_lines} more lines) · Ctrl+O to expand",
             style="dim",
         )
     return output
