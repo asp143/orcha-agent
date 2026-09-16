@@ -153,6 +153,113 @@ Optional watchdog instructions are loaded from the nearest `WATCHDOG.md` or
 Modes: `ask` approves writes and execution, `edit` approves execution, `yolo`
 auto-approves all tools, and `plan` exposes only read-only filesystem tools.
 
+## Tools
+
+Native tools are enabled by default with the local shell backend. Other backends
+retain their deepagents tools. Configure them in the project or user config:
+
+```toml
+[tools]
+native = true
+edit_format = "replace"  # "replace" or "hashline"
+```
+
+Set `native = false` to use the original deepagents filesystem tools
+(`read_file`, `write_file`, `edit_file`, `execute`, `grep`, `glob`, and `ls`).
+The native set replaces those names rather than exposing duplicate tools;
+`delete` remains available from deepagents. Tools retain the selected mode's
+approval rules: `ask` approves edits, writes, deletion, and shell execution;
+`edit` approves shell execution; `yolo` auto-approves; `plan` allows only reads.
+
+| Tool | Arguments and behavior |
+| --- | --- |
+| `read` | `path`: numbered text, a directory listing, or an image note. Defaults to 200 lines / 20 KB; large Python files may show a declaration outline. |
+| `edit` | `path`, `old_string`, `new_string`, optional `replace_all=false`; or transactional `edits=[{"old":"before","new":"after"}]`. Read the file first. Exact matching falls back to conservative typography, whitespace, and indentation matching; ambiguous candidates require more context. Writes atomically, preserves mode/EOL, and returns a unified diff. |
+| `write` | `path`, `content`: create or overwrite a UTF-8 file, creating parent directories; returns size and diff information. |
+| `bash` | `command`, optional `timeout`, `cwd`, `env`, `background`: execute builds, tests, git, and other commands in a persistent bash session. |
+| `bash_jobs` | `action="list"`, `"read"`, or `"kill"`; `job_id` for read/kill, optional zero-based line `offset` and `limit=200` for reading. |
+| `grep` | Regex `pattern`, optional `path`, `glob`, `case=true`, `context=0`, `limit`, `skip=0`; grouped content matches. Defaults to 20 files per page, or 200 matching lines when `path` is one file. |
+| `glob` | `pattern`, optional `path`, `limit=200`, `include_hidden=false`; newest files first, grouped by directory. |
+| `ls` | Optional `path="."`, `limit=200`; entries with sizes and modification times. |
+
+Read selectors use one-based, inclusive line numbers:
+
+```text
+read(path="src/app.py:40")              # a page starting at line 40
+read(path="src/app.py:40-65")           # an inclusive range
+read(path="src/app.py:40+20")           # 20 lines starting at line 40
+read(path="logs/build.log:-25")         # the last 25 lines
+read(path="src/app.py:5-16,960-973")     # multiple ranges
+read(path="src/app.py:raw")             # text without line-number gutters
+```
+
+Repeated reads of an unchanged range in the same user turn return a short
+notice. Oversized reads elide middle lines using a 60-line head and 25-line
+tail, subject to the byte budget. Follow the returned selector to retrieve
+omitted lines; `:raw` removes gutters but retains output limits.
+The third identical read adds a reminder that re-reading will not change the
+output. Python files with 500–20,000 lines and at most 2 MB use an AST declaration
+outline when no selector is supplied; body ranges in the outline can be read
+explicitly. Other languages keep paginated reads.
+
+With `edit_format = "hashline"`, `read` supplies a `[path#TAG]` snapshot header
+and numbered anchors. Pass `edit(patch="...")` using that exact header:
+
+```text
+[src/app.py#TAG_FROM_READ]
+PUT 2.=3:
++replacement for lines two through three
+PUT >$:
++append this line
+```
+
+`PUT <N:` and `PUT >N:` insert before or after a line; `CUT N` or
+`CUT N.=M` remove lines. `MV new/path` moves a file and `REM` removes it.
+Anchors in a section refer to the original read snapshot. Stale anchors can
+be remapped only when the original text remains uniquely identifiable;
+modified or ambiguous anchors require a fresh read.
+
+Search respects gitignore rules and excludes hidden entries by default.
+`grep` uses ripgrep when available and a Python fallback otherwise, including
+multiline regexes when the pattern contains a newline. Results cap at 20 files
+per page, 20 matches per file in multi-file searches or 200 in a single file,
+and 2,000 internal matches; at most the first 4 MB of each file is scanned,
+with a notice when the rest is omitted.
+Use the returned `skip` cursor for the next page: it counts matching files in a
+directory search and matching lines for a single file. Search one file to inspect
+more matches. `glob` returns partial results after five seconds; narrow the
+path/pattern or raise `limit` when a result notice indicates omitted files.
+
+```text
+grep(pattern="class .*Service", path="src", glob="*.py", skip=0)
+glob(pattern="**/*.py", path="src", limit=200)
+bash(command="cd src; export BUILD_MODE=debug")
+bash(command="printf '%s %s' \"$PWD\" \"$BUILD_MODE\"")
+bash(command="uv run pytest -q", background=true)
+bash_jobs(action="read", job_id="ID_FROM_BASH", offset=0, limit=200)
+bash_jobs(action="kill", job_id="ID_FROM_BASH")
+```
+
+Bash cwd and exported variables survive calls within the same live session;
+separate session threads are isolated. Background jobs inherit a snapshot and
+do not change the foreground shell. The default timeout is 300 seconds;
+nonzero values clamp to 1–3600, and `0` disables it. Timeout, cancellation,
+and job termination kill the process group. After a timeout the next call
+starts a shell with the last completed cwd/environment; shell functions and
+other unexported state are lost. Restarting orcha starts fresh shells and jobs.
+There is no PTY or interactive stdin interface; command stdin is closed.
+Simple `cat`, `head`, `tail`, `grep`, `find`, and `ls` commands receive hints to
+use native tools, while composed pipelines and mutating commands remain bash.
+
+Bash output is limited to 200 lines / 20 KB per response. The model receives
+ANSI-free text; the renderer also receives a bounded raw output artifact.
+Full command output remains under `.orcha/artifacts/large_tool_results/` in
+the starting workspace, with a recovery path and counts in truncation notices.
+For a single oversized line, follow the notice's Python byte-range command to
+retrieve the omitted bytes. Background output can also be paged through
+`bash_jobs`. Deepagents overflow handling remains active for oversized tool
+responses.
+
 ## Optional Turso persistence and structured memory
 
 SQLite remains the default and requires no additional dependency. Turso support is
