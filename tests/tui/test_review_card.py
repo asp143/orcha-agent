@@ -87,7 +87,7 @@ def test_review_groups_findings_by_priority_and_renders_review_details() -> None
     assert "Verdict · Incorrect" in output
     assert "Critical findings must be fixed." in output
     assert isinstance(rendered.title, Text)
-    assert rendered.title.plain == "Review · Incorrect"
+    assert rendered.title.plain == "Review · 3 findings · Incorrect"
     assert rendered.title.style == Style(color="red", bold=True)
     assert rendered.border_style == Style(color="red", bold=True)
 
@@ -107,11 +107,11 @@ def test_review_without_findings_renders_a_correct_verdict() -> None:
 
     assert isinstance(rendered, Panel)
     output = _capture(rendered, width=80)
-    assert "finding" not in output.casefold()
+    assert "0 findings" in output.casefold()
     assert "Verdict · Correct" in output
     assert "The implementation preserves the required invariants." in output
     assert isinstance(rendered.title, Text)
-    assert rendered.title.plain == "Review · Correct"
+    assert rendered.title.plain == "Review · 0 findings · Correct"
     assert rendered.title.style == Style(color="green", bold=True)
     assert rendered.border_style == Style(color="green", bold=True)
 

@@ -10,8 +10,10 @@ from typing import Any
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
+from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.completion import Completer
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, vi_navigation_mode
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.formatted_text import StyleAndTextTuples
@@ -146,7 +148,11 @@ class PasteChipProcessor(Processor):
             while (start := text.find(chip, start)) >= 0:
                 for index in range(start, start + len(chip)):
                     style, value, *handler = fragments[index]
-                    fragments[index] = (style + " class:composer.placeholder dim", value, *handler)
+                    fragments[index] = (
+                        style + " " + self.composer.paste_chip_style,
+                        value,
+                        *handler,
+                    )
                 start += len(chip)
         return Transformation(fragments)
 
@@ -340,10 +346,10 @@ class Composer:
 
     def insert_paste(self, text: str) -> None:
         text = repair_paste(text)
-        lines = text.count("\n") + 1
+        lines = len(text.splitlines())
         if lines >= 5 or len(text) >= 1000:
             self._paste_serial += 1
-            chip = f"[Pasted {lines} lines #{self._paste_serial}]"
+            chip = f"[+{lines} lines #{self._paste_serial}]"
             self._pastes[chip] = text
             text = chip
         self.buffer.insert_text(text)
@@ -381,6 +387,16 @@ class Composer:
 
         effective = DEFAULT_BINDINGS if effective is None else effective
         bindings = KeyBindings()
+
+        @bindings.add("/", filter=vi_navigation_mode, eager=True)
+        @bindings.add(":", filter=vi_navigation_mode, eager=True)
+        def command(event: Any) -> None:
+            event.app.vi_state.input_mode = InputMode.INSERT
+            self.buffer.cursor_position = 0
+            if not self.buffer.text.startswith("/"):
+                self.buffer.insert_text("/")
+            else:
+                self.buffer.cursor_position = 1
 
         @bindings.add(Keys.BracketedPaste)
         def paste(event: Any) -> None:
@@ -423,9 +439,28 @@ class Composer:
         return 1 if self.shape in {"box", "band"} else 2
 
     @property
+    def vim_mode(self) -> str | None:
+        app = get_app_or_none()
+        if app is None or app.editing_mode != EditingMode.VI:
+            return None
+        return "NORMAL" if app.vi_state.input_mode == InputMode.NAVIGATION else "INSERT"
+
+    def _color(self, token: str, fallback: str) -> str:
+        colors = getattr(self.theme, "colors", {})
+        return colors.get(token) or fallback
+
+    @property
+    def paste_chip_style(self) -> str:
+        return (
+            f"bg:{self._color('accent', '#7aa2f7')} {self._color('statusLineBg', '#111111')} bold"
+        )
+
+    @property
     def border_style(self) -> str:
         if self.buffer.text.lstrip().startswith("!"):
             return "class:bashmode"
+        if self.vim_mode is not None:
+            return "class:warning" if self.vim_mode == "NORMAL" else "class:accent"
         level = self._thinking().lower()
         if level not in {"off", "low", "medium", "high", "max"}:
             level = "off"
@@ -542,11 +577,14 @@ class Composer:
     def placeholder_fragments(self) -> StyleAndTextTuples:
         if self.buffer.text:
             return []
-        return [("class:composer.placeholder", _PLACEHOLDER)]
+        hint = (
+            "i to insert · / commands · : commands" if self.vim_mode == "NORMAL" else _PLACEHOLDER
+        )
+        return [("class:composer.placeholder", hint)]
 
     def completion_row_count(self) -> int:
         state = self.buffer.complete_state
-        return min(5, len(state.completions)) if state is not None else 0
+        return min(5, len(state.completions)) + 2 if state is not None and state.completions else 0
 
     def completion_fragments(self, width: int) -> StyleAndTextTuples:
         state = self.buffer.complete_state
@@ -565,7 +603,11 @@ class Composer:
             at_query = at_query[1:]
         at_query = at_query.rstrip('"')
 
-        rendered: StyleAndTextTuples = []
+        width = max(4, width)
+        inner = width - 4
+        border = "class:border"
+        surface = f"bg:{self._color('customMessageBg', '#222222')}"
+        rendered: StyleAndTextTuples = [(border, "╭" + "─" * (width - 2) + "╮\n")]
         for row_index, completion in enumerate(
             completions[start : start + visible],
             start=start,
@@ -597,7 +639,9 @@ class Composer:
                 )
             counter = f"({selected + 1}/{len(completions)})" if current else ""
             reserved = _width(counter) + (1 if counter else 0)
-            line = _clip_fragments(body, max(0, width - reserved))
+            line = _clip_fragments(body, max(0, inner - reserved))
+            used = _width("".join(fragment[1] for fragment in line))
+            line.append(("class:completion", " " * max(0, inner - reserved - used)))
             if counter:
                 line.extend(
                     [
@@ -605,9 +649,22 @@ class Composer:
                         ("class:completion.counter", counter),
                     ]
                 )
-            rendered.extend(line)
-            if row_index < start + visible - 1:
-                rendered.append(("", "\n"))
+            row_style = f"bg:{self._color('selectedBg', '#334155')}" if current else surface
+            rendered.append((border, "│"))
+            rendered.append((row_style, " "))
+            rendered.extend(
+                (
+                    style
+                    + " "
+                    + row_style
+                    + (" class:accent" if current and "label" in style else ""),
+                    text,
+                )
+                for style, text in line
+            )
+            rendered.append((row_style, " "))
+            rendered.append((border, "│\n"))
+        rendered.append((border, "╰" + "─" * (width - 2) + "╯"))
         return rendered
 
     def _content_width(self, width: int) -> int:

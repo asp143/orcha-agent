@@ -199,7 +199,7 @@ class TmuxHarness:
         payload = "paste-first\npaste-second\npaste-third\nfour\nfive\nsix"
         self.tmux("set-buffer", "--", payload)
         self.tmux("paste-buffer", "-p", "-t", self.session)
-        self.wait_until(lambda: "Pasted" in self.capture(), "collapsed paste")
+        self.wait_until(lambda: "+6 lines" in self.capture(), "collapsed paste")
         self.frames["after_paste"] = self.capture()
         if any(state.startswith("paste-submitted:") for state in self.states()):
             raise AssertionError("paste submitted without Enter")
@@ -295,6 +295,9 @@ def main() -> int:
     harness = TmuxHarness()
     try:
         result = harness.run()
+        from startup import verify_startup
+
+        result["startup"] = verify_startup()
     finally:
         harness.stop()
     print(json.dumps(result, indent=2, sort_keys=True))

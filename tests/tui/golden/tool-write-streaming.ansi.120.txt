@@ -1,17 +1,10 @@
 
-<ESC>[36;40m+--- Write: src/new.py <ESC>[0m<ESC>[36;40m------------------------------------------------------------------------------------------------+<ESC>[0m
-<ESC>[36;40m| … (content above)                                                                                                    <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m+--- <ESC>[0m<ESC>[36;40m⠹ <ESC>[0m<ESC>[1;36;40mWrite<ESC>[0m<ESC>[37;40m: src/new.py (15 lines)<ESC>[0m<ESC>[36;40m ----------------------------------------------------------------------------------<ESC>[0m<ESC>[36;40m-+<ESC>[0m
+<ESC>[36;40m| line 0                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 1                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| line 2                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
 <ESC>[36;40m| line 3                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
 <ESC>[36;40m| line 4                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
 <ESC>[36;40m| line 5                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 6                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 7                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 8                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 9                                                                                                               <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 10                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 11                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 12                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 13                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| line 14                                                                                                              <ESC>[0m<ESC>[36;40m|<ESC>[0m
-<ESC>[36;40m| ⣻ (streaming)                                                                                                        <ESC>[0m<ESC>[36;40m|<ESC>[0m
+<ESC>[36;40m| … 9 more lines · Ctrl+O to expand                                                                                    <ESC>[0m<ESC>[36;40m|<ESC>[0m
 <ESC>[36;40m+----------------------------------------------------------------------------------------------------------------------+<ESC>[0m

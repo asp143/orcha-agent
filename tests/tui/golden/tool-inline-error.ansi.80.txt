@@ -1,3 +1,3 @@
 
-✘ Grep: needle
+<ESC>[31m✘ <ESC>[0m<ESC>[1;36mGrep<ESC>[0m<ESC>[37m: needle<ESC>[0m
 <ESC>[31mpermission denied<ESC>[0m

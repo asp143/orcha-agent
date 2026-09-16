@@ -22,6 +22,7 @@ from prompt_toolkit.layout.processors import BeforeInput
 from orcha_agent.tui.frame import Block, Frame
 
 from .base import Overlay
+from .hints import key_hints
 
 if TYPE_CHECKING:
     from orcha_agent.core.ledger import Ledger as Ledger, build_context as build_context
@@ -268,7 +269,7 @@ class HubOverlay(Overlay):
                 Window(
                     self.roster_control,
                     width=Dimension(weight=11, min=24),
-                    wrap_lines=False,
+                    wrap_lines=True,
                     always_hide_cursor=True,
                 ),
                 Window(char="│", width=1, style="class:bordermuted"),
@@ -295,7 +296,7 @@ class HubOverlay(Overlay):
                     filter=Condition(lambda: self.mode == "message"),
                 ),
                 ConditionalContainer(
-                    Window(self.footer_control, height=1),
+                    Window(self.footer_control, wrap_lines=True, dont_extend_height=True),
                     filter=Condition(lambda: self.mode == "roster"),
                 ),
             ]
@@ -320,6 +321,16 @@ class HubOverlay(Overlay):
         @bindings.add("up", filter=roster)
         def _up(event: Any) -> None:
             self.move(-1)
+            event.app.invalidate()
+
+        @bindings.add("pagedown", filter=roster)
+        def _page_down(event: Any) -> None:
+            self.move(8)
+            event.app.invalidate()
+
+        @bindings.add("pageup", filter=roster)
+        def _page_up(event: Any) -> None:
+            self.move(-8)
             event.app.invalidate()
 
         @bindings.add("/", filter=roster)
@@ -604,7 +615,7 @@ class HubOverlay(Overlay):
             for run in runs
         )
         cost = sum(float(getattr(run, "cost", 0.0) or 0.0) for run in runs)
-        parts.extend((f"{requests} req", f"{tokens} tok", f"${cost:.4f}"))
+        parts.extend((f"{requests} req", f"{tokens} tok", f"${cost:.2f}"))
         suffix = " · tree" if self.tree_mode else ""
         return " · ".join(parts) + suffix
 
@@ -614,7 +625,14 @@ class HubOverlay(Overlay):
     def _roster_fragments(self) -> StyleAndTextTuples:
         runs = self.filtered_runs
         if not runs:
-            return [("class:muted", "  No matching agents\n")]
+            return [
+                (
+                    "class:muted",
+                    "  No matching agents\n"
+                    if self.filter.text
+                    else "  No agents yet · spawned by the task tool\n",
+                )
+            ]
         fragments: StyleAndTextTuples = []
         width = max(24, int(self.inner_width * 0.55) - 1)
         for offset, run in enumerate(runs):
@@ -705,12 +723,20 @@ class HubOverlay(Overlay):
                 else "class:accent"
             )
             return [(style, self.notice)]
-        return [
+        return key_hints(
             (
-                "class:muted",
-                "j/k move · / filter · t tree · Enter open · m message · x cancel · r revive · y copy · Esc close",
+                ("↑↓", "move"),
+                ("PgUp/PgDn", "page"),
+                ("Enter", "select"),
+                ("Esc", "close"),
+                ("/", "filter"),
+                ("t", "tree"),
+                ("m", "message"),
+                ("x", "cancel"),
+                ("r", "revive"),
+                ("y", "copy"),
             )
-        ]
+        )
 
     def render_text(self) -> str:
         return (

@@ -85,16 +85,16 @@ def test_default_statusline_matches_omp_order_separator_and_colors(tmp_path: Pat
     ctx = _ctx(tmp_path)
 
     assert PRESETS["default"] == (
-        ("brand", "model", "mode", "path", "git", "context", "cost"),
+        ("brand", "vim", "model", "cost", "mode", "path", "git", "context"),
         ("subagents", "session"),
     )
     assert [name for name, _segment in visible_segments(ctx)] == [
         "model",
+        "cost",
         "mode",
         "path",
         "git",
         "context",
-        "cost",
         "subagents",
         "session",
     ]
@@ -102,9 +102,9 @@ def test_default_statusline_matches_omp_order_separator_and_colors(tmp_path: Pat
     fragments = render_statusline(ctx, _Theme(), width=120, composer_shape="borderless")
     plain = _plain(fragments)
     assert plain.index(" MODEL ") < plain.index(" MODE ") < plain.index(" PATH ")
-    assert plain.index("GIT") < plain.index("50.0%/100k") < plain.index("$1.25")
+    assert plain.index("$1.25") < plain.index("GIT") < plain.index("50.0%/100k")
     assert plain.index(" 2 ") < plain.index(" SESSION ")
-    assert "│" in plain
+    assert "·" in plain
     for label, token in (
         ("MODEL", "statuslinemodel"),
         ("PATH", "statuslinepath"),
@@ -121,10 +121,10 @@ def test_transparent_box_keeps_fixed_plain_context_gauge(tmp_path: Path) -> None
     ctx.cfg.statusline.left = ("model",)
     ctx.cfg.statusline.right = ("context", "session")
 
-    fragments = render_statusline(ctx, _Theme(), width=80, composer_shape="box")
+    fragments = render_statusline(ctx, _Theme(), width=120, composer_shape="box")
     plain = _plain(fragments)
 
-    assert _cell_width(fragments) == 80
+    assert _cell_width(fragments) == 120
     assert plain.index("MODEL") < plain.index("50%") < plain.index("SESSION")
     assert plain.count("━") == 10
     assert plain.count("─") == 10
@@ -134,8 +134,8 @@ def test_transparent_box_keeps_fixed_plain_context_gauge(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("width", "gauge_visible"),
     [
-        (23, False),
-        (24, True),
+        (99, False),
+        (100, True),
     ],
 )
 def test_context_gauge_is_hidden_atomically_below_its_minimum_width(
@@ -153,11 +153,11 @@ def test_context_gauge_is_hidden_atomically_below_its_minimum_width(
 
     assert _cell_width(fragments) == width
     if gauge_visible:
-        assert plain == "━━━━━━━━━━────────── 50%"
+        assert "━━━━━━━━━━────────── 50%" in plain
     else:
         assert "MODEL" in plain
         assert "SESSION" in plain
-        assert "50%" not in plain
+        assert "50.0%/100k" in plain
         assert "━" not in plain
         assert "─" not in plain
 
@@ -181,7 +181,7 @@ def test_context_gauge_has_twenty_cells_and_threshold_color(
     ctx.cfg.statusline.left = ("model",)
     ctx.cfg.statusline.right = ("context", "session")
 
-    fragments = render_statusline(ctx, _Theme(), width=80, composer_shape="box")
+    fragments = render_statusline(ctx, _Theme(), width=120, composer_shape="box")
     plain = _plain(fragments)
 
     assert plain.count("━") == filled_cells
@@ -208,40 +208,22 @@ def test_presets_keep_fixed_gauge_without_overflow(
     filled, empty = ("#", "-") if preset == "ascii" else ("━", "─")
 
     assert _cell_width(fragments) == width
-    assert plain.count(filled) == 10
-    assert plain.count(empty) == 10
-    assert "50%" in plain
+    if width >= 100:
+        assert plain.count(filled) == 10
+        assert plain.count(empty) == 10
+        assert "50%" in plain
+    else:
+        assert filled not in plain
+        assert empty not in plain
 
 
 @pytest.mark.parametrize("transparent", (False, True))
-def test_pressure_removes_provider_before_truncating_model_and_keeps_gauge(
-    tmp_path: Path,
-    transparent: bool,
-) -> None:
-    ctx = _ctx(
-        tmp_path,
-        transparent=transparent,
-        model_text="provider-name:extremely-long-model-name",
-    )
+def test_pressure_drops_rightmost_whole_segments(tmp_path: Path, transparent: bool) -> None:
+    ctx = _ctx(tmp_path, transparent=transparent)
     ctx.cfg.statusline.separator = "none"
-    ctx.cfg.statusline.left = ("model",)
-    ctx.cfg.statusline.right = ("context",)
-
-    provider_trimmed = render_statusline(ctx, _Theme(), width=60, composer_shape="box")
-    model_trimmed = render_statusline(ctx, _Theme(), width=40, composer_shape="box")
-    provider_plain = _plain(provider_trimmed)
-    model_plain = _plain(model_trimmed)
-
-    assert "provider-name:" not in provider_plain
-    assert "extremely-long-model-name" in provider_plain
-    assert "provider-name:" not in model_plain
-    assert "extremely-long-model-name" not in model_plain
-    assert "extremely" in model_plain
-    for fragments, plain, width in (
-        (provider_trimmed, provider_plain, 60),
-        (model_trimmed, model_plain, 40),
-    ):
-        assert _cell_width(fragments) == width
-        assert plain.count("━") == 10
-        assert plain.count("─") == 10
-        assert "50%" in plain
+    ctx.cfg.statusline.left = ("model", "mode", "path", "git")
+    ctx.cfg.statusline.right = ("context", "session")
+    text = _plain(render_statusline(ctx, _Theme(), width=25, composer_shape="box"))
+    assert "MODEL" in text and "MODE" in text and "PATH" in text
+    assert "SESSION" not in text and "50.0%" not in text
+    assert len(text) == 25

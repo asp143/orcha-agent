@@ -30,6 +30,7 @@ def render(
             f"dim {theme_value(theme, 'text')}" if subagent else str(theme_value(theme, "text"))
         ),
         code_theme=syntax_style(theme),
+        heading_color=str(theme_value(theme, "accent")),
     )
     content = Padding(markdown, (0, 2), expand=True) if subagent else markdown
     return with_leading_spacer(content)

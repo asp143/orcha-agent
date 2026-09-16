@@ -184,7 +184,10 @@ def render(
     content = Text("\n").join(_clip(row, content_width) for row in rows)
     return Panel(
         content,
-        title=Text(f"Review · {verdict_label}", style=verdict_style),
+        title=Text(
+            f"Review · {len(findings)} finding{'s' if len(findings) != 1 else ''} · {verdict_label}",
+            style=verdict_style,
+        ),
         title_align="left",
         border_style=verdict_style,
         box=theme_symbol(theme, "boxRound", box.ROUNDED),

@@ -1,14 +1,16 @@
-╭────────────────────────────────────────────────────────────────────────────╮
+╭─────────────────────────────── orcha v0.1.0 ───────────────────────────────╮
 │              │ ──── Recent sessions                                        │
 │Welcome back! │ • first (2h ago)                                            │
 │              │ • second (1d ago)                                           │
 │ ████████████ │                                                             │
-│    ██  ██    │ New: /settings customizes your UI                           │
-│    ██  ██    │ ──── Hints                                                  │
-│    ▒▒  ██    │ anthropic provider unavailable                              │
-│        ██    │                                                             │
-│              │                                                             │
+│    ██  ██    │                                                             │
+│    ██  ██    │ ──── Tips                                                   │
+│    ▒▒  ██    │ / commands · @ files                                        │
+│        ██    │ ! shell · Alt+A agents                                      │
+│              │ anthropic provider unavailable                              │
 │claude-sonnet…│                                                             │
-│    normal    │ Tip: Configure a provider with /login, then choose /model.  │
+│    normal    │                                                             │
 │  ~/project   │                                                             │
+│              │ Tip: Configure a provider with /login, then choose /model.  │
+│              │                                                             │
 ╰────────────────────────────────────────────────────────────────────────────╯

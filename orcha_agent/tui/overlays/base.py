@@ -108,8 +108,8 @@ class ScrollableContent:
             ((format_key_bindings(("escape",)), "close"),)
             if count == 0
             else (
-                (format_key_bindings(("j", "k")), "navigate"),
-                (format_key_bindings(("pageup", "pagedown")), "page"),
+                ("↑↓", "move"),
+                ("PgUp/PgDn", "page"),
                 (format_key_bindings(("enter",)), action),
                 (format_key_bindings(("escape",)), "close"),
             )
@@ -299,14 +299,19 @@ class ScrollableOverlay(ScrollableContent, Overlay):
         self.rows = tuple(tuple(row) for row in rows)
         self._init_scrolling(page_size)
         self.content_control = FormattedTextControl(self._content_fragments, focusable=True)
-        self.content_window = Window(self.content_control, always_hide_cursor=True)
+        self.content_window = Window(
+            self.content_control,
+            always_hide_cursor=True,
+            wrap_lines=True,
+            get_vertical_scroll=lambda _window: self.index,
+        )
         self.footer_control = FormattedTextControl(lambda: self._scroll_footer("close"))
         bindings = KeyBindings()
         self._bind_navigation(bindings)
         body = HSplit(
             [
                 self.content_window,
-                Window(self.footer_control, height=1, wrap_lines=False),
+                Window(self.footer_control, wrap_lines=True, dont_extend_height=True),
             ]
         )
         Overlay.__init__(
@@ -320,6 +325,9 @@ class ScrollableOverlay(ScrollableContent, Overlay):
 
     def _scroll_count(self) -> int:
         return len(self.rows)
+
+    def _scroll_changed(self) -> None:
+        self.content_window.vertical_scroll = self.index
 
     def _content_fragments(self) -> StyleAndTextTuples:
         fragments: StyleAndTextTuples = []

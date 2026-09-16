@@ -419,7 +419,8 @@ async def test_login_without_mode_dispatches_auto_and_updates_provider_status() 
     assert await dispatch_command(registry, ctx, "/login codex") is True
     assert calls == [("login", ctx, "auto")]
     assert await dispatch_command(registry, ctx, "/providers") is True
-    assert "logged in as test@example.com" in output.getvalue()
+    assert "logged in" in output.getvalue()
+    assert "test@example.com" not in output.getvalue()
 
 
 @pytest.mark.asyncio

@@ -35,10 +35,12 @@ from orcha_agent.tui.runtime import ApplicationRuntime, UIFacade
 
 async def _drive_overlay(overlay: Overlay, keys: bytes | str, wait_until=None) -> Any:
     if wait_until is None:
+
         async def wait_until(predicate, timeout=1.0):  # local fallback
             async with asyncio.timeout(timeout):
                 while not predicate():
                     await asyncio.sleep(0)
+
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0),
@@ -96,7 +98,6 @@ async def test_select_list_filters_pages_and_returns_multiselect(wait_until) -> 
     assert "◉" in picker.render_text()
 
 
-
 @pytest.mark.asyncio
 async def test_select_list_reports_async_action_failures_and_reenables_accept() -> None:
     attempts: list[str] = []
@@ -108,9 +109,7 @@ async def test_select_list_reports_async_action_failures_and_reenables_accept() 
     tasks: list[asyncio.Task[Any]] = []
     event = SimpleNamespace(
         app=SimpleNamespace(
-            create_background_task=lambda awaitable: tasks.append(
-                asyncio.create_task(awaitable)
-            ),
+            create_background_task=lambda awaitable: tasks.append(asyncio.create_task(awaitable)),
             invalidate=lambda: None,
         )
     )
@@ -122,6 +121,7 @@ async def test_select_list_reports_async_action_failures_and_reenables_accept() 
     assert attempts == ["one"]
     assert picker.accepting is False
     assert "RuntimeError: provider switch failed" in picker.render_text()
+
 
 def _api(name: str, registry: Registry, bus: EventBus) -> PluginAPI:
     return PluginAPI(
@@ -148,9 +148,7 @@ def test_overlay_registry_conflicts_and_replace() -> None:
 @pytest.mark.asyncio
 async def test_approval_overlay_shortcuts(wait_until) -> None:
     for key, expected in (("y", "approve"), ("n", "reject"), ("a", "always")):
-        overlay = ApprovalOverlay(
-            {"name": "execute", "args": {"command": "pwd"}}
-        )
+        overlay = ApprovalOverlay({"name": "execute", "args": {"command": "pwd"}})
         assert await _drive_overlay(overlay, key, wait_until) == expected
 
 
@@ -331,9 +329,7 @@ async def test_registered_overlay_name_resolves_through_ui_facade(wait_until) ->
         persist_plugin_states=lambda: None,
         ui=UIFacade(),
     )
-    registry.providers["demo"] = SimpleNamespace(
-        models=("one",), available=lambda: None
-    )
+    registry.providers["demo"] = SimpleNamespace(models=("one",), available=lambda: None)
     ctx.switch_model = lambda _value: asyncio.sleep(0)
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -417,13 +413,14 @@ async def test_configured_tree_and_empty_question_mark_open_overlays(
     wait_until,
 ) -> None:
     key_file = tmp_path / "keys.toml"
-    key_file.write_text("[bindings]\ntree = \"c-x\"\n", encoding="utf-8")
+    key_file.write_text('[bindings]\ntree = "c-x"\n', encoding="utf-8")
     shown: list[str] = []
     overlay_shown: asyncio.Queue[str] = asyncio.Queue()
 
     async def show(name: str) -> None:
         shown.append(name)
         overlay_shown.put_nowait(name)
+
     ctx = SimpleNamespace(
         cfg=SimpleNamespace(cwd=tmp_path, model="demo:one", models={}),
         plugin_states={},
@@ -486,25 +483,19 @@ async def test_approval_adapter_uses_ui_and_preserves_always_and_fail_closed() -
     }
     result = await bus.emit(InterruptRaised(payload=payload))
     assert isinstance(result, Resolved)
-    assert result.resume_value == {
-        "decisions": [{"type": "approve"}, {"type": "reject"}]
-    }
+    assert result.resume_value == {"decisions": [{"type": "approve"}, {"type": "reject"}]}
     assert state == {"always_allowed": ["execute"]}
     assert rebuilt == [None]
     assert shown[0][0] == "approval"
 
     cancelled = await bus.emit(
-        InterruptRaised(
-            payload={"action_requests": [{"name": "write_file", "args": {}}]}
-        )
+        InterruptRaised(payload={"action_requests": [{"name": "write_file", "args": {}}]})
     )
     assert isinstance(cancelled, Resolved)
     assert cancelled.resume_value == {"decisions": [{"type": "reject"}]}
 
     failed = await bus.emit(
-        InterruptRaised(
-            payload={"action_requests": [{"name": "edit", "args": {}}]}
-        )
+        InterruptRaised(payload={"action_requests": [{"name": "edit", "args": {}}]})
     )
     assert isinstance(failed, Resolved)
     assert failed.resume_value == {"decisions": [{"type": "reject"}]}
@@ -560,9 +551,7 @@ async def test_every_concrete_overlay_cancels_headlessly(
 
 @pytest.mark.asyncio
 async def test_ask_other_custom_answer_and_cancel_shape(wait_until) -> None:
-    ask = AskOverlay(
-        [{"id": "other", "question": "What?", "options": [{"label": "Known"}]}]
-    )
+    ask = AskOverlay([{"id": "other", "question": "What?", "options": [{"label": "Known"}]}])
     result = await _drive_overlay(ask, b"\x1b[B\rcustom value\r", wait_until)
     assert result == {
         "kind": "submit",
@@ -583,9 +572,7 @@ async def test_application_eof_cancels_active_overlay(wait_until) -> None:
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
         )
         task = asyncio.create_task(runtime.run())
-        overlay = ApprovalOverlay(
-            {"name": "execute", "args": {"command": "pwd"}}
-        )
+        overlay = ApprovalOverlay({"name": "execute", "args": {"command": "pwd"}})
         shown = asyncio.create_task(runtime.ui.show(overlay))
         await wait_until(lambda: runtime.active_overlay is overlay)
         pipe.send_bytes(b"\x04")
@@ -715,12 +702,8 @@ def test_overlays_never_exceed_tiny_terminal_dimensions(
 def test_ask_and_approval_dialogs_use_content_aware_heights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ask = AskOverlay(
-        [{"id": "q", "question": "Choose", "options": ["one", "two"]}]
-    )
-    approval = ApprovalOverlay(
-        {"name": "execute", "args": {"command": "printf ok"}}
-    )
+    ask = AskOverlay([{"id": "q", "question": "Choose", "options": ["one", "two"]}])
+    approval = ApprovalOverlay({"name": "execute", "args": {"command": "printf ok"}})
     for overlay in (ask, approval):
         monkeypatch.setattr(overlay, "_terminal_size", lambda: (100, 30))
 
@@ -923,16 +906,15 @@ async def test_help_static_content_uses_shared_page_navigation() -> None:
         ui=SimpleNamespace(effective_keys={"submit": ("enter",)}),
         registry=SimpleNamespace(
             commands={
-                f"command-{index:02d}": SimpleNamespace(help=f"Help {index}")
-                for index in range(20)
+                f"command-{index:02d}": SimpleNamespace(help=f"Help {index}") for index in range(20)
             }
         ),
     )
     overlay = HelpOverlay(ctx)
-    assert "(1/24)" in overlay.render_text()
+    assert "(1/25)" in overlay.render_text()
     assert await _drive_overlay(overlay, b"\x1b[6~\x1b") is None
     assert overlay.index == 8
-    assert "(9/24)" in overlay.render_text()
+    assert "(9/25)" in overlay.render_text()
 
 
 @pytest.mark.asyncio
@@ -947,9 +929,7 @@ async def test_help_arguments_preserve_printed_command_table() -> None:
     ctx = SimpleNamespace(
         ui=UIFacade(show_overlay=show),
         console=SimpleNamespace(print=printed.append, error=errors.append),
-        registry=SimpleNamespace(
-            commands={"help": SimpleNamespace(help="Show command reference")}
-        ),
+        registry=SimpleNamespace(commands={"help": SimpleNamespace(help="Show command reference")}),
     )
 
     await _help(ctx, "commands")
@@ -958,4 +938,40 @@ async def test_help_arguments_preserve_printed_command_table() -> None:
     assert errors == []
     assert len(printed) == 1
     assert printed[0].title == "Commands"
-    assert printed[0].row_count == 1
+    assert printed[0].renderable.row_count == 1
+
+
+@pytest.mark.asyncio
+async def test_help_page_moves_rendered_window_immediately(wait_until, wait_for_render) -> None:
+    overlay = HelpOverlay(
+        SimpleNamespace(
+            ui=SimpleNamespace(effective_keys={}),
+            registry=SimpleNamespace(
+                commands={
+                    f"item-{index:02d}": SimpleNamespace(help=f"Description {index}")
+                    for index in range(40)
+                }
+            ),
+        )
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
+        )
+        task = asyncio.create_task(runtime.run())
+        shown = asyncio.create_task(runtime.ui.show(overlay))
+        await wait_until(lambda: runtime.active_overlay is overlay)
+        pipe.send_bytes(b"\x1b[6~")
+        await wait_for_render(
+            runtime,
+            lambda: (
+                overlay.index == 8
+                and overlay.content_window.render_info is not None
+                and overlay.content_window.render_info.vertical_scroll > 0
+            ),
+        )
+        assert overlay.content_window.render_info.vertical_scroll == 8
+        pipe.send_bytes(b"\x1b")
+        assert await asyncio.wait_for(shown, 1) is None
+        pipe.send_bytes(b"\x04")
+        await asyncio.wait_for(task, 1)

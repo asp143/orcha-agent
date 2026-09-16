@@ -39,7 +39,7 @@ def render(
     color = str(theme_value(theme, token))
     advisor_id = str(block.data.get("advisor_id") or "advisor")
     title = Text(
-        f"Advisor · {advisor_id} · {severity.title()}",
+        f"Advisor{f' · {advisor_id}' if advisor_id.casefold() != 'advisor' else ''} · {severity.title()}",
         style=Style(color=color, bold=severity != "nit", dim=severity == "nit"),
     )
     content = Text(

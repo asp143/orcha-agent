@@ -51,10 +51,15 @@ def register(api: PluginAPI) -> None:
 
     async def listing(ctx: Any, _args: str) -> None:
         await ready()
-        if not skills:
-            ctx.console.print("No skills found.")
-        for skill in sorted(skills.values(), key=lambda item: item.name):
-            ctx.console.print(f"/skill:{skill.name} — {skill.description}", markup=False)
+        from orcha_agent.tui.panels import summary_panel
+
+        rows = [
+            (f"/skill:{skill.name}", skill.description)
+            for skill in sorted(skills.values(), key=lambda item: item.name)
+        ]
+        ctx.console.print(
+            summary_panel("Skills", ("Command", "Description"), rows or [("No skills found.", "")])
+        )
 
     async def read_skill(name: str) -> str:
         """Read a skill's instructions by name when relevant to the user's task."""
@@ -79,8 +84,21 @@ def register(api: PluginAPI) -> None:
             trust_cwd=bool(getattr(ctx.cfg, "trust_cwd", False)),
         )
         skills.update(found)
-        for warning in warnings:
-            ctx.console.warning(warning)
+        if warnings:
+            transcript = getattr(ctx.console, "transcript", None)
+            if transcript is not None:
+                skipped = sum(warning.startswith("Skipping skill") for warning in warnings)
+                summary = (
+                    f"{skipped} skills skipped"
+                    if skipped == len(warnings)
+                    else f"{len(warnings)} skill warnings"
+                )
+                block = transcript.append_banner(summary + " · Ctrl+O for details", level="warning")
+                block.data["details"] = "\n".join(warnings)
+                block.revision += 1
+            else:
+                for warning in warnings:
+                    ctx.console.warning(warning)
         for name, skill in skills.items():
 
             async def shortcut(ctx: Any, args: str, name: str = name) -> None:

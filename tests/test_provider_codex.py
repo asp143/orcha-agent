@@ -708,8 +708,8 @@ async def test_register_exposes_models_and_safe_auth_status(
     assert await dispatch_command(registry, ctx, "/providers") is True
     rendered = output.getvalue()
     assert all(model_name in rendered for model_name in EXPECTED_MODELS)
-    assert "registered@example.test" in rendered
-    assert "acct_fake_registered" in rendered
+    assert "registered@example.test" not in rendered
+    assert "acct_fake_registered" not in rendered
     assert access_token not in rendered
     assert id_token not in rendered
     assert "fake-refresh-token" not in rendered

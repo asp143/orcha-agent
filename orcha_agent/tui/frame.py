@@ -147,6 +147,8 @@ class Frame:
         for block in self.blocks:
             if block.state is BlockState.COMMITTED:
                 continue
+            if block.data.get("hold_startup"):
+                break
             if block.state is BlockState.ACTIVE:
                 break
             block.state = BlockState.COMMITTED

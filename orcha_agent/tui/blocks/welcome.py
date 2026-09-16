@@ -22,6 +22,7 @@ _LEFT_PADDING = 1
 _SESSION_SLOTS = 4
 _HINT_SLOTS = 4
 _TIP_ROWS = 2
+_CONTENT_ROWS = 14
 _WRAP_CONSOLE = Console(width=_MAX_WIDTH, force_terminal=False, color_system=None)
 
 
@@ -67,6 +68,11 @@ def _line(label: str, value: Any, width: int) -> str:
 
 def _fit(value: Text | str, width: int, *, center: bool = False) -> Text:
     rendered = value.copy() if isinstance(value, Text) else Text(value)
+    if rendered.cell_len > width and " " in rendered.plain:
+        prefix = rendered.plain[: max(0, width - 1)].rsplit(" ", 1)[0]
+        if prefix:
+            rendered = rendered[: len(prefix)]
+            rendered.append("…")
     rendered.truncate(max(0, width), overflow="ellipsis")
     remaining = max(0, width - rendered.cell_len)
     if center:
@@ -97,7 +103,7 @@ def _tip_lines(value: Any, width: int) -> list[str]:
         rows.append(current)
     rows = rows[:_TIP_ROWS]
     if len(rows) == _TIP_ROWS and len(words) > sum(len(r.split()) for r in rows):
-        rows[-1] = rows[-1][: max(0, body_width - 1)] + "…"
+        rows[-1] = rows[-1][: max(0, body_width - 1)].rsplit(" ", 1)[0] + "…"
     rendered = [f"{label}{rows[0]}" if rows else ""]
     rendered.extend(" " * len(label) + row for row in rows[1:])
     return [*rendered, *([""] * (_TIP_ROWS - len(rendered)))]
@@ -154,8 +160,15 @@ def _right(block: Block, width: int, *, ascii_only: bool, theme: Any) -> Text:
     rule = "----" if ascii_only else "────"
     lines = [
         Text(f"{rule} Recent sessions", style="dim"),
-        *(Text(session) for session in _slots(block.data.get("sessions"), _SESSION_SLOTS)),
-        Text(f"{rule} Hints", style="dim"),
+        *(
+            Text(session)
+            for session in _slots(
+                [value for value in block.data.get("sessions", ()) if str(value).strip()]
+                or ["No recent sessions"],
+                _SESSION_SLOTS,
+            )
+        ),
+        Text(f"{rule} Tips", style="dim"),
         *_hint_lines(block.data.get("hints"), max(1, width - 1), theme),
         *(
             Text(line)
@@ -167,16 +180,20 @@ def _right(block: Block, width: int, *, ascii_only: bool, theme: Any) -> Text:
             )
         ),
     ]
-    news = block.data.get("whats_new", "/settings customizes your UI")
-    if width < 35:
-        news = "Try /settings"
-    if news and not str(lines[4]):
-        lines[4] = Text("New: " + str(news), style=str(theme_value(theme, "accent", "cyan")))
+    # Reserve these two rows independently of the recent-session slots, so
+    # returning users see the same command entry points as first-time users.
+    commands = ("/ commands · @ files", "! shell · Alt+A agents")
+    lines[6:6] = [
+        Text(command, style=str(theme_value(theme, "accent", "cyan"))) for command in commands
+    ]
     rendered = Text()
     for index, line in enumerate(lines):
         indented = Text(" ") if line else Text()
         indented.append_text(line)
-        rendered.append(_fit(indented, width))
+        fitted = _fit(indented, width)
+        if ascii_only:
+            fitted = Text(fitted.plain.replace("…", "~").replace(" · ", " | "), style=fitted.style)
+        rendered.append(fitted)
         if index < len(lines) - 1:
             rendered.append("\n")
     return rendered
@@ -193,6 +210,8 @@ def _left(block: Block, width: int) -> Text:
         Text(str(block.data.get("model", "")), style="dim"),
         Text(str(block.data.get("mode", "")), style="dim"),
         Text(str(block.data.get("cwd", "")), style="dim"),
+        Text(),
+        Text(),
     ]
     rendered = Text()
     for index, line in enumerate(lines):
@@ -228,7 +247,7 @@ def render(
         table.add_column(width=right_width, no_wrap=True)
         table.add_row(
             _left(block, left_width),
-            Text("\n".join([separator] * 12), style="dim"),
+            Text("\n".join([separator] * _CONTENT_ROWS), style="dim"),
             _right(block, right_width, ascii_only=ascii_only, theme=theme),
         )
         content: Any = table
@@ -237,11 +256,14 @@ def render(
         content.append(_logo(block, compact=_logo_width(block) > inner))
         content.append("\n" + _line("Model", block.data.get("model", ""), inner))
         content.append("\n" + _line("Mode", block.data.get("mode", ""), inner))
-        content.append("\n" + _line("Cwd", block.data.get("cwd", ""), inner))
+        content.append("\n")
+        content.append(_fit(_line("Cwd", block.data.get("cwd", ""), inner), inner, center=True))
         content.append("\n")
         content.append(_right(block, inner, ascii_only=ascii_only, theme=theme))
     return Panel(
         content,
+        title=Text(f"orcha v{block.data.get('version', '0.1.0')}", style="bold"),
+        title_align="center",
         box=box.ASCII if ascii_only else box.ROUNDED,
         border_style=border,
         padding=0,

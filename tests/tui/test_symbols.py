@@ -69,6 +69,7 @@ def test_non_utf_terminal_forces_ascii_symbols() -> None:
 
     assert symbols["icon.model"] == SYMBOL_PRESETS["ascii"]["icon.model"]
 
+
 def test_non_ascii_overrides_are_discarded_after_ascii_fallback() -> None:
     warnings: list[str] = []
     symbols = resolve_symbols(
@@ -224,7 +225,7 @@ def test_renderers_consume_resolved_ascii_status_box_and_spinner_symbols() -> No
     assert folded_text.startswith("@= ")
     assert "S Bash (2)" in grouped_text
     assert thinking_text.startswith("B ")
-    assert "S done" in todo_text
+    assert "+ done" in todo_text
     assert all(
         value.isascii()
         for value in (

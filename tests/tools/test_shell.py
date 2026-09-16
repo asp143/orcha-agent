@@ -67,7 +67,12 @@ def test_timeout_kills_group_and_restarts(shell, tmp_path):
     child = int((tmp_path / "child").read_text())
     # A killed child can remain a zombie until the host init reaps it.
     status = Path(f"/proc/{child}/stat")
-    assert not status.exists() or status.read_text().split()[2] == "Z"
+    try:
+        state = status.read_text().split()[2]
+    except FileNotFoundError:
+        pass  # Reaped before (or during) the read: the child is gone.
+    else:
+        assert state == "Z"
     assert "preserved" in shell.run('printf "%s" "$ORCHA_TEST_VALUE"')[0]
 
 

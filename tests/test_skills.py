@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from io import StringIO
+
+from rich.console import Console
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -15,6 +18,14 @@ from orcha_agent.core.plugin import PluginAPI
 from orcha_agent.core.registry import Registry
 from orcha_agent.extensibility.skills import discover_skills, parse_skill, render_skills
 from orcha_agent.tui.complete import ComposerCompleter
+
+
+def printed_text(console: Mock) -> str:
+    stream = StringIO()
+    renderer = Console(file=stream, width=100, color_system=None)
+    for call in console.print.call_args_list:
+        renderer.print(*call.args)
+    return stream.getvalue()
 
 
 def write(root: Path, name: str, body: str = "Instructions", metadata: str = "") -> Path:
@@ -102,7 +113,7 @@ async def test_skill_command_invokes_user_skill_despite_untrusted_project_duplic
     )
     ctx = SimpleNamespace(
         cfg=SimpleNamespace(cwd=cwd, trust_cwd=False),
-        console=Mock(),
+        console=Mock(transcript=None),
         submit_prompt=AsyncMock(),
     )
     await bus.emit(AppStart(ctx))
@@ -190,7 +201,7 @@ async def test_plugin_commands_tool_completions_and_first_build(
     )
     ctx = SimpleNamespace(
         cfg=SimpleNamespace(cwd=tmp_path),
-        console=Mock(),
+        console=Mock(transcript=None),
         submit_prompt=AsyncMock(),
         add_command_discovery_task=Mock(),
     )
@@ -208,7 +219,7 @@ async def test_plugin_commands_tool_completions_and_first_build(
     await registry.commands["skill"].handler(ctx, "private user args")
     assert "Only user" in ctx.submit_prompt.call_args.args[0]
     await registry.commands["skills"].handler(ctx, "")
-    assert any("demo" in str(call) for call in ctx.console.print.call_args_list)
+    assert "/skill:demo" in printed_text(ctx.console)
     await registry.commands["skill"].handler(ctx, "missing")
     assert ctx.console.error.called
     assert "Do the work" in await registry.tools["skill"].ainvoke({"name": "demo"})
@@ -272,7 +283,7 @@ async def test_collision_and_disappearing_always_apply_do_not_poison_discovery(
         )
     )
     ctx = SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path), console=Mock(), submit_prompt=AsyncMock()
+        cfg=SimpleNamespace(cwd=tmp_path), console=Mock(transcript=None), submit_prompt=AsyncMock()
     )
     await bus.emit(AppStart(ctx))
     event = AgentBuildBefore({"system_prompt": "Base"})
@@ -369,7 +380,7 @@ async def test_slow_discovery_does_not_block_build_and_arrives_on_next_build(
             name="skills", config={}, state={}, registry=registry, bus=bus, request_rebuild=rebuild
         )
     )
-    ctx = SimpleNamespace(cfg=SimpleNamespace(cwd=tmp_path), console=Mock())
+    ctx = SimpleNamespace(cfg=SimpleNamespace(cwd=tmp_path), console=Mock(transcript=None))
     await bus.emit(AppStart(ctx))
     await entered.wait()
     event = AgentBuildBefore({"system_prompt": "Base"})
@@ -395,14 +406,14 @@ async def test_failed_discovery_warns_and_build_and_commands_continue(tmp_path: 
             name="skills", config={}, state={}, registry=registry, bus=bus, request_rebuild=Mock()
         )
     )
-    ctx = SimpleNamespace(cfg=SimpleNamespace(cwd=tmp_path), console=Mock())
+    ctx = SimpleNamespace(cfg=SimpleNamespace(cwd=tmp_path), console=Mock(transcript=None))
     await bus.emit(AppStart(ctx))
     event = AgentBuildBefore({"system_prompt": "Base"})
     await bus.emit(event)
     assert event.kwargs["system_prompt"] == "Base"
     assert "Skill discovery failed" in str(ctx.console.warning.call_args_list)
     await registry.commands["skills"].handler(ctx, "")
-    ctx.console.print.assert_called_with("No skills found.")
+    assert "No skills found." in printed_text(ctx.console)
     await bus.emit(AppExit())
 
 

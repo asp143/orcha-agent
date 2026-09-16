@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import random
 from datetime import datetime, timezone
-from importlib import resources
+from importlib import metadata, resources
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from orcha_agent import __version__
 from orcha_agent.core.events import AppStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
@@ -87,7 +88,11 @@ def _tip_lines() -> list[str]:
         text = resources.files("orcha_agent.tui").joinpath("tips.txt").read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
         return []
-    return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 
 def choose_tip(tips: Iterable[str] | None = None, *, rng: Any = random) -> str:
@@ -188,7 +193,9 @@ def _hints(ctx: Any, model: str) -> list[Any]:
     loaded = sum(1 for plugin in plugins if getattr(plugin, "error", None) is None)
     plugin_hint = f"{loaded} plugin{'s' if loaded != 1 else ''} loaded"
     provider = _provider_prefix(ctx, model)
-    provider_hint = f"{provider} provider {'ready' if _provider_ready(ctx, provider) else 'unavailable'}"
+    provider_hint = (
+        f"{provider} provider {'ready' if _provider_ready(ctx, provider) else 'unavailable'}"
+    )
     return [trust, plugin_hint, provider_hint, _key_hint(ctx)]
 
 
@@ -206,13 +213,22 @@ def build_welcome(
     model = ", ".join(map(str, raw_model)) if isinstance(raw_model, list) else str(raw_model)
     ascii_only = _ascii_output(ctx)
     logo = _ASCII_LOGO if ascii_only else _LOGO
+    try:
+        version = metadata.version("orcha-agent")
+    except metadata.PackageNotFoundError:
+        version = __version__
     return {
+        "version": version,
         "logo": list(logo),
-        "logo_styles": [[None] * len(line) for line in logo] if ascii_only else _gradient_styles(logo),
+        "logo_styles": [[None] * len(line) for line in logo]
+        if ascii_only
+        else _gradient_styles(logo),
         "model": model or "not selected",
         "mode": str(getattr(cfg, "mode", "ask")),
         "cwd": _short_cwd(getattr(cfg, "cwd", Path.cwd())),
-        "sessions": _recent_sessions(ctx, ascii_only=ascii_only, now=now or datetime.now(timezone.utc)),
+        "sessions": _recent_sessions(
+            ctx, ascii_only=ascii_only, now=now or datetime.now(timezone.utc)
+        ),
         "hints": _hints(ctx, model),
         "tip": choose_tip(tips, rng=rng),
         "ascii": ascii_only,
@@ -220,7 +236,10 @@ def build_welcome(
 
 
 def _enabled(ctx: Any) -> bool:
-    return bool(getattr(getattr(ctx, "cfg", None), "banner", True)) and os.environ.get("ORCHA_NO_BANNER") != "1"
+    return (
+        bool(getattr(getattr(ctx, "cfg", None), "banner", True))
+        and os.environ.get("ORCHA_NO_BANNER") != "1"
+    )
 
 
 def register(api: PluginAPI) -> None:

@@ -62,6 +62,7 @@ from orcha_agent.core.persistence import TursoPersistenceError, open_session_sto
 from orcha_agent.core.registry import CommandRegistration, Registry
 from orcha_agent.core.session import SessionStore
 
+from .errors import humanize_error
 from .blocks.image import image_protocol
 from .blocks.terminal import clear_terminal_cache
 from .blocks import (
@@ -842,12 +843,21 @@ class ApplicationRuntime:
             # Production passes an existing Rich console; it must use the same
             # ordered writer as PT so commits cannot race differential frames.
             self._scrollback.file = self._paint_output.pump
-        original_resize = self.application._on_resize
         def resize() -> None:
             if getattr(self._tui_config, "resize", "preserve") == "rebuild":
                 self._block_dispatcher.clear_cache()
                 self._viewport_scroll = 0
-            original_resize()
+            # Resize can reflow terminal rows before PT sees SIGWINCH, making
+            # its remembered relative cursor position stale. This fixed-height
+            # inline layout owns the bottom viewport: re-anchor there without
+            # clearing native scrollback or reserving another screen of rows.
+            renderer = self.application.renderer
+            output = self.application.output
+            output.cursor_goto(max(1, output.get_size().rows - self._root_height() + 1), 1)
+            output.erase_down()
+            renderer.reset(leave_alternate_screen=False)
+            renderer._min_available_height = self._root_height()
+            self.application._redraw()
         self.application._on_resize = resize
         self.application.ttimeoutlen = 0.1
         self.application.timeoutlen = 0.1
@@ -982,7 +992,7 @@ class ApplicationRuntime:
         try:
             await send(run_id, text.strip())
         except Exception as exc:
-            self.ui.notify(f"{type(exc).__name__}: {exc}")
+            self.ui.notify(humanize_error(exc))
             return False
         self._refresh_drilled_frame(force=True)
         self.application.invalidate()
@@ -1423,7 +1433,7 @@ class ApplicationRuntime:
 
     def _toggle_last_tool(self) -> None:
         frame = self._drilled_frame or self.frame
-        last = next((block for block in reversed(frame.blocks) if block.kind == "tool"), self._last_tool_card)
+        last = next((block for block in reversed(frame.blocks) if block.kind == "tool" or block.data.get("details")), self._last_tool_card)
         if last is not None:
             self._expanded_tool_id = None if self._expanded_tool_id == last.id else last.id
         self.ui.expand_tools(not self.ui.tools_expanded)
@@ -1722,6 +1732,7 @@ class ApplicationRuntime:
         self._shell_process = None
 
     async def _dispatch_submission(self, text: str) -> None:
+        self.transcript.release_startup()
         if text.strip() == "/settings":
             await self.ui.show("settings")
             return
@@ -1833,7 +1844,7 @@ class ApplicationRuntime:
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     self.transcript.append_banner("interrupted", level="warning")
                 except Exception as exc:
-                    self.transcript.pin_error(f"{type(exc).__name__}: {exc}")
+                    self._show_exception(exc)
                 finally:
                     self.queue.close_steering()
                     self._active_turn = None
@@ -2209,16 +2220,41 @@ class ApplicationRuntime:
                 selected = themes.get(getattr(self.theme, "id", "dark"), themes["dark"])
                 self.replace_themes(themes, selected)
 
+    def _show_exception(self, exc: BaseException) -> None:
+        block = self.transcript.pin_error(humanize_error(exc))
+        block.update(error_type=type(exc).__name__)
+
+    def _loop_exception(self, _loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        import traceback
+
+        exc = context.get("exception")
+        if not isinstance(exc, BaseException):
+            exc = RuntimeError(str(context.get("message", "Unexpected background error")))
+        details = "".join(traceback.format_exception(exc))
+        descriptor, path = tempfile.mkstemp(prefix="orcha-error-", suffix=".log")
+        with os.fdopen(descriptor, "w") as output:
+            output.write(details)
+        self._show_exception(exc)
+        pinned = self.transcript._pinned_error
+        if pinned is not None:
+            pinned.update(details=details, log_path=path)
+        self.application.invalidate()
+
     async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(self._loop_exception)
         self._track(self._submit_serially(None))
         self.application.after_render += lambda _app: self._paint_output.start()
         self._theme_poll_task = asyncio.create_task(self._poll_themes())
         try:
-            await self.application.run_async()
+            await self.application.run_async(set_exception_handler=False)
         except EOFError:
             pass
         finally:
+            loop.set_exception_handler(previous_handler)
             self._shutting_down = True
+            self.transcript.release_startup()
             if self._theme_poll_task is not None:
                 self._theme_poll_task.cancel()
                 await asyncio.gather(self._theme_poll_task, return_exceptions=True)
@@ -2422,7 +2458,10 @@ async def _run_app(cfg: Config) -> int:
             except (KeyboardInterrupt, asyncio.CancelledError):
                 ctx.console.warning("interrupted")
             except Exception as exc:
-                ctx.console.error(f"{type(exc).__name__}: {exc}")
+                if isinstance(ctx.console, ConsoleOutput):
+                    ctx.console.exception(exc)
+                else:
+                    ctx.console.error(humanize_error(exc))
 
         available_themes, active_theme = _resolve_runtime_themes(
             ctx.cfg,

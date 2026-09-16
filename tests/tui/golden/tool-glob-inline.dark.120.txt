@@ -1,4 +1,4 @@
 
-🔍 Glob: **/*.py  2 items
-  ├─ src/a.py
-  └─ src/b.py
+<ESC>[38;2;166;227;161m⌕ <ESC>[0m<ESC>[1;38;2;137;180;250mGlob<ESC>[0m<ESC>[38;2;205;214;244m: **/*.py  2 items<ESC>[0m
+<ESC>[38;2;166;227;161m  ├─ src/a.py<ESC>[0m
+<ESC>[38;2;166;227;161m  └─ src/b.py<ESC>[0m

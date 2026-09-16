@@ -309,11 +309,15 @@ class AppContext:
             _compat("strip_foreign_blocks", strip_foreign_blocks)(graph, self.thread_config, foreign)
 
     def report_provider_error(self, exc: Exception) -> None:
-        self.console.error(
-            f"{type(exc).__name__}: {exc}\n"
-            "Set the required provider environment variable, or `/login codex`, "
-            "or `/model <prefix:model>`."
-        )
+        from .errors import humanize_error
+
+        message = humanize_error(exc)
+        if "unavailable" in message.lower() or "no credentials" in message.lower():
+            message += " · Configure provider credentials, /login codex, or /model <prefix:model>."
+        if isinstance(self.console, ConsoleOutput):
+            self.console.exception(exc, message=message)
+        else:
+            self.console.error(message)
 
     async def ensure_agent(self, *, seed_pending: bool = True) -> bool:
         reseed_pending = self._reseed_pending()

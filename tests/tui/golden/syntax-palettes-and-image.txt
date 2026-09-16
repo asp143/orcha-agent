@@ -103,14 +103,26 @@ ocean-dark
 paper-light
 <ESC>[38;2;66;113;174mdef<ESC>[0m<ESC>[38;2;187;187;187m <ESC>[0m<ESC>[38;2;234;183;0mgreet<ESC>[0m<ESC>[38;2;142;144;140m(<ESC>[0m<ESC>[38;2;62;153;159mname<ESC>[0m<ESC>[38;2;142;144;140m)<ESC>[0m<ESC>[38;2;142;144;140m:<ESC>[0m<ESC>[38;2;0;0;0m <ESC>[0m<ESC>[38;2;66;113;174mreturn<ESC>[0m<ESC>[38;2;0;0;0m <ESC>[0m<ESC>[38;2;200;40;41m"<ESC>[0m<ESC>[38;2;200;40;41mHello<ESC>[0m<ESC>[38;2;200;40;41m"<ESC>[0m<ESC>[38;2;0;0;0m  <ESC>[0m<ESC>[38;2;77;77;76m# greeting<ESC>[0m
 
+dracula-dark
+<ESC>[38;2;255;121;198mdef<ESC>[0m<ESC>[38;2;248;248;242m <ESC>[0m<ESC>[38;2;80;250;123mgreet<ESC>[0m<ESC>[38;2;248;248;242m(<ESC>[0m<ESC>[38;2;139;233;253mname<ESC>[0m<ESC>[38;2;248;248;242m)<ESC>[0m<ESC>[38;2;248;248;242m:<ESC>[0m<ESC>[38;2;248;248;242m <ESC>[0m<ESC>[38;2;255;121;198mreturn<ESC>[0m<ESC>[38;2;248;248;242m <ESC>[0m<ESC>[38;2;241;250;140m"<ESC>[0m<ESC>[38;2;241;250;140mHello<ESC>[0m<ESC>[38;2;241;250;140m"<ESC>[0m<ESC>[38;2;248;248;242m  <ESC>[0m<ESC>[38;2;98;114;164m# greeting<ESC>[0m
+
+nord-dark
+<ESC>[38;2;129;161;193mdef<ESC>[0m<ESC>[38;2;248;248;242m <ESC>[0m<ESC>[38;2;136;192;208mgreet<ESC>[0m<ESC>[38;2;236;239;244m(<ESC>[0m<ESC>[38;2;216;222;233mname<ESC>[0m<ESC>[38;2;236;239;244m)<ESC>[0m<ESC>[38;2;236;239;244m:<ESC>[0m<ESC>[38;2;248;248;242m <ESC>[0m<ESC>[38;2;129;161;193mreturn<ESC>[0m<ESC>[38;2;248;248;242m <ESC>[0m<ESC>[38;2;163;190;140m"<ESC>[0m<ESC>[38;2;163;190;140mHello<ESC>[0m<ESC>[38;2;163;190;140m"<ESC>[0m<ESC>[38;2;248;248;242m  <ESC>[0m<ESC>[38;2;76;86;106m# greeting<ESC>[0m
+
+catppuccin-latte-classic
+<ESC>[38;2;136;57;239mdef<ESC>[0m<ESC>[38;2;187;187;187m <ESC>[0m<ESC>[38;2;30;102;245mgreet<ESC>[0m<ESC>[38;2;124;127;147m(<ESC>[0m<ESC>[38;2;76;79;105mname<ESC>[0m<ESC>[38;2;124;127;147m)<ESC>[0m<ESC>[38;2;124;127;147m:<ESC>[0m<ESC>[38;2;76;79;105m <ESC>[0m<ESC>[38;2;136;57;239mreturn<ESC>[0m<ESC>[38;2;76;79;105m <ESC>[0m<ESC>[38;2;64;160;43m"<ESC>[0m<ESC>[38;2;64;160;43mHello<ESC>[0m<ESC>[38;2;64;160;43m"<ESC>[0m<ESC>[38;2;76;79;105m  <ESC>[0m<ESC>[38;2;140;143;161m# greeting<ESC>[0m
+
+rose-pine-classic
+<ESC>[38;2;49;116;143mdef<ESC>[0m<ESC>[38;2;224;222;244m <ESC>[0m<ESC>[38;2;235;188;186mgreet<ESC>[0m<ESC>[38;2;144;140;170m(<ESC>[0m<ESC>[38;2;224;222;244mname<ESC>[0m<ESC>[38;2;144;140;170m)<ESC>[0m<ESC>[38;2;144;140;170m:<ESC>[0m<ESC>[38;2;224;222;244m <ESC>[0m<ESC>[38;2;49;116;143mreturn<ESC>[0m<ESC>[38;2;224;222;244m <ESC>[0m<ESC>[38;2;246;193;119m"<ESC>[0m<ESC>[38;2;246;193;119mHello<ESC>[0m<ESC>[38;2;246;193;119m"<ESC>[0m<ESC>[38;2;224;222;244m  <ESC>[0m<ESC>[38;2;110;106;134m# greeting<ESC>[0m
+
 <ESC>[90m[Image · PNG · 70 bytes]<ESC>[0m
-<ESC>[90m╭─── ☑ Todo · 2 tasks <ESC>[0m<ESC>[90m─────────────────────────────────────╮<ESC>[0m
-<ESC>[90m│ <ESC>[0m<ESC>[32m☑ <ESC>[0m<ESC>[9;32mrender <ESC>[0m<ESC>[32mfixtures                                       <ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m│<ESC>[0m
-<ESC>[90m│ <ESC>[0m<ESC>[36m☐ inspect output                                        <ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m│<ESC>[0m
+<ESC>[90m╭─── <ESC>[0m<ESC>[32m✓ <ESC>[0m<ESC>[1;36mTodo<ESC>[0m<ESC>[39m · 2 tasks<ESC>[0m<ESC>[90m ────────────────────────────────────<ESC>[0m<ESC>[90m─╮<ESC>[0m
+<ESC>[90m│ <ESC>[0m<ESC>[32m✓ <ESC>[0m<ESC>[9;32mrender <ESC>[0m<ESC>[32mfixtures                                       <ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m│<ESC>[0m
+<ESC>[90m│ <ESC>[0m<ESC>[36m● inspect output                                        <ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m│<ESC>[0m
 <ESC>[90m╰──────────────────────────────────────────────────────────╯<ESC>[0m
 <ESC>[38;2;192;132;252mreturn<ESC>[0m<ESC>[38;2;229;231;235m <ESC>[0m<ESC>[38;2;192;132;252mTrue<ESC>[0m
 
-<ESC>[38;2;156;163;175m╭─── + Todo · 2 tasks <ESC>[0m<ESC>[38;2;156;163;175m─────────────────────────────────────╮<ESC>[0m
-<ESC>[38;2;156;163;175m│ <ESC>[0m<ESC>[38;2;86;180;233m+ <ESC>[0m<ESC>[9;38;2;86;180;233mrender <ESC>[0m<ESC>[38;2;86;180;233mfixtures                                       <ESC>[0m<ESC>[38;2;156;163;175m <ESC>[0m<ESC>[38;2;156;163;175m│<ESC>[0m
-<ESC>[38;2;156;163;175m│ <ESC>[0m<ESC>[38;2;96;165;250mo inspect output                                        <ESC>[0m<ESC>[38;2;156;163;175m <ESC>[0m<ESC>[38;2;156;163;175m│<ESC>[0m
+<ESC>[38;2;156;163;175m╭─── <ESC>[0m<ESC>[38;2;86;180;233m✓ <ESC>[0m<ESC>[1;38;2;96;165;250mTodo<ESC>[0m<ESC>[38;2;229;231;235m · 2 tasks<ESC>[0m<ESC>[38;2;156;163;175m ────────────────────────────────────<ESC>[0m<ESC>[38;2;156;163;175m─╮<ESC>[0m
+<ESC>[38;2;156;163;175m│ <ESC>[0m<ESC>[38;2;86;180;233m✓ <ESC>[0m<ESC>[9;38;2;86;180;233mrender <ESC>[0m<ESC>[38;2;86;180;233mfixtures                                       <ESC>[0m<ESC>[38;2;156;163;175m <ESC>[0m<ESC>[38;2;156;163;175m│<ESC>[0m
+<ESC>[38;2;156;163;175m│ <ESC>[0m<ESC>[38;2;96;165;250m● inspect output                                        <ESC>[0m<ESC>[38;2;156;163;175m <ESC>[0m<ESC>[38;2;156;163;175m│<ESC>[0m
 <ESC>[38;2;156;163;175m╰──────────────────────────────────────────────────────────╯<ESC>[0m

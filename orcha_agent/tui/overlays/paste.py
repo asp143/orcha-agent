@@ -7,7 +7,7 @@ class PasteOverlay(ScrollableOverlay):
     def __init__(self, text: str) -> None:
         super().__init__(
             "Pasted text",
-            [[("class:muted", line)] for line in text.split("\n")],
+            [[("class:muted", line)] for line in text.splitlines()],
             width=0.9,
             height=0.7,
         )

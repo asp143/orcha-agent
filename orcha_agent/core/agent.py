@@ -377,7 +377,8 @@ async def build_agent(
     )
     if len(main_models) > 1:
         middleware.append(ModelFallbackMiddleware(*main_models[1:]))
-    middleware.append(create_summarization_middleware(roles["summarizer"], backend))
+    if cfg.auto_compact:
+        middleware.append(create_summarization_middleware(roles["summarizer"], backend))
 
     prompt = "\n\n".join(
         value

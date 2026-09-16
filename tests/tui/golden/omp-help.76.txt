@@ -1,6 +1,7 @@
 ╭─ Help ───────────────────────────────────────────────────────────────────╮
 │ Commands                                                                 │
-│ /help           Show help                                                │
+│ Core                                                                     │
+│ /help   Show help                                                        │
 │                                                                          │
 │ Keybindings                                                              │
 │ Alt+Enter newline; queue follow-up while streaming                       │

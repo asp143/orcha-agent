@@ -33,7 +33,7 @@ class Segment:
 
 PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "default": (
-        ("brand", "model", "mode", "path", "git", "context", "cost"),
+        ("brand", "vim", "model", "cost", "mode", "path", "git", "context"),
         ("subagents", "session"),
     ),
     "minimal": (("brand", "model", "path"), ("context",)),
@@ -632,7 +632,7 @@ def vim_segment(ctx: Any) -> Segment | None:
     if application is not None:
         if application.editing_mode != EditingMode.VI:
             return None
-        mode = application.vi_state.input_mode.value
+        mode = "NORMAL" if application.vi_state.input_mode.value == "vi-navigation" else "INSERT"
     else:
         mode = getattr(ui, "vim_mode", None)
     return Segment(str(mode).upper(), "warning") if mode else None
@@ -1086,9 +1086,21 @@ def render_statusline(
     left_names, right_names = _resolved_names(ctx)
     left_items = _evaluate(ctx, left_names)
     right_items = _evaluate(ctx, right_names)
+    for items in (left_items, right_items):
+        for index, (name, value) in enumerate(items):
+            if name == "brand":
+                brand = value.text.partition(" · ")[0]
+                if brand == "orcha":
+                    brand = "  orcha"
+                brand = (
+                    _truncate_text(brand, 15, ascii_mode=ascii_mode)
+                    if get_cwidth(brand) > 15
+                    else brand
+                )
+                items[index] = (name, Segment(brand.ljust(15), value.token, value.icon_key))
     shape = composer_shape or getattr(ctx.cfg, "composer", "box")
     context: Segment | None = None
-    if shape == "box":
+    if shape == "box" and target_width >= 100:
         for items in (left_items, right_items):
             for index, (name, value) in enumerate(items):
                 if name == "context":
@@ -1125,12 +1137,12 @@ def render_statusline(
         if left_width + right_width + minimum_gap <= target_width:
             break
         excess = left_width + right_width + minimum_gap - target_width
-        if _shrink_model(left_items, excess, ascii_mode=ascii_mode):
-            continue
-        if _shrink_model(right_items, excess, ascii_mode=ascii_mode):
-            continue
         if right_items:
-            right_items.pop(0)
+            right_items.pop()
+        elif len(left_items) > 1:
+            left_items.pop()
+        elif _shrink_model(left_items, excess, ascii_mode=ascii_mode):
+            continue
         elif left_items:
             left_items.pop()
         else:

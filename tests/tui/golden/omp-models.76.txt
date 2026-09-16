@@ -2,5 +2,5 @@
 │  demo                                                                    │
 │  › ● demo  small *  128k ctx                                             │
 │    ● demo  large  128k ctx                                               │
-│  (1/2)  J/K navigate · PgUp/PgDn page · Enter select · Esc close         │
+│  (1/2)  ↑↓ move · PgUp/PgDn page · Enter select · Esc close              │
 ╰──────────────────────────────────────────────────────────────────────────╯

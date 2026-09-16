@@ -2,13 +2,15 @@
 │ Appearance | Status | Behaviour | Terminal                               │
 │  › composer           box                                                │
 │    theme              dark                                               │
-│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+│ Choose the input border style.                                           │
+│ ↑↓ move · Pgup/pgdn page · Enter change · Esc close · Tab category       │
 │ Terminal                                                                 │
-│  › vim                False                                              │
-│    hyperlinks         True                                               │
+│  › vim                off                                                │
+│    hyperlinks         on                                                 │
 │    mouse              scroll                                             │
-│    colorblind         False                                              │
-│    synchronized output True                                              │
+│    colorblind         off                                                │
+│    synchronized output on                                                │
 │    resize             preserve                                           │
-│  Tab category · ↑/↓ setting · Enter change · Esc close                   │
+│ Use Vim insert and normal modes.                                         │
+│ ↑↓ move · Pgup/pgdn page · Enter change · Esc close · Tab category       │
 ╰──────────────────────────────────────────────────────────────────────────╯

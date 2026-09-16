@@ -115,6 +115,12 @@ _BUILTIN_NAMES = (
     "ocean-dark",
     "paper-light",
 )
+_PORTED_NAMES = {
+    "dracula-omp": "dracula-dark",
+    "nord-omp": "nord-dark",
+    "catppuccin-latte-legacy": "catppuccin-latte-classic",
+    "rose-pine-legacy": "rose-pine-classic",
+}
 _THEME_ALIASES = {
     "dark-catppuccin": "catppuccin-mocha",
     "light-catppuccin": "catppuccin-latte-legacy",
@@ -261,6 +267,7 @@ class Theme:
 
     def __post_init__(self) -> None:
         colors = dict(self.colors)
+        pt_colors = {key: _prompt_color(value) for key, value in colors.items()}
         symbols = dict(self.symbols)
         object.__setattr__(self, "colors", colors)
         object.__setattr__(self, "symbols", symbols)
@@ -269,7 +276,25 @@ class Theme:
             self,
             "pt",
             PromptToolkitStyle.from_dict(
-                {token.lower(): _prompt_color(value) for token, value in colors.items()}
+                {
+                    **{
+                        token.lower(): (
+                            "bg:" + _prompt_color(value)
+                            if token.endswith("Bg") and value
+                            else _prompt_color(value)
+                        )
+                        for token, value in colors.items()
+                    },
+                    "overlay.selection": f"bg:{pt_colors['selectedBg']} {pt_colors['accent']} bold"
+                    if pt_colors["selectedBg"]
+                    else f"{pt_colors['accent']} bold",
+                    "overlay.item": pt_colors["text"],
+                    "overlay.title": f"{pt_colors['accent']} bold",
+                    "overlay.section": f"{pt_colors['accent']} bold",
+                    "overlay.border": pt_colors["border"],
+                    "overlay.divider": pt_colors["borderMuted"],
+                    "overlay.empty": pt_colors["muted"],
+                }
             ),
         )
 
@@ -441,12 +466,15 @@ def load_themes(
     for name in _BUILTIN_NAMES[1:]:
         themes[name] = load_theme_file(
             _THEMES_DIR / f"{name}.json",
+            theme_id=_PORTED_NAMES.get(name, name),
             fallback=dark,
             warn=warn,
             symbols=symbols,
             encoding=terminal_encoding,
             _authoritative=True,
         )
+    for alias, canonical in _PORTED_NAMES.items():
+        themes[canonical] = themes[alias]
     user_home = Path.home() if home is None else home
     project_cwd = Path.cwd() if cwd is None else cwd
     _load_optional_directory(

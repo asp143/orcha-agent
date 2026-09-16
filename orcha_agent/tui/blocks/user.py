@@ -21,7 +21,7 @@ class _WidthConstrainedPadding(Padding):
     """Padding that honors the transcript width even when Rich reports a wider TTY."""
 
     def __init__(self, renderable: Text, width: int, *, style: str) -> None:
-        super().__init__(renderable, (1, 1), style=style, expand=True)
+        super().__init__(renderable, (1, 2), style=style, expand=True)
         self._render_width = width
 
     def __rich_console__(

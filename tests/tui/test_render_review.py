@@ -67,11 +67,11 @@ def test_expand_and_collapse_hint_is_dim_footer():
             "leading_spacer": False,
         },
     )
-    for expanded, action in ((False, "Expand"), (True, "Collapse")):
+    for expanded, action in ((False, "expand"), (True, "collapse")):
         value = render(block, None, 80, 4, expanded)
         assert action not in value.plain.splitlines()[0]
         footer = value.split("\n")[-1]
-        assert f"Ctrl+O: {action}" in footer.plain
+        assert f"Ctrl+O to {action}" in footer.plain
         assert footer.get_style_at_offset(Console(), footer.plain.index("Ctrl")).dim
 
 

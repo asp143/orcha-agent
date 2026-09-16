@@ -24,15 +24,35 @@ def render(
     width: int,
     budget_rows: int,
     expanded: bool,
-) -> Panel:
-    del expanded
+) -> Panel | Text:
     level = str(block.data.get("level", "error")).lower()
     message = str(block.data.get("message", block.data.get("text", "")))
+    if expanded and block.data.get("details"):
+        message += "\n" + str(block.data["details"])
+    count = int(block.data.get("count", 1))
+    if count > 1:
+        message += f" · ×{count}"
+    if not block.data.get("pinned"):
+        glyph = "⚠" if level == "warning" else "!" if level == "error" else "i"
+        text = Text(
+            f"{glyph} {message}",
+            style=str(
+                theme_value(theme, level if level in {"error", "warning"} else "muted", "yellow")
+            ),
+        )
+        if not expanded:
+            text = Text(text.plain.replace("\n", " · "), style=text.style)
+            text.truncate(max(1, width), overflow="ellipsis")
+        return text
     content_limit = max(1, min(_MAX_CONTENT_ROWS, budget_rows - 2))
     content_width = max(1, width - _PANEL_HORIZONTAL_CHROME)
     lines = list(Text(message).wrap(_WRAP_CONSOLE, content_width, overflow="fold"))
     if len(lines) > content_limit:
         lines = [*lines[: content_limit - 1], Text("…")]
+    if block.data.get("error_type"):
+        lines.append(Text(str(block.data["error_type"]), style="dim"))
+    if block.data.get("log_path"):
+        lines.append(Text(f"Details: {block.data['log_path']}", style="dim"))
     titles = {"error": "Error", "warning": "Warning", "info": "Info"}
     colors = {"error": "error", "warning": "warning", "info": "accent"}
     return Panel(

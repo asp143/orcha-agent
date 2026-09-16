@@ -228,6 +228,7 @@ class Transcript:
         immediate: bool = False,
         **options: Any,
     ) -> Block:
+        self.release_startup()
         block = self.frame.add(
             "raw",
             {"renderable": renderable, "options": options, "level": "raw"},
@@ -242,12 +243,32 @@ class Transcript:
         level: str = "error",
         immediate: bool = False,
     ) -> Block:
+        welcome = next((b for b in self.frame.blocks if b.kind == "welcome" and b.data.get("hold_startup")), None)
+        for previous in reversed(self.frame.blocks):
+            if previous.kind == "banner" and previous.state is not BlockState.COMMITTED and previous.data.get("message") == message and previous.data.get("level") == level:
+                previous.data["count"] = int(previous.data.get("count", 1)) + 1
+                previous.revision += 1
+                if self.scheduler is not None:
+                    self.scheduler.request_invalidate()
+                return previous
         lines = message.splitlines()
         if level == "error" and len(lines) > 8:
             lines = [*lines[:7], "…"]
         block = self.frame.add("banner", {"message": "\n".join(lines), "level": level})
+        if welcome is not None:
+            block.update(hold_startup=True)
+            self.frame.blocks.remove(block)
+            self.frame.blocks.insert(self.frame.blocks.index(welcome), block)
+            self._settle(block)
+            if self.scheduler is not None:
+                self.scheduler.request_invalidate()
+            return block
         self._commit(block, immediate=immediate)
         return block
+
+    def release_startup(self) -> None:
+        for block in self.frame.blocks:
+            block.data.pop("hold_startup", None)
 
     def append_welcome(
         self,
@@ -256,7 +277,10 @@ class Transcript:
         immediate: bool = True,
     ) -> Block:
         del immediate  # kept for call compatibility
-        block = self.frame.add("welcome", data)
+        existing = next((b for b in self.frame.blocks if b.kind == "welcome"), None)
+        if existing is not None:
+            return existing
+        block = self.frame.add("welcome", {**data, "hold_startup": True})
         # Settle without committing: the welcome box stays visible in the
         # bottom-anchored viewport on first load and retires into scrollback
         # with the first real commit (matching the omp behavior in the spec).
@@ -945,6 +969,7 @@ class Transcript:
         return visible
 
     def print(self, *objects: Any, **kwargs: Any) -> Block:
+        self.release_startup()
         block = self.frame.add(
             "raw",
             {

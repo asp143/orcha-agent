@@ -298,7 +298,9 @@ GALLERY_FIXTURES: dict[
         "streaming": _active(level="info", message="Gallery stream started."),
         "progress": _active(level="warning", message="Gallery render is still running."),
         "success": _settled(level="info", message="Gallery render completed."),
-        "error": _settled(level="error", message="Gallery renderer failed.\nFixture preserved."),
+        "error": _settled(
+            level="error", message="Gallery renderer failed.\nFixture preserved.", pinned=True
+        ),
     },
     "marker": {
         "streaming": _active(text="⊟ preparing gallery"),
@@ -311,7 +313,7 @@ GALLERY_FIXTURES: dict[
         "progress": _active(
             items=[
                 {"text": "render fixtures", "done": True, "completion_progress": 0.5},
-                {"text": "inspect output"},
+                {"text": "inspect output", "status": "in_progress"},
             ]
         ),
         "success": _settled(

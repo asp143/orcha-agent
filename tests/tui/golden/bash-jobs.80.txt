@@ -1,4 +1,4 @@
 
-<ESC>[90m╭─── ✔ Bash jobs · list<ESC>[0m<ESC>[90m · <ESC>[0m<ESC>[90mTook 1.2s<ESC>[0m<ESC>[90m <ESC>[0m<ESC>[90m───────────────────────────────────────────╮<ESC>[0m
+<ESC>[90m╭─── <ESC>[0m<ESC>[32m$ <ESC>[0m<ESC>[1;36mBash jobs<ESC>[0m<ESC>[39m · list<ESC>[0m<ESC>[90m ──────────────────────────────────────────<ESC>[0m<ESC>[90m · <ESC>[0m<ESC>[2;90mTook 1.2s<ESC>[0m<ESC>[90m─╮<ESC>[0m
 <ESC>[90m│ build-1 · running · npm run build                                            <ESC>[0m<ESC>[90m│<ESC>[0m
 <ESC>[90m╰──────────────────────────────────────────────────────────────────────────────╯<ESC>[0m

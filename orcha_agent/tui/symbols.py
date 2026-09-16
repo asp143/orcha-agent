@@ -51,33 +51,132 @@ SYMBOL_KEYS = (
 )
 
 _UNICODE = (
-    "╭", "╮", "╰", "╯", "─", "│",
-    "┌", "┐", "└", "┘", "─", "│",
-    "✓", "✗", "○", "!", "i",
-    "├─", "└─", "│ ", "  ", "▾", "▸",
-    "", "", "│", "·", "•", "×",
-    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", "✻✼❉❊✺✹✸✶",
-    "◈", "◆", "⌂", "", "◔", "▣", "$", "✦", "◇",
+    "╭",
+    "╮",
+    "╰",
+    "╯",
+    "─",
+    "│",
+    "┌",
+    "┐",
+    "└",
+    "┘",
+    "─",
+    "│",
+    "✓",
+    "✗",
+    "○",
+    "!",
+    "i",
+    "├─",
+    "└─",
+    "│ ",
+    "  ",
+    "▾",
+    "▸",
+    "",
+    "",
+    "│",
+    "·",
+    "•",
+    "×",
+    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+    "◈",
+    "◆",
+    "⌂",
+    "",
+    "◔",
+    "▣",
+    "$",
+    "✦",
+    "◇",
 )
 
 _NERD = (
-    "╭", "╮", "╰", "╯", "─", "│",
-    "┌", "┐", "└", "┘", "─", "│",
-    "󰄬", "󰅖", "󰐊", "󰀪", "󰋽",
-    "├─", "└─", "│ ", "  ", "", "",
-    "", "", "", "│", "", "×",
-    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", "✻✼❉❊✺✹✸✶",
-    "󰧑", "󰘳", "", "", "󰍛", "󰘚", "󰇭", "󰔟", "󰙅",
+    "╭",
+    "╮",
+    "╰",
+    "╯",
+    "─",
+    "│",
+    "┌",
+    "┐",
+    "└",
+    "┘",
+    "─",
+    "│",
+    "󰄬",
+    "󰅖",
+    "󰐊",
+    "󰀪",
+    "󰋽",
+    "├─",
+    "└─",
+    "│ ",
+    "  ",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "│",
+    "",
+    "×",
+    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+    "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+    "󰧑",
+    "󰘳",
+    "",
+    "",
+    "󰍛",
+    "󰘚",
+    "󰇭",
+    "󰔟",
+    "󰙅",
 )
 
 _ASCII = (
-    "+", "+", "+", "+", "-", "|",
-    "+", "+", "+", "+", "-", "|",
-    "+", "x", "o", "!", "i",
-    "+-", "`-", "| ", "  ", "v", ">",
-    "[", "]", "|", "|", ".", "x",
-    "|/-\\", "|/-\\",
-    "M", "!", "/", "G", "C", "T", "$", "?", "A",
+    "+",
+    "+",
+    "+",
+    "+",
+    "-",
+    "|",
+    "+",
+    "+",
+    "+",
+    "+",
+    "-",
+    "|",
+    "+",
+    "x",
+    "o",
+    "!",
+    "i",
+    "+-",
+    "`-",
+    "| ",
+    "  ",
+    "v",
+    ">",
+    "[",
+    "]",
+    "|",
+    "|",
+    ".",
+    "x",
+    "|/-\\",
+    "|/-\\",
+    "M",
+    "!",
+    "/",
+    "G",
+    "C",
+    "T",
+    "$",
+    "?",
+    "A",
 )
 
 SYMBOL_PRESETS: dict[str, dict[str, str]] = {
@@ -87,12 +186,53 @@ SYMBOL_PRESETS: dict[str, dict[str, str]] = {
 }
 
 
+_TOOL_KEYS = (
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "ls",
+    "glob",
+    "grep",
+    "web_search",
+    "todo",
+    "task",
+    "ask",
+    "generic",
+)
+_TOOL_UNICODE = ("≡", "✎", "±", "$", "▤", "⌕", "⌕", "◎", "✓", "◇", "?", "◆")
+_TOOL_ASCII = ("R", "W", "E", "$", "L", "G", "G", "W", "+", "A", "?", "*")
+_TOOL_NERD = ("󰈙", "󰏫", "󰷈", "", "", "", "", "󰖟", "󰄬", "󰙅", "󰋽", "󰒓")
+SYMBOL_KEYS += tuple(f"tool.{key}" for key in _TOOL_KEYS) + (
+    "todo.pending",
+    "todo.running",
+    "todo.done",
+)
+for _preset, _glyphs in (("unicode", _TOOL_UNICODE), ("nerd", _TOOL_NERD), ("ascii", _TOOL_ASCII)):
+    SYMBOL_PRESETS[_preset].update(
+        {f"tool.{key}": glyph for key, glyph in zip(_TOOL_KEYS, _glyphs, strict=True)}
+    )
+    SYMBOL_PRESETS[_preset].update(
+        zip(
+            ("todo.pending", "todo.running", "todo.done"),
+            ("o", "*", "+") if _preset == "ascii" else ("○", "●", "✓"),
+            strict=True,
+        )
+    )
+    if _preset != "ascii":
+        SYMBOL_PRESETS[_preset]["sep.thin"] = "·"
+
+
 # Shapes and labels remain distinct independently of hue perception.
 SYMBOL_PRESETS["colorblind"] = {
     **SYMBOL_PRESETS["unicode"],
-    "status.success": "+", "status.error": "x", "status.pending": "o",
-    "status.warning": "!", "status.info": "i",
+    "status.success": "+",
+    "status.error": "x",
+    "status.pending": "o",
+    "status.warning": "!",
+    "status.info": "i",
 }
+
 
 def _supports_unicode(encoding: str | None) -> bool:
     if encoding is None:
@@ -102,6 +242,7 @@ def _supports_unicode(encoding: str | None) -> bool:
     except (LookupError, UnicodeEncodeError):
         return False
     return True
+
 
 def _encodable(value: str, encoding: str | None) -> bool:
     if encoding is None:

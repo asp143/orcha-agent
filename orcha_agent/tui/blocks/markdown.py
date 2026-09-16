@@ -9,6 +9,7 @@ from typing import Any
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markdown import Markdown
+from rich.theme import Theme
 
 # Settled paragraphs/lists/fences survive streaming tail updates. Retain a bounded
 # number of blocks, not every historical version of an assistant response.
@@ -23,6 +24,7 @@ class StreamingMarkdown(Markdown):
     """Preserve Rich's GFM parser and reuse layouts of unchanged root blocks."""
 
     def __init__(self, markup: str, *args: Any, **kwargs: Any) -> None:
+        self.heading_color = kwargs.pop("heading_color", None)
         boundary = line_offset = 0
         prefix: list[Any] = []
         # Reference definitions can retroactively change any earlier inline link.
@@ -52,6 +54,15 @@ class StreamingMarkdown(Markdown):
                 _PARSED.popitem(last=False)
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        styles = (
+            {f"markdown.h{level}": f"bold {self.heading_color}" for level in range(1, 7)}
+            if self.heading_color
+            else {}
+        )
+        with console.use_theme(Theme(styles)):
+            yield from self._render(console, options)
+
+    def _render(self, console: Console, options: ConsoleOptions) -> RenderResult:
         if _REFERENCE.search(self.markup):
             yield from super().__rich_console__(console, options)
             return

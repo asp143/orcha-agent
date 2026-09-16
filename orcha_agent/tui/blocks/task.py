@@ -244,7 +244,7 @@ def _agent_rows(
     )
     metrics = _metrics(agent)
 
-    row = f"{glyph} {label} ⟦{status}⟧"
+    row = f"{glyph} {label} · {status}"
     row += f" {metrics} · {_duration(_elapsed(agent))}"
 
     rows = [row]
@@ -278,7 +278,7 @@ def _footer(agents: Sequence[Mapping[str, Any]], block: Block) -> str:
         elapsed = _seconds(result.get("elapsed"))
     if elapsed is None:
         elapsed = max((_elapsed(agent) for agent in agents), default=0.0)
-    return f"⟦{succeeded} succeeded · {failed} failed · {requests} req · {_duration(elapsed)}⟧"
+    return f"{succeeded} succeeded · {failed} failed · {requests} req · {_duration(elapsed)}"
 
 
 def render(

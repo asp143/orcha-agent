@@ -1,4 +1,4 @@
-<ESC>[90;40m+--- ☑ Todo · 2 tasks <ESC>[0m<ESC>[90;40m---------------------------------------------------------+<ESC>[0m
-<ESC>[90;40m| <ESC>[0m<ESC>[9;32;40m☑ add renderers<ESC>[0m<ESC>[32;40m                                                             <ESC>[0m<ESC>[90;40m <ESC>[0m<ESC>[90;40m|<ESC>[0m
-<ESC>[90;40m| <ESC>[0m<ESC>[36;40m☐ stabilize goldens                                                         <ESC>[0m<ESC>[90;40m <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m+--- <ESC>[0m<ESC>[32;40m✓ <ESC>[0m<ESC>[1;36;40mTodo<ESC>[0m<ESC>[37;40m · 2 tasks<ESC>[0m<ESC>[90;40m --------------------------------------------------------<ESC>[0m<ESC>[90;40m-+<ESC>[0m
+<ESC>[90;40m| <ESC>[0m<ESC>[9;32;40m✓ add renderers<ESC>[0m<ESC>[32;40m                                                             <ESC>[0m<ESC>[90;40m <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| <ESC>[0m<ESC>[36;40m○ stabilize goldens                                                         <ESC>[0m<ESC>[90;40m <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m+------------------------------------------------------------------------------+<ESC>[0m

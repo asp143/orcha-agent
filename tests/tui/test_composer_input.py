@@ -31,7 +31,7 @@ def test_multiple_paste_chips_expand_without_recursion() -> None:
     second = first_chip + "\n" * 5
     composer.insert_paste(second)
     assert composer.expanded_text(composer.buffer.text) == first + " / " + second
-    assert "[Pasted 5 lines #1]" in composer.buffer.text
+    assert "[+5 lines #1]" in composer.buffer.text
     assert composer.text_rows(80) == 1
 
 
@@ -58,7 +58,7 @@ async def test_pipe_bracketed_paste_does_not_submit_at_newlines() -> None:
             pipe.send_text("\x1b[201~")
             await asyncio.sleep(0.03)
             assert not submissions
-            assert "[Pasted 5 lines" in composer.buffer.text
+            assert "[+5 lines" in composer.buffer.text
             pipe.send_text("\r")
             await asyncio.sleep(0.03)
             assert submissions == ["one\ntwo\nthree\nfour\nfive"]
@@ -129,7 +129,7 @@ async def test_runtime_paste_submit_preserves_expanded_history() -> None:
             pipe.send_text("\x1b[200~" + payload + "\x1b[201~")
             await asyncio.sleep(0.03)
             assert not submissions
-            assert "[Pasted 6 lines" in runtime.buffer.text
+            assert "[+6 lines" in runtime.buffer.text
             pipe.send_text("\r")
             await asyncio.wait_for(submitted.wait(), 1)
             assert submissions == [payload]
@@ -296,7 +296,7 @@ def test_paste_chip_edits_are_atomic(edit: str) -> None:
     )
 
 
-def test_paste_processor_dims_only_chip_and_preserves_positions() -> None:
+def test_paste_processor_colors_only_chip_and_preserves_positions() -> None:
     from prompt_toolkit.layout.processors import TransformationInput
     from orcha_agent.tui.composer import PasteChipProcessor
 
@@ -314,8 +314,8 @@ def test_paste_processor_dims_only_chip_and_preserves_positions() -> None:
         3,
     )
     result = PasteChipProcessor(composer).apply_transformation(ti)
-    dim = "".join(text for style, text in result.fragments if "dim" in style)
-    assert dim == "[Pasted 5 lines #1]"
+    dim = "".join(text for style, text in result.fragments if "bg:" in style)
+    assert dim == "[+5 lines #1]"
     assert "".join(text for _, text in result.fragments) == composer.buffer.text
     assert result.source_to_display(9) == 9
 

@@ -47,20 +47,18 @@ def test_read_call_result_and_group_match_omp_anatomy() -> None:
         )
     )
 
-    assert "⏳ Read: src/app.py:5-12" in pending
-    assert "• Read src/app.py:5-19" in result
+    assert "⠋ Read: src/app.py:5-12" in pending
+    assert "≡ Read src/app.py:5-19" in result
     assert " 5│line 1" in result
-    assert "… 3 more lines ⟦Ctrl+O: Expand⟧" in result
-    assert "• Read (3)" in grouped
+    assert "… 3 more lines · Ctrl+O to expand" in result
+    assert "≡ Read (3)" in grouped
     assert "├─ src/a.py" in grouped and "└─ src/c.py" in grouped
 
 
 def test_empty_successful_read_renders_success_card() -> None:
-    output = _plain(
-        _block("read_file", args={"path": "empty.txt"}, result="")
-    )
+    output = _plain(_block("read_file", args={"path": "empty.txt"}, result=""))
 
-    assert "• Read empty.txt" in output
+    assert "≡ Read empty.txt" in output
     assert "✘ Read" not in output
 
 
@@ -124,11 +122,11 @@ def test_read_uses_deepagents_line_numbers_for_gutter_range_and_more_hint() -> N
         expanded=True,
     )
 
-    assert "• Read src/numbered.py:41-55" in collapsed
+    assert "≡ Read src/numbered.py:41-55" in collapsed
     assert " 41│source 41" in collapsed
     assert " 52│source 52" in collapsed
     assert "source 53" not in collapsed
-    assert "… 3 more lines ⟦Ctrl+O: Expand⟧" in collapsed
+    assert "… 3 more lines · Ctrl+O to expand" in collapsed
     assert " 55│source 55" in expanded
     assert "more lines" not in expanded
 
@@ -142,7 +140,7 @@ def test_read_keeps_mixed_number_like_content_unnumbered() -> None:
         )
     )
 
-    assert "• Read history.txt:1-2" in output
+    assert "≡ Read history.txt:1-2" in output
     assert " 1│A historical note" in output
     assert " 2│1998  was a year" in output
     assert "1998│was a year" not in output
@@ -157,7 +155,7 @@ def test_read_numbered_mode_allows_empty_lines_between_numbered_lines() -> None:
         )
     )
 
-    assert "• Read numbered.txt:41-43" in output
+    assert "≡ Read numbered.txt:41-43" in output
     assert " 41│first" in output
     assert " 43│third" in output
 
@@ -172,12 +170,12 @@ def test_ls_renders_an_inline_tree_with_directory_suffix_and_row_limits() -> Non
     collapsed = _plain(value)
     expanded = _plain(value, expanded=True)
 
-    assert collapsed.startswith("\n📂 Ls: src  30 items")
+    assert collapsed.startswith("\n▤ Ls: src  30 items")
     assert "├─ entry-0/" in collapsed
     assert "entry-7" in collapsed and "entry-8" not in collapsed
-    assert "… 22 more items ⟦Ctrl+O: Expand⟧" in collapsed
+    assert "… 22 more items · Ctrl+O to expand" in collapsed
     assert "entry-23" in expanded and "entry-24" not in expanded
-    assert "… 6 more items ⟦Ctrl+O: Expand⟧" in expanded
+    assert "… 6 more items · Ctrl+O to expand" in expanded
     assert "╭" not in collapsed
 
 
@@ -213,12 +211,16 @@ def test_glob_and_grep_use_authoritative_counts_and_specific_empty_summaries() -
     )
 
     assert "Glob: **/*.py  12 items" in glob
-    assert "… 4 more items ⟦Ctrl+O: Expand⟧" in glob
+    assert "… 4 more items · Ctrl+O to expand" in glob
     assert "Grep: needle  17 matches · 5 files · in src" in grep
-    assert "… 14 more matches ⟦Ctrl+O: Expand⟧" in grep
+    assert "… 14 more matches · Ctrl+O to expand" in grep
     assert "Grep: needle  3 matches · 2 files" in formatted_grep
-    assert _plain(_block("glob", args={"pattern": "*.none"}, result="")).strip() == "⚠ No files found"
-    assert _plain(_block("grep", args={"pattern": "none"}, result="")).strip() == "⚠ No matches found"
+    assert (
+        _plain(_block("glob", args={"pattern": "*.none"}, result="")).strip() == "⚠ No files found"
+    )
+    assert (
+        _plain(_block("grep", args={"pattern": "none"}, result="")).strip() == "⚠ No matches found"
+    )
 
 
 def test_grep_default_mode_keeps_count_shaped_filename_as_one_path() -> None:
@@ -276,29 +278,25 @@ def test_grep_treats_only_the_deepagents_no_match_sentinel_as_empty() -> None:
     assert "No matches found.txt:7:No matches found in this line" in real_match
 
 
-def test_write_streaming_and_result_use_tail_and_line_count() -> None:
+def test_write_streaming_and_result_share_head_anchor_and_line_count() -> None:
     content = "\n".join(f"line {index}" for index in range(20))
     streaming = _plain(
         _block("write_file", active=True, args={"path": "out.py", "content": content})
     )
-    result = _plain(
-        _block("write_file", args={"path": "out.py", "content": content}, result="ok")
-    )
+    result = _plain(_block("write_file", args={"path": "out.py", "content": content}, result="ok"))
 
     assert "Write: out.py" in streaming
-    assert "line 0" not in streaming and "line 19" in streaming
-    assert "(streaming)" in streaming
+    assert "line 0" in streaming and "line 19" not in streaming
+    assert "… 14 more lines · Ctrl+O to expand" in streaming
     assert "✎ Write: out.py (20 lines)" in result
     assert "line 5" in result and "line 6" not in result
 
 
 def test_edit_header_gutters_counts_and_collapsed_hint() -> None:
     diff = "@@ -313,2 +313,2 @@\n context\n-old value\n+new value"
-    output = _plain(
-        _block("edit_file", args={"path": "demo.py"}, result={"diff": diff})
-    )
+    output = _plain(_block("edit_file", args={"path": "demo.py"}, result={"diff": diff}))
 
-    assert "Edit: demo.py:313 ⟦+1/-1⟧" in output
+    assert "Edit: demo.py:313 +1 -1" in output
     assert " 313│context" in output
     assert "-314│old value" in output
     assert "+314│new value" in output
@@ -316,7 +314,7 @@ def test_bash_has_command_output_sections_and_footer() -> None:
     assert "execute" not in output.casefold()
     assert "$ printf ok" in output
     assert "├─── Output " in output
-    assert "⟦Wall: 1.2s | Exit: 1 | Timeout: 120s⟧" in output
+    assert "exit 1 · 1.2s · timeout 120s" in output
 
 
 def test_grep_glob_and_web_search_are_inline_without_frames() -> None:
@@ -330,7 +328,7 @@ def test_grep_glob_and_web_search_are_inline_without_frames() -> None:
     glob = _plain(_block("glob", args={"pattern": "*.py"}, result=["a.py", "b.py"]))
     web = _plain(_block("web_search", args={"query": "orcha"}, result=["one", "two"]))
 
-    assert grep.lstrip().startswith("🔍 Grep: needle  3 matches · 2 files · in src")
+    assert grep.lstrip().startswith("⌕ Grep: needle  3 matches · 2 files · in src")
     assert "╭" not in grep and "├─" in grep and "└─" in grep
     assert "Glob: *.py" in glob and "╭" not in glob
     assert "Web Search: orcha" in web and "╭" not in web
@@ -353,7 +351,7 @@ def test_generic_args_hint_and_degradation_rows() -> None:
     assert len(folded.strip().splitlines()) == 2
     assert folded.lstrip().startswith("╭─ Custom · Elapsed 4s")
     assert folded.splitlines()[-1] == "╰"
-    assert single.strip() == "⣾ Custom · Elapsed 4s"
+    assert single.strip() == "⠋ Custom · Elapsed 4s"
     assert render(value, DEFAULT_THEME, 80, 0, False) is None
 
 
@@ -363,8 +361,24 @@ def test_task_and_todo_cards_match_omp_headers_and_rows() -> None:
             "task",
             result={
                 "agents": [
-                    {"id": "a", "description": "inspect", "status": "success", "requests": 4, "tokens": 120, "cost": 0.02, "elapsed": 12},
-                    {"id": "b", "description": "test", "status": "error", "requests": 2, "tokens": 80, "cost": 0.01, "elapsed": 9},
+                    {
+                        "id": "a",
+                        "description": "inspect",
+                        "status": "success",
+                        "requests": 4,
+                        "tokens": 120,
+                        "cost": 0.02,
+                        "elapsed": 12,
+                    },
+                    {
+                        "id": "b",
+                        "description": "test",
+                        "status": "error",
+                        "requests": 2,
+                        "tokens": 80,
+                        "cost": 0.01,
+                        "elapsed": 9,
+                    },
                 ],
                 "requests": 6,
                 "elapsed": 21,
@@ -381,6 +395,6 @@ def test_task_and_todo_cards_match_omp_headers_and_rows() -> None:
 
     assert "⇶ Task · 2 agents" in task
     assert "✔ a: inspect" in task and "✘ b: test" in task
-    assert "⟦1 succeeded · 1 failed · 6 req · 21s⟧" in task
-    assert "☑ Todo · 2 tasks" in todo
-    assert "☑ done" in todo and "☐ next" in todo
+    assert "1 succeeded · 1 failed · 6 req · 21s" in task
+    assert "✓ Todo · 2 tasks" in todo
+    assert "✓ done" in todo and "○ next" in todo

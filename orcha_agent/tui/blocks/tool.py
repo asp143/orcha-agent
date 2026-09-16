@@ -26,8 +26,8 @@ from .terminal import terminal_rows
 from .image import has_image, render as render_image
 from .limits import BASH_LINES, GROUP_READ_LINES, LIST_LINES, READ_LINES, SEARCH_LINES
 
-SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
-EXPAND_HINT = "⟦Ctrl+O: Expand⟧"
+SPINNER_FRAMES = tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+EXPAND_HINT = "· Ctrl+O to expand"
 _READ = frozenset({"read", "read_file"})
 _WRITE = frozenset({"write", "write_file"})
 _EDIT = frozenset({"edit", "edit_file", "apply_patch"})
@@ -110,7 +110,9 @@ def _state(block: Block) -> str:
     statuses.update(str(item.get("status", "")).casefold() for item in _mappings(result))
     if statuses & {"aborted", "cancelled", "canceled"}:
         return "aborted"
-    if "running" in statuses or "pending" in statuses:
+    if "pending" in statuses:
+        return "pending"
+    if "running" in statuses:
         return "running"
     if "warning" in statuses:
         return "warning"
@@ -139,8 +141,8 @@ def _glyph(block: Block, state: str, theme: Any = None) -> str:
         "error": "✘",
         "warning": "⚠",
         "info": "ⓘ",
-        "pending": "⏳",
-        "aborted": "⏹",
+        "pending": "○",
+        "aborted": "■",
     }
     keys = {
         "done": "status.success",
@@ -214,6 +216,7 @@ def _label(name: str) -> str:
     return {
         "execute": "Bash",
         "bash": "Bash",
+        "bash_jobs": "Bash jobs",
         "shell": "Bash",
         "read": "Read",
         "read_file": "Read",
@@ -288,12 +291,51 @@ def _timing_label(block: Block, state: str) -> str:
 
 
 def _header_with_timing(header: str | Text, block: Block, state: str, theme: Any) -> Text:
-    value = header.copy() if isinstance(header, Text) else Text(_one_line(header))
+    raw = header.plain if isinstance(header, Text) else _one_line(header)
+    name = str(block.data.get("name", "tool"))
+    label = _label(name)
+    start = raw.find(label)
+    detail = raw[start + len(label) :] if start >= 0 else raw
+    tool_key = (
+        "read"
+        if name in _READ
+        else "write"
+        if name in _WRITE
+        else "edit"
+        if name in _EDIT
+        else "bash"
+        if name in _BASH or name == "bash_jobs"
+        else name
+    )
+    defaults = {"read": "≡", "write": "✎", "edit": "±", "bash": "$", "todo": "✓"}
+    glyph = (
+        str(theme_symbol(theme, f"tool.{tool_key}", defaults.get(tool_key, "◆")))
+        if state == "done"
+        else _glyph(block, state, theme)
+    )
+    token = {
+        "done": "success",
+        "error": "error",
+        "warning": "warning",
+        "running": "accent",
+        "pending": "muted",
+    }.get(state, "dim")
+    value = Text(glyph, style=str(theme_value(theme, token)))
+    value.append(" ")
+    value.append(
+        label, style=f"bold {theme_value(theme, 'toolTitle', theme_value(theme, 'accent'))}"
+    )
+    value.append(detail, style=str(theme_value(theme, "text")))
+    for match in re.finditer(r"[+-]\d+", detail):
+        offset = len(glyph) + 1 + len(label) + match.start()
+        value.stylize(
+            str(theme_value(theme, "toolDiffAdded" if match[0][0] == "+" else "toolDiffRemoved")),
+            offset,
+            offset + len(match[0]),
+        )
     timing = _timing_label(block, state)
     if timing:
-        muted = str(theme_value(theme, "dim", theme_value(theme, "muted")))
-        value.append(f" {theme_symbol(theme, 'sep.thin', '·')} ", style=muted)
-        value.append(timing, style=muted)
+        value.append("\t" + timing, style=f"dim {theme_value(theme, 'dim')}")
     return value
 
 
@@ -318,6 +360,7 @@ def _frame(
     edit: bool = False,
     expanded: bool = False,
 ) -> Text:
+    del edit
     width = max(4, width)
     border = str(theme_value(theme, border_token, theme_value(theme, "muted")))
     tl = _box_char(theme, "topLeft", "╭", "top_left")
@@ -333,17 +376,31 @@ def _frame(
     if "\n" in header_value.plain or "\r" in header_value.plain:
         header_value = Text(_one_line(header_value.plain))
     max_header_width = max(0, width - 8)
-    if header_value.cell_len > max_header_width:
-        header_value = Text(_middle_ellipsis(header_value.plain, max_header_width))
-    header_width = header_value.cell_len
-    header_text_width = header_width + 2 if header_width else 0
-    top_fill = max(0, width - 6 - header_text_width)
-    top = Text(f"{tl}{h * 3}", style=border)
-    if header_width:
-        top.append(" ")
-        top.append(header_value)
-        top.append(" ")
-    top.append(f"{h * top_fill}{h}{tr}", style=border)
+    pieces = header_value.split("\t")
+    header_value = pieces[0]
+    timing = pieces[1] if len(pieces) > 1 else Text()
+    timing_width = timing.cell_len + 3 if timing else 0
+    available = max(0, max_header_width - timing_width)
+    if header_value.cell_len > available:
+        # Slice Text rather than rebuilding it so title, path and status styles survive.
+        shortened = _middle_ellipsis(header_value.plain, available)
+        if "…" in shortened:
+            left, right = shortened.split("…", 1)
+            header_value = (
+                header_value[: len(left)]
+                + Text("…")
+                + (header_value[-len(right) :] if right else Text())
+            )
+        else:
+            header_value = Text(shortened)
+    top = Text(f"{tl}{h * 3} ", style=border)
+    top.append(header_value)
+    fill = max(0, width - 8 - header_value.cell_len - timing_width)
+    top.append(" " + h * fill, style=border)
+    if timing:
+        top.append(" · ", style=border)
+        top.append(timing)
+    top.append(f"{h}{tr}", style=border)
     _append_line(output, top)
     capacity = max(0, budget_rows - 2)
     for index, row in enumerate(rows[:capacity]):
@@ -355,26 +412,20 @@ def _frame(
                 output, Text(f"{tee_right}{h * 3}{label}{h * fill}{h}{tee_left}", style=border)
             )
             continue
-        content_width = width - (2 if edit else 4)
+        content_width = width - 4
         value = row.copy() if isinstance(row, Text) else Text(str(row))
         value.truncate(content_width, overflow="ellipsis", pad=True)
         framed = Text(v, style=border)
-        if not edit:
-            framed.append(" ")
+        framed.append(" ")
         framed.append(value)
-        if not edit:
-            framed.append(" ")
+        framed.append(" ")
         framed.append(v, style=border)
         _append_line(output, framed)
     footer = Text(bl, style=border)
     hint = ""
     if expanded or len(rows) > max(0, budget_rows - 2):
-        action = "Collapse" if expanded else "Expand"
-        hint = (
-            f"[Ctrl+O: {action}]"
-            if theme_symbol(theme, "preset", "") == "ascii"
-            else f"⟦Ctrl+O: {action}⟧"
-        )
+        action = "collapse" if expanded else "expand"
+        hint = f"Ctrl+O to {action}"
     if hint and cell_len(hint) + 4 <= width:
         footer.append(h * (width - cell_len(hint) - 4), style=border)
         footer.append(f" {hint} ", style=f"dim {theme_value(theme, 'dim')}")
@@ -523,7 +574,7 @@ def _read_rows(
         return f"• Read ({len(calls)})", rows
     path = _path(args, cwd)
     if _state(block) == "running":
-        return f"⏳ Read: {path}{_selection(args)}", []
+        return f"Read: {path}{_selection(args)}", []
     source_rows, first, last = _read_source_rows(block.data.get("result"), args)
     if str(block.data.get("name")) == "read" and first is not None:
         path = re.sub(r"(?::(?:raw|[-\d,+]+))+$", "", path)
@@ -533,16 +584,15 @@ def _read_rows(
     )
 
 
-def _write_rows(block: Block, args: Mapping[str, Any]) -> tuple[str, list[str]]:
+def _write_rows(
+    block: Block, args: Mapping[str, Any], expanded: bool = False
+) -> tuple[str, list[str]]:
     lines = str(args.get("content", "")).splitlines()
     path = _path(args)
-    if _state(block) == "running":
-        rows = lines[-12:]
-        if len(lines) > 12:
-            rows.insert(0, "… (content above)")
-        rows.append(f"{SPINNER_FRAMES[int(block.data.get('spinner_frame', 0)) % 8]} (streaming)")
-        return f"Write: {path}", rows
-    return f"✎ Write: {path} ({len(lines)} lines)", lines[:6]
+    rows = lines if expanded else lines[:6]
+    if not expanded and len(lines) > 6:
+        rows.append(f"… {len(lines) - 6} more lines {EXPAND_HINT}")
+    return f"Write: {path} ({len(lines)} lines)", rows
 
 
 def _edit_rows(
@@ -557,9 +607,7 @@ def _edit_rows(
     removed = sum(
         1 for value in diff.splitlines() if value.startswith("-") and not value.startswith("---")
     )
-    header = (
-        f"{_glyph(block, _state(block), theme)} Edit: {_path(args)}{line} ⟦+{added}/-{removed}⟧"
-    )
+    header = f"{_glyph(block, _state(block), theme)} Edit: {_path(args)}{line} +{added} -{removed}"
     rendered = render_diff(
         replace(block, kind="diff", data={"text": diff, "path": _path(args)}),
         theme,
@@ -573,12 +621,6 @@ def _edit_rows(
         rows = rows[-12:]
         if hidden:
             rows.insert(0, Text("… (content above)", style="dim"))
-        rows.append(
-            Text(
-                f"{SPINNER_FRAMES[int(block.data.get('spinner_frame', 0)) % 8]} (preview)",
-                style="dim",
-            )
-        )
     return header, rows
 
 
@@ -644,7 +686,7 @@ def _bash_rows(
         total = len(output)
         output = [
             Text(
-                f"… ({total - BASH_LINES} earlier lines, showing {BASH_LINES} of {total}) (ctrl+o to expand)"
+                f"… ({total - BASH_LINES} earlier lines, showing {BASH_LINES} of {total}) · Ctrl+O to expand"
             ),
             *output[-BASH_LINES:],
         ]
@@ -661,10 +703,12 @@ def _bash_rows(
         else block.data.get("duration", 0.0),
     )
     wall = wall if isinstance(wall, (int, float)) and math.isfinite(wall) else 0.0
-    footer = f"⟦Wall: {float(wall):.1f}s | Exit: {_exit_code(result) if _exit_code(result) is not None else '—'}"
+    footer = (
+        f"exit {_exit_code(result) if _exit_code(result) is not None else '—'} · {float(wall):.1f}s"
+    )
     if args.get("timeout") is not None:
-        footer += f" | Timeout: {args['timeout']}s"
-    rows.append(f"{footer}⟧")
+        footer += f" · timeout {args['timeout']}s"
+    rows.append(Text(footer, style="dim"))
     return rows, {section_index: "Output"}
 
 
@@ -786,8 +830,26 @@ def _grep_items(result: Any, output_mode: str) -> tuple[list[str], int, int]:
     return rows, len(rows), len(paths - {""})
 
 
-def _timed_inline_header(text: str, timing: str, theme: Any) -> Text:
-    header = Text(text)
+def _timed_inline_header(text: str, timing: str, theme: Any, state: str = "done") -> Text:
+    glyph, _, rest = text.partition(" ")
+    label, colon, detail = rest.partition(":")
+    header = Text(
+        glyph,
+        style=str(
+            theme_value(
+                theme,
+                {"done": "success", "running": "accent", "pending": "muted", "error": "error"}.get(
+                    state, "dim"
+                ),
+            )
+        ),
+    )
+    header.append(" ")
+    header.append(
+        label, style=f"bold {theme_value(theme, 'toolTitle', theme_value(theme, 'accent'))}"
+    )
+    if colon:
+        header.append(":" + detail, style=str(theme_value(theme, "text")))
     if timing:
         muted = str(theme_value(theme, "dim", theme_value(theme, "muted")))
         header.append(f" {theme_symbol(theme, 'sep.thin', '·')} ", style=muted)
@@ -825,10 +887,10 @@ def _inline_rows(
         detail = pattern or _path(args)
     if state == "running":
         title = f"{_glyph(block, state, theme)} {_label(name)}{f': {detail}' if detail else ''}"
-        return _timed_inline_header(title, timing, theme)
+        return _timed_inline_header(title, timing, theme, state)
     if state == "error":
-        title = f"✘ {_label(name)}{f': {detail}' if detail else ''}"
-        output = _timed_inline_header(title, timing, theme)
+        title = f"{_glyph(block, state, theme)} {_label(name)}{f': {detail}' if detail else ''}"
+        output = _timed_inline_header(title, timing, theme, state)
         output.append("\n")
         output.append(
             _result_text(result)[:110] or "Unknown error", style=str(theme_value(theme, "error"))
@@ -851,7 +913,7 @@ def _inline_rows(
         if not items and total == 0:
             return Text("⚠ No matches found", style=str(theme_value(theme, "warning")))
         header = _timed_inline_header(
-            f"🔍 Grep: {pattern}  {total} matches · {files} files · in {args.get('path', args.get('cwd', '.'))}",
+            f"{theme_symbol(theme, 'tool.grep', '⌕')} Grep: {pattern}  {total} matches · {files} files · in {args.get('path', args.get('cwd', '.'))}",
             timing,
             theme,
         )
@@ -870,7 +932,9 @@ def _inline_rows(
             return Text("⚠ Empty directory", style=str(theme_value(theme, "warning")))
         path = _path(args) or "."
         return _tree_output(
-            _timed_inline_header(f"📂 Ls: {path}  {total} items", timing, theme),
+            _timed_inline_header(
+                f"{theme_symbol(theme, 'tool.ls', '▤')} Ls: {path}  {total} items", timing, theme
+            ),
             items,
             total=total,
             limit=24 if expanded else LIST_LINES,
@@ -906,7 +970,11 @@ def _inline_rows(
     noun = "items" if name == "glob" else "results"
     limit = 24 if expanded else 8 if name == "glob" else 6
     return _tree_output(
-        _timed_inline_header(f"🔍 {label}: {pattern}  {total} {noun}", timing, theme),
+        _timed_inline_header(
+            f"{theme_symbol(theme, f'tool.{name}', '⌕')} {label}: {pattern}  {total} {noun}",
+            timing,
+            theme,
+        ),
         items,
         total=total,
         limit=limit,
@@ -923,8 +991,12 @@ def _todo_rows(args: Mapping[str, Any], result: Any, theme: Any) -> tuple[str, l
         done = bool(value.get("done") or value.get("status") in {"done", "completed"})
         glyph = theme_symbol(
             theme,
-            "status.success" if done else "status.pending",
-            "☑" if done else "☐",
+            "todo.done"
+            if done
+            else "todo.running"
+            if value.get("status") in {"running", "in_progress"}
+            else "todo.pending",
+            "✓" if done else "●" if value.get("status") in {"running", "in_progress"} else "○",
         )
         row = Text(
             f"{glyph} {label}", style=str(theme_value(theme, "success" if done else "accent"))
@@ -942,7 +1014,7 @@ def _todo_rows(args: Mapping[str, Any], result: Any, theme: Any) -> tuple[str, l
                     "strike", len(str(glyph)) + 1, len(str(glyph)) + 1 + int(len(label) * progress)
                 )
         rows.append(row)
-    header_glyph = theme_symbol(theme, "status.success", "☑")
+    header_glyph = theme_symbol(theme, "tool.todo", "✓")
     separator = theme_symbol(theme, "sep.thin", "·")
     return f"{header_glyph} Todo {separator} {len(items)} tasks", rows
 
@@ -1029,7 +1101,7 @@ def _render_impl(
     if name in _READ:
         header, rows = _read_rows(block, args, expanded=expanded, theme=theme)
     elif name in _WRITE:
-        header, rows = _write_rows(block, args)
+        header, rows = _write_rows(block, args, expanded)
     elif name in _EDIT:
         header, rows = _edit_rows(block, args, theme, width, expanded)
         edit = True

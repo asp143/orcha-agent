@@ -6,9 +6,11 @@ import os
 from typing import Any
 
 from rich.table import Table
+from rich import box
 from rich.text import Text
 
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
+from orcha_agent.tui.panels import table_panel
 
 PLUGIN = PluginSpec(name="commands_core", version="1.0.0")
 
@@ -32,7 +34,7 @@ async def _help(ctx: Any, args: str) -> None:
     table.add_column("Help")
     for name, command in sorted(ctx.registry.commands.items()):
         table.add_row(Text(f"/{name}"), Text(command.help))
-    ctx.console.print(table)
+    ctx.console.print(table_panel(table))
 
 
 
@@ -42,10 +44,10 @@ async def _exit(ctx: Any, _args: str) -> None:
 
 
 async def _plugins(ctx: Any, _args: str) -> None:
-    table = Table(title="Plugins")
+    table = Table(title="Plugins", box=box.ROUNDED, border_style="dim", show_lines=False)
     table.add_column("Name", style="cyan")
-    table.add_column("Version")
-    table.add_column("Source")
+    table.add_column("Version", style="dim")
+    table.add_column("Source", style="dim")
     table.add_column("Status")
     for record in ctx.plugins:
         status = _plugin_value(record, "status", "loaded")
@@ -58,7 +60,7 @@ async def _plugins(ctx: Any, _args: str) -> None:
             _plugin_value(record, "source"),
             status,
         )
-    ctx.console.print(table)
+    ctx.console.print(table_panel(table))
 
 
 def _capabilities(value: object) -> str:
@@ -154,7 +156,8 @@ def _provider_flags(capabilities: Any) -> str:
 def _provider_auth_or_keys(ctx: Any, prefix: str, provider: Any) -> str:
     auth = ctx.registry.auth.get(prefix)
     if auth is not None:
-        return auth.flow.status()
+        status = auth.flow.status()
+        return "not logged in" if status == "not logged in" else "logged in"
     return ", ".join(
         f"{key}: {'yes' if key in os.environ else 'no'}"
         for key in provider.env_keys
@@ -170,7 +173,7 @@ async def _providers(ctx: Any, args: str) -> None:
             ctx.console.error(f"Unknown provider prefix: {selected}")
             return
         unavailable = provider.available()
-        detail = Table(title=f"Provider: {selected}")
+        detail = Table(title=f"Provider: {selected}", box=box.ROUNDED, border_style="dim")
         detail.add_column("Field", style="cyan", no_wrap=True)
         detail.add_column("Value", overflow="fold")
         detail.add_row("Available", "yes" if unavailable is None else "no")
@@ -181,15 +184,15 @@ async def _providers(ctx: Any, args: str) -> None:
         detail.add_row("T/S/R/O", _provider_flags(provider.capabilities))
         detail.add_row("Status", unavailable or "ready")
         detail.add_row("Models", ", ".join(provider.models) or "provider-defined")
-        ctx.console.print(detail)
+        ctx.console.print(table_panel(detail))
         return
 
     width = int(getattr(ctx.console.console, "width", 80))
-    table = Table(title="Providers", padding=(0, 0))
+    table = Table(title="Providers", padding=(0, 0), box=box.ROUNDED, border_style="dim")
     table.add_column("Prefix", style="cyan", min_width=20, no_wrap=True)
     table.add_column("Available", no_wrap=True)
-    table.add_column("Auth / Keys", overflow="fold")
-    table.add_column("T/S/R/O", no_wrap=True)
+    table.add_column("Auth / Keys", overflow="fold", style="dim")
+    table.add_column("T/S/R/O", no_wrap=True, style="dim")
     table.add_column("Status", overflow="fold")
     for prefix, provider in sorted(providers.items()):
         unavailable = provider.available()
@@ -203,7 +206,7 @@ async def _providers(ctx: Any, args: str) -> None:
             _provider_flags(provider.capabilities),
             status,
         )
-    ctx.console.print(table)
+    ctx.console.print(table_panel(table))
 
 
 async def _theme(ctx: Any, args: str) -> None:

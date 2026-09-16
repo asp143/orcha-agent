@@ -1,9 +1,10 @@
 
-<ESC>[90;40m+--- ✎ Write: src/new.py (7 lines) <ESC>[0m<ESC>[90;40m--------------------------------------------+<ESC>[0m
+<ESC>[90;40m+--- <ESC>[0m<ESC>[32;40m✎ <ESC>[0m<ESC>[1;36;40mWrite<ESC>[0m<ESC>[37;40m: src/new.py (7 lines)<ESC>[0m<ESC>[90;40m -------------------------------------------<ESC>[0m<ESC>[90;40m-+<ESC>[0m
 <ESC>[90;40m| one                                                                          <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m| two                                                                          <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m| three                                                                        <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m| four                                                                         <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m| five                                                                         <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m| six                                                                          <ESC>[0m<ESC>[90;40m|<ESC>[0m
+<ESC>[90;40m| … 1 more lines · Ctrl+O to expand                                            <ESC>[0m<ESC>[90;40m|<ESC>[0m
 <ESC>[90;40m+------------------------------------------------------------------------------+<ESC>[0m
