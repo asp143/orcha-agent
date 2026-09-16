@@ -75,10 +75,10 @@ def test_renderer_budget_cache_is_bounded_and_drops_old_revisions() -> None:
     block = Block("stream", "assistant", data={"text": "hello"})
     for rows in range(1, 100):
         dispatcher.render(block, DEFAULT_THEME, 80, rows, False)
-    assert len(dispatcher._cache) == 4
+    assert len(dispatcher._cache[block.id]) == 4
     block.update(text="next")
     dispatcher.render(block, DEFAULT_THEME, 80, 5, False)
-    assert len(dispatcher._cache) == 1
+    assert len(dispatcher._cache[block.id]) == 1
 
 
 @pytest.mark.asyncio
