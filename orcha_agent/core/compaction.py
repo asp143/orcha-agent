@@ -113,8 +113,7 @@ class Compactor:
         self.bus = bus
         self._speculation: asyncio.Task[CompactionResult] | None = None
         self._speculation_key: str | None = None
-        self._last_turn: tuple[str | None, str] | None = None
-        self._blocked_turn: tuple[str | None, str] | None = None
+        self._blocked_prefixes: set[str] = set()
         self._subscriptions: list[tuple[Any, Any]] = []
         self.attach_bus(bus)
 
@@ -157,36 +156,28 @@ class Compactor:
             return True
         if not self.policy.enabled:
             return False
-        self._track_turn(messages)
-        if self._blocked_turn is not None and self._blocked_turn == self._last_turn:
+        if trigger not in {"overflow", "length"} and estimate_tokens(messages) < self.threshold:
             return False
-        return trigger in {"overflow", "length"} or estimate_tokens(messages) >= self.threshold
+        return (
+            not self._blocked_prefixes or self._prefix_key(messages) not in self._blocked_prefixes
+        )
 
-    @staticmethod
-    def _turn(messages: list[BaseMessage]) -> tuple[str | None, str] | None:
-        for message in reversed(messages):
-            if not isinstance(message, HumanMessage):
-                continue
-            if message.additional_kwargs.get("lc_source") != "summarization":
-                return message.id, hashlib.sha256(str(message.content).encode()).hexdigest()
-            prior = message.additional_kwargs.get("compaction_turn")
-            if isinstance(prior, dict) and isinstance(prior.get("fingerprint"), str):
-                return prior.get("id"), prior["fingerprint"]
-        return None
-
-    def _track_turn(self, messages: list[BaseMessage]) -> None:
-        turn = self._turn(messages)
-        if turn is not None:
-            self._last_turn = turn
+    def _prefix_key(self, messages: list[BaseMessage]) -> str:
+        prefix, _ = self._partition(prune_results(messages, self.policy))
+        return self._key(prefix)
 
     def _check_reduction(
         self, original: list[BaseMessage], result: CompactionResult
     ) -> CompactionResult:
-        self._track_turn(original)
         if _estimated_tokens(result.messages) >= _estimated_tokens(original) * 0.95:
-            self._blocked_turn = self._last_turn
+            # Also block the rewritten prefix: a fresh summary marker alone is
+            # not new material worth summarizing. A later AI boundary can move
+            # retained tool results into the prefix and earns another attempt.
+            self._blocked_prefixes.update(
+                (self._prefix_key(original), self._prefix_key(result.messages))
+            )
             logging.getLogger(__name__).warning(
-                "Compaction did not reduce context by 5%% (%d to %d estimated tokens); automatic attempts paused until the next user turn",
+                "Compaction did not reduce context by 5%% (%d to %d estimated tokens); automatic attempts paused for this prefix",
                 _estimated_tokens(original),
                 _estimated_tokens(result.messages),
             )
@@ -196,14 +187,13 @@ class Compactor:
         if (
             not self.policy.enabled
             or not self.policy.speculative
-            or (self._blocked_turn is not None and self._blocked_turn == self._last_turn)
             or estimate_tokens(messages) < self.threshold * 0.75
         ):
             return
         self.attach_bus(self.bus)
         prefix, _ = self._partition(prune_results(messages, self.policy))
         key = self._key(prefix)
-        if self._speculation_key == key:
+        if self._speculation_key == key or key in self._blocked_prefixes:
             return
         if self._speculation is not None:
             self._speculation.cancel()
@@ -383,16 +373,10 @@ class Compactor:
                 short = summary.strip().splitlines()[0][:160]
                 from .summary import create_summary_message
 
-                turn = self._turn(messages)
                 marker = create_summary_message(
                     summary,
                     message_id=str(uuid4()),
                     metadata={
-                        **(
-                            {"compaction_turn": {"id": turn[0], "fingerprint": turn[1]}}
-                            if turn is not None
-                            else {}
-                        ),
                         "compaction": {
                             "short_summary": short,
                             "tokens_before": tokens_before,
@@ -456,13 +440,14 @@ class CompactionMiddleware(AgentMiddleware):
         isolated = Compactor(
             self.model, replace(self.compactor.policy, speculative=False), self.compactor.window
         )
-        isolated._last_turn = self.compactor._last_turn
-        isolated._blocked_turn = self.compactor._blocked_turn
+        # Forward foreground status without registering lifecycle handlers on a
+        # controller that only exists for this synchronous invocation.
+        isolated.bus = self.compactor.bus
+        isolated._blocked_prefixes = self.compactor._blocked_prefixes.copy()
         try:
             return _sync(CompactionMiddleware(isolated).awrap_model_call(request, async_handler))
         finally:
-            self.compactor._last_turn = isolated._last_turn
-            self.compactor._blocked_turn = isolated._blocked_turn
+            self.compactor._blocked_prefixes.update(isolated._blocked_prefixes)
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         messages = request.messages

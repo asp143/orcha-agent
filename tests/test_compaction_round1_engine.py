@@ -51,7 +51,7 @@ async def test_b1_cut_within_large_latest_turn_keeps_tool_pairs():
 
 
 @pytest.mark.asyncio
-async def test_b1_no_reduction_stops_repeated_attempts_in_same_turn(caplog):
+async def test_b1_no_reduction_stops_repeated_attempts_for_same_prefix(caplog):
     model = Summary()
     controller = Compactor(
         model, CompactionConfig(threshold_tokens=1000, keep_recent_tokens=100, speculative=False)
@@ -82,13 +82,82 @@ async def test_b1_no_reduction_stops_repeated_attempts_in_same_turn(caplog):
         )
 
     result = await middleware.awrap_model_call(Request(messages), handler)
-    replaced = result.command.update["messages"][1:]
-    assert controller._turn(replaced) == controller._turn(messages)
+    # Replay the same retained batch without adding a new assistant boundary.
+    replaced = result.command.update["messages"][1:-1]
     await middleware.awrap_model_call(Request(replaced), handler)
     await middleware.awrap_model_call(Request(messages), handler)
     assert model.calls == 1
     assert "automatic attempts paused" in caplog.text
     assert controller.needed([*messages, HumanMessage(content="new turn", id="u3")], "mid_turn")
+
+
+@pytest.mark.asyncio
+async def test_new_prefix_retries_large_first_turn_once_and_removes_old_result():
+    model = Summary()
+    controller = Compactor(
+        model, CompactionConfig(threshold_tokens=1000, keep_recent_tokens=100, speculative=False)
+    )
+    middleware = CompactionMiddleware(controller)
+    oversized = "x" * 40_000
+    messages = [
+        HumanMessage(content="read files", id="user"),
+        AIMessage(
+            content="", id="a0", tool_calls=[{"name": "read", "id": "r0", "args": {"path": "a"}}]
+        ),
+        ToolMessage(content=oversized, tool_call_id="r0", id="t0"),
+    ]
+
+    class Request:
+        def __init__(self, messages):
+            self.messages = messages
+
+        def override(self, **kwargs):
+            return Request(kwargs["messages"])
+
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert any(message.content == oversized for message in request.messages)
+        else:
+            assert all(message.content != oversized for message in request.messages)
+        return ModelResponse(
+            result=[
+                AIMessage(
+                    content="",
+                    id=f"a{calls}",
+                    tool_calls=[
+                        {"name": "read", "id": f"r{calls}", "args": {"path": f"file{calls}"}}
+                    ],
+                )
+            ]
+        )
+
+    for number in range(1, 5):
+        response = await middleware.awrap_model_call(Request(messages), handler)
+        if getattr(response, "command", None) is not None:
+            messages = response.command.update["messages"][1:]
+        else:
+            messages = [*messages, *response.result]
+        messages.append(ToolMessage(content="small", tool_call_id=f"r{number}", id=f"t{number}"))
+        assert model.calls == min(number, 2)
+    assert calls == 4
+    assert all(message.content != oversized for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_failed_prefix_also_blocks_speculation():
+    controller = Compactor(
+        Summary("large " * 1000),
+        CompactionConfig(threshold_tokens=100, keep_recent_tokens=20),
+    )
+    result = await controller.compact(history())
+    for messages in (history(), result.messages):
+        assert not controller.needed(messages, "overflow")
+        controller.speculate(messages)
+        assert controller._speculation is None
 
 
 @pytest.mark.asyncio
