@@ -106,7 +106,7 @@ def test_runtime_polish_golden(width, update_goldens, tmp_path):
     for title, panel in runtime_examples(theme, width):
         console.print(title)
         console.print(panel)
-    golden = Path(__file__).with_name("golden") / f"runtime-polish.{width}.txt"
+    golden = Path(__file__).with_name("golden") / f"runtime-polish.{width}.ansi"
     if update_goldens:
         golden.write_text(stream.getvalue())
     assert golden.read_text() == stream.getvalue()
@@ -142,3 +142,11 @@ async def test_provider_listing_never_displays_login_email():
     assert "logged in" in stream.getvalue()
     assert "private@example.com" not in stream.getvalue()
     assert "╭" in stream.getvalue()
+
+
+def test_plain_text_goldens_have_no_escape_bytes():
+    directory = Path(__file__).with_name("golden")
+    escaped = [
+        path.name for path in sorted(directory.glob("*.txt")) if b"\x1b" in path.read_bytes()
+    ]
+    assert not escaped, f"ANSI goldens must use .ansi extensions: {escaped}"
