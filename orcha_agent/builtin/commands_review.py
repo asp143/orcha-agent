@@ -995,7 +995,7 @@ async def review(ctx: Any, args: str) -> None:
         raise
 
     ctx.transcript.append_review(merged)
-    await run_turn(ctx, _notification(merged, fix=fix))
+    await run_turn(ctx, _notification(merged, fix=fix), user_origin=False)
 
 
 def register(api: PluginAPI) -> None:

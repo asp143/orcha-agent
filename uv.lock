@@ -1099,11 +1099,13 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-openai" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "prompt-toolkit" },
     { name = "pyte" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "regex" },
     { name = "rich" },
 ]
 
@@ -1145,11 +1147,13 @@ requires-dist = [
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.6.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1" },
     { name = "libsql", marker = "extra == 'turso'", specifier = ">=0.1.11,<0.2" },
+    { name = "markdown-it-py", specifier = ">=4.0.0" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.53" },
     { name = "pyte", specifier = ">=0.8.2,<0.9" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "regex", specifier = ">=2026.7.19" },
     { name = "rich", specifier = ">=15.0.0" },
 ]
 provides-extras = ["openai", "ollama", "google", "codex", "turso"]

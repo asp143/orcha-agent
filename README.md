@@ -935,3 +935,186 @@ custom memory sources remain available. Turso's structured-memory-only mode stay
 structured-only. To try it, add `AGENTS.md` at the repository root and a closer
 `.orcha-agent/AGENTS.md`, launch from that directory, and ask the agent which
 repository instructions apply.
+
+### HTML session export
+
+`/export --html [path]` saves a standalone HTML transcript using the active theme
+colours. Markdown is rendered locally; tool calls and results use expandable
+cards, with added/removed lines highlighted only for unified diffs or edit/patch
+tool output. Ordinary signed numbers and bullets keep their normal colours.
+Every ledger branch is included
+in chronological order. No scripts, remote assets, or image requests are needed.
+The default filename is `<session-id>.html`; paths may contain spaces.
+As with JSONL export, existing files require `--force`, for example
+`/export --html --force review.html`. The output file is private (0600).
+
+## Declarative hooks
+
+Add `[[hooks]]` entries to `~/.config/orcha-agent/config.toml` or trusted
+`.orcha-agent/config.toml`. Project hooks load only with `--trust-cwd` or an
+existing trusted directory; user and project hooks are combined. `/hooks` lists
+active hooks.
+
+```toml
+[[hooks]]
+event = "tool_call_before"
+matcher = "write*"
+command = "python scripts/check_write.py"
+timeout = 10
+blocking = true
+env_passthrough = ["HOOK_COLOR"] # optional non-secret environment names
+```
+
+Events are `session_start`, `session_end`, `turn_start`, `turn_end`,
+`tool_call_before`, `tool_call_after`, `model_switch`, `compaction`,
+`agent_spawned`, and `agent_finished`. Tool matchers are name globs; `regex:`
+selects a regex over the JSON payload. Other matchers are regexes over event
+text (or its JSON payload). Commands receive JSON on stdin. User-scope shell
+commands resolve relative to the user config directory; trusted project shell
+commands run in the workspace. `python = "package.module:function"` invokes a
+sync or async function in an isolated Python subprocess (`-I`), loading hook
+modules from `~/.config/orcha-agent/hooks/`, never from the repository or
+`PYTHONPATH`. A custom user config path places that hook directory alongside
+its config file. Project Python hooks use the same user-owned module directory.
+
+Hooks inherit the shell tool's minimal environment plus names explicitly allowed
+by `[tools] shell_env_passthrough` or the hook's `env_passthrough`. Registered
+provider credential names and names matching `*_API_KEY`, `*_TOKEN`, `*SECRET*`,
+or `*PASSWORD*` are always removed, even when explicitly allowed. Project hooks
+are executable code: `--trust-cwd` or a saved trusted directory authorizes them.
+Untrusted project hooks never run.
+
+Each stdin JSON object contains `event` and its event fields:
+
+| Event | Payload fields besides `event` |
+| --- | --- |
+| `session_start`, `session_end` | `session_id` |
+| `turn_start` | `thread_id`, `text`, `source_id` |
+| `turn_end` | `thread_id`, `source_id` |
+| `tool_call_before` | `name`, `args`, `id`, `block_message` |
+| `tool_call_after` | `name`, `id`, `result` |
+| `model_switch` | `old`, `new` |
+| `compaction` | `session_id`, `summary` |
+| `agent_spawned` | `run_id`, `parent_id`, `name`, `agent_type` |
+| `agent_finished` | `run_id`, `parent_id`, `name`, `agent_type`, `result` |
+
+`result` is plain tool content (or JSON/string for structured results), truncated
+to 20,000 UTF-8 bytes without splitting characters. Hook payloads can contain
+prompt text, tool arguments, and output; enable only hooks you trust with those
+contents. They do not include the application context or provider configuration.
+
+Exit 0 succeeds; exit 2 blocks a before-tool call with stderr as the explanation.
+A successful before hook can return `{"block": true, "message": "reason"}` or
+`{"args": {"path": "corrected-path", "content": "..."}}` to replace arguments
+for file-writing tools. Hooks run in declaration order and stop on a block.
+Successful plain-text stdout is informational and does not block a tool. Only
+stdout beginning with `{` is parsed as a control object; malformed JSON objects
+fail closed. Other exit codes and timeouts produce warnings. `blocking = false` runs an
+observational hook in the background; it cannot block or rewrite a call.
+
+## First-run setup
+
+On an interactive first launch with no user or project config and no usable
+provider, orcha opens a short setup wizard inside the existing TUI. Run
+`uv run orcha setup` or `/setup` to revisit it explicitly. Choose a theme,
+composer style, provider sign-in or API-key environment hint, then a model.
+The generic `langchain` adapter is omitted from the provider picker.
+Choose **Enter model name** for a provider without a model catalog, or configure
+it later with `/model`.
+The wizard never asks for or stores an API key; OAuth sign-in uses the existing
+provider login flow. When the provider is usable, the selected model switches through the normal
+session lifecycle. Otherwise it becomes the next-launch default while the
+current session retains its model. Accepted preferences are saved in
+`~/.config/orcha-agent/config.toml`, preserving other settings.
+
+Press `Esc` at any step to skip without saving partial preferences. A completed
+setup suppresses the automatic wizard on later launches. Noninteractive launches
+and resumed sessions do not automatically open it.
+
+## Magic keywords
+
+Standalone lowercase `ultrathink` requests the highest reasoning effort for the
+current turn, capped by the actual model profile and supported reasoning controls.
+Non-reasoning models receive no extra reasoning parameters. `orchestrate` adds a hidden system reminder to fan out independent
+work with `task`. The ordinary word `plan` has no special effect; use `/mode plan`
+to explicitly select read-only planning. Keyword controls apply only to messages
+marked as direct user submissions, including user steering. Model summaries,
+subagent tasks, advisor follow-ups, agent deliveries, and expanded file/skill
+instructions cannot activate them. These controls do not change saved model
+settings or the session mode. Older Claude thinking budgets reserve output
+headroom by raising the per-turn output limit within the model's maximum.
+Keywords inside fenced or inline code, XML/HTML sections, identifiers, paths,
+filenames, and immediate function calls remain literal. The notices enter only
+the model request and do not appear as extra conversation messages.
+
+### Rulebook and time-traveling stream rules
+
+Put always-active instructions in `RULES.md`, or named Markdown rules in
+`.orcha-agent/rules/*.md`. User rules live in `~/.config/orcha-agent/rules/`.
+Claude `.claude/rules/*.md` and Cursor `.cursor/rules/*.mdc` files are imported
+at project and user scope. In trusted projects, native project rules take
+precedence by filename, then native user rules, then imports. Without
+`--trust-cwd` or a saved trusted directory, user roots take precedence and
+colliding untrusted rule names are skipped with a warning. Untrusted project
+rules are listed for explicit `rule://name` lookup only: `alwaysApply`, sticky
+`RULES.md`, glob attachment, and stream conditions cannot inject them
+automatically. User rules remain trusted. Explicitly loaded untrusted bodies
+are labelled as untrusted. Rule names and closing reminder tags are escaped;
+ordinary markup and code in rule bodies remain intact.
+
+`/rules` lists the rulebook; the model reads bodies on demand through the `rule`
+tool with `rule://name`. Matching file paths automatically attach trusted rule
+bodies using the skill path normalizer. Discovery caps rules at 256, conditions
+per rule at 8, and patterns at 512 characters. Conditions are compiled once;
+each stream chunk gets at most 50 ms of total matching work.
+
+```markdown
+---
+globs: ["**/*.py"]
+alwaysApply: false
+---
+Use explicit type annotations in Python code.
+```
+
+A `condition` regex (or list of regexes) monitors streamed assistant text, even
+when a match spans chunks. An interrupting match fails the model node from its
+stream callback, preventing LangGraph from committing its tool calls. Models
+without token callbacks are checked on their final response before the model
+node commits. Rule interrupts do not trigger provider fallback. A durable
+system reminder is inserted, and generation retries from the pending model checkpoint
+without replaying completed tools. The transcript shows **⚠ Injecting rule:
+<name>**. The aborted partial answer is dimmed and struck through so it cannot
+be mistaken for the retry's answer. Provider-reported usage received before
+interruption is retained without counting it twice. When a provider has not yet
+sent usage, that aborted attempt's usage is unavailable and is not counted.
+Reminders survive compaction and session reload; reset clears them.
+Scopes include `text`, `thinking`, `tool`/`toolcall`, and named tools such as
+`tool:write(*.py)`; a list combines scopes. The default monitors text and tool
+arguments. `globs` also gate stream matches by tool file path. Nested agent
+streams are not interrupted by the parent monitor; monitoring belongs to the
+thread that owns the retry boundary. Aborting one source leaves other sources'
+active transcript blocks intact.
+
+```markdown
+---
+condition: "TODO: implement later"
+scope: text
+interruptMode: always
+---
+Finish the implementation instead of leaving placeholder TODOs.
+```
+
+```toml
+[plugins.rules]
+enabled = true
+contextMode = "discard" # discard partial output, or "keep" it in model context
+interruptMode = "always" # also "prose-only", "tool-only", or "never"
+repeatMode = "once" # use "after-gap" to permit later reinjection
+repeatGap = 10 # completed user turns between reinjections
+```
+
+A rule's `interruptMode` overrides the plugin setting. `never` and `tool-only`
+defer text-match reminders until the stream finishes, without a retry. Tool
+argument matches can abort before the tool runs; `prose-only` defers them. A rule
+can interrupt at most once per user turn, so a noncompliant model cannot create
+an endless retry loop. Invalid condition regexes warn without stopping startup.

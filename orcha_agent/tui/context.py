@@ -22,7 +22,7 @@ from orcha_agent.core.agent import build_agent
 from orcha_agent.core.agents import AgentRegistry
 from orcha_agent.core.capture import capture_graph_values
 from orcha_agent.core.config import Config, is_trusted_cwd
-from orcha_agent.core.events import ModelSwitch, SessionSwitch, ThreadSwitch
+from orcha_agent.core.events import Compaction, ModelSwitch, SessionSwitch, ThreadSwitch
 from orcha_agent.core.ledger import (
     CompactionEntry,
     CustomEntry,
@@ -765,7 +765,7 @@ class AppContext:
         if not text.strip():
             return
         if model is None or model == self.cfg.model:
-            await _run_cancellable_turn(self, text)
+            await _run_cancellable_turn(self, text, user_origin=False)
             return
         previous_cfg, previous_agent = self.cfg, self.agent
         previous_summarizer = self.summarizer
@@ -786,7 +786,7 @@ class AppContext:
             )
         self.cfg, self.agent, self.summarizer = candidate_cfg, candidate_agent, candidate_summarizer
         try:
-            await _run_cancellable_turn(self, text)
+            await _run_cancellable_turn(self, text, user_origin=False)
         finally:
             self.cfg, self.agent, self.summarizer = previous_cfg, previous_agent, previous_summarizer
             if previous_agent is not None:
@@ -972,6 +972,7 @@ class AppContext:
                 self.thread_id = prior_thread
                 self._pending_switch_old_thread = prior_switch_old_thread
             raise
+        await self._bus.emit(Compaction(self.session_id, summary_text))
         self.console.print("Conversation compacted.")
 
     def _capture_values(

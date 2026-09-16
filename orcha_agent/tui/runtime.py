@@ -94,7 +94,7 @@ from .transcript import Transcript
 from .statusline import agent_counts, render_statusline
 from .theme import Theme, ThemeWatcher, apply_colorblind, load_themes, select_theme, theme_from_background
 from .title import TerminalTitle
-from .turn import _run_cancellable_turn
+from .turn import USER_PROMPT_ORIGIN, _run_cancellable_turn
 from .overlays import HubOverlay, KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
 from .overlays.paste import PasteOverlay
@@ -1822,12 +1822,17 @@ class ApplicationRuntime:
                 return
             pending_user = text
             current = await self._claim_agent_delivery()
+            current_is_user = current is None and user_prompt
             if current is None:
                 current = pending_user
                 pending_user = None
             while current is not None:
                 self.streaming = True
-                self._active_turn = asyncio.create_task(self._dispatch_submission(current))
+                origin_token = USER_PROMPT_ORIGIN.set(current_is_user)
+                try:
+                    self._active_turn = asyncio.create_task(self._dispatch_submission(current))
+                finally:
+                    USER_PROMPT_ORIGIN.reset(origin_token)
                 try:
                     await self._active_turn
                 except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1850,6 +1855,7 @@ class ApplicationRuntime:
                 elif current is None:
                     current = self.queue.pop(mode="follow_up")
                     next_is_user = current is not None
+                current_is_user = next_is_user
                 if next_is_user and self.advisor is not None:
                     self.advisor.before_user_prompt()
                 if current is not None:
@@ -2214,7 +2220,17 @@ class ApplicationRuntime:
         self.application.after_render += lambda _app: self._paint_output.start()
         self._theme_poll_task = asyncio.create_task(self._poll_themes())
         try:
-            await self.application.run_async()
+            from orcha_agent.builtin.setup import startup_setup
+
+            def start_setup() -> None:
+                if (
+                    self.ctx is not None
+                    and self.registry is not None
+                    and "setup" in self.registry.commands
+                ):
+                    self.application.create_background_task(startup_setup(self.ctx))
+
+            await self.application.run_async(pre_run=start_setup)
         except EOFError:
             pass
         finally:

@@ -262,6 +262,92 @@ def _tools_config(value: Any, parser: argparse.ArgumentParser) -> ToolsConfig:
     )
 
 
+HOOK_EVENTS = frozenset(
+    {
+        "session_start",
+        "session_end",
+        "turn_start",
+        "turn_end",
+        "tool_call_before",
+        "tool_call_after",
+        "model_switch",
+        "compaction",
+        "agent_spawned",
+        "agent_finished",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class HookConfig:
+    event: str
+    matcher: str = "*"
+    command: str | None = None
+    python: str | None = None
+    timeout: float = 10.0
+    blocking: bool = True
+    scope: str = "user"
+    env_passthrough: tuple[str, ...] = ()
+
+
+def _hooks_config(
+    value: Any, scope: str, parser: argparse.ArgumentParser
+) -> tuple[HookConfig, ...]:
+    if not isinstance(value, list):
+        parser.error("hooks must be an array of tables ([[hooks]])")
+    hooks = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("event") not in HOOK_EVENTS:
+            parser.error("hook event must be one of: " + ", ".join(sorted(HOOK_EVENTS)))
+        command, python = item.get("command"), item.get("python")
+        if (command is None) == (python is None):
+            parser.error("each hook requires exactly one of command or python")
+        executable = command if command is not None else python
+        if not isinstance(executable, str) or not executable.strip():
+            parser.error("hook command/python must be a nonempty string")
+        if python is not None and ":" not in python:
+            parser.error("hook python must be module:function")
+        matcher = item.get("matcher", "*")
+        if not isinstance(matcher, str):
+            parser.error("hook matcher must be a string")
+        if matcher != "*" and (
+            matcher.startswith("regex:") or not item["event"].startswith("tool_call_")
+        ):
+            try:
+                re.compile(matcher.removeprefix("regex:"))
+            except re.error as exc:
+                parser.error(f"invalid hook matcher: {exc}")
+        timeout = item.get("timeout", 10.0)
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout < float("inf")
+        ):
+            parser.error("hook timeout must be a finite positive number")
+        blocking = item.get("blocking", True)
+        if not isinstance(blocking, bool):
+            parser.error("hook blocking must be true or false")
+        env_passthrough = item.get("env_passthrough", [])
+        if not isinstance(env_passthrough, list) or any(
+            not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", key)
+            for key in env_passthrough
+        ):
+            parser.error("hook env_passthrough must be an array of environment variable names")
+        hooks.append(
+            HookConfig(
+                item["event"],
+                matcher,
+                command,
+                python,
+                float(timeout),
+                blocking,
+                scope,
+                tuple(env_passthrough),
+            )
+        )
+    return tuple(hooks)
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
@@ -281,6 +367,7 @@ class Config:
     models: dict[str, str | list[str]]
     providers: dict[str, dict[str, Any]]
     plugins: dict[str, Any]
+    hooks: tuple[HookConfig, ...] = ()
     trust_cwd: bool = False
     model_overridden: bool = False
     trusted_dirs: tuple[Path, ...] = ()
@@ -339,6 +426,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("repl", help="start the interactive terminal agent")
+    subcommands.add_parser("setup", help="run the first-run setup wizard")
     subcommands.add_parser("sync", help="synchronize configured Turso stores")
     login = subcommands.add_parser("login", help="log in to a provider")
     login.add_argument("prefix")
@@ -797,6 +885,8 @@ def load_config(
 
     plugin_dirs = tuple(_home_path(path, home).resolve() for path in args.plugin_dir)
     return Config(
+        hooks=(_hooks_config(user_values.get("hooks", []), "user", parser)
+               + _hooks_config(project_values.get("hooks", []), "project", parser)),
         model=model,
         subagent_model=subagent_model,
         summarizer_model=summarizer_model,

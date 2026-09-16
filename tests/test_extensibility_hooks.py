@@ -37,7 +37,7 @@ async def test_expanded_prompt_bypasses_dispatch_without_model_change(monkeypatc
     ctx = SimpleNamespace(cfg=SimpleNamespace(model="original"), switch_model=AsyncMock())
     with pytest.raises(ValueError, match="turn failed"):
         await AppContext.submit_prompt(ctx, "/literal body")
-    turn.assert_awaited_once_with(ctx, "/literal body")
+    turn.assert_awaited_once_with(ctx, "/literal body", user_origin=False)
     ctx.switch_model.assert_not_called()
 
 

@@ -20,6 +20,7 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.registry import Registry
+from orcha_agent.extensibility.stream_rules import StreamAborted
 
 from .frame import Block, BlockState, Frame, FrameScheduler, StreamingData
 
@@ -295,6 +296,17 @@ class Transcript:
         return False
 
     async def handle(self, event: object) -> None:
+        if isinstance(event, StreamAborted):
+            for key, block in list(self._source_blocks.items()):
+                if key[0] == event.source_id and block.state is BlockState.ACTIVE:
+                    block.update(aborted=True)
+                    self._settle(block)
+                    self._source_blocks.pop(key)
+            self._source_tails.pop(event.source_id, None)
+            if self.scheduler is not None:
+                self.scheduler.request_invalidate()
+                self.scheduler.request_commit()
+            return
         if isinstance(event, TurnStart):
             self._discard_working()
             self.dismiss_error()

@@ -278,3 +278,12 @@ async def test_capture_storage_error_reports_on_ui_loop_with_real_scheduler(tmp_
             assert scheduler._commit_task is not None
         finally:
             await scheduler.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_origin", [True, False])
+async def test_main_turn_marks_user_origin_only_for_real_submissions(user_origin) -> None:
+    host = _Host(source_id="main")
+    await run_turn(host, "ultrathink", user_origin=user_origin)
+    message = host.agent.inputs[0]["messages"][0]
+    assert message.get("additional_kwargs", {}).get("orcha_user_origin", False) is user_origin

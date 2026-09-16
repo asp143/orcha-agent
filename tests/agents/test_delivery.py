@@ -279,8 +279,12 @@ async def test_automatic_delivery_precedes_queued_user_prompt_without_entering_q
         run = await agents.spawn("task", "work", name="Worker", parent="main")
         await run.wait_status("idle")
         submitted: list[str] = []
+        origins: list[bool] = []
 
         async def submit(text: str) -> None:
+            from orcha_agent.tui.turn import USER_PROMPT_ORIGIN
+
+            origins.append(USER_PROMPT_ORIGIN.get())
             submitted.append(text)
             if text == "active user prompt":
                 await run.complete({"answer": 42})
@@ -300,6 +304,7 @@ async def test_automatic_delivery_precedes_queued_user_prompt_without_entering_q
 
             assert runtime.queue.items == ()
 
+        assert origins == [True, False, True]
         assert submitted[0] == "active user prompt"
         assert submitted[2] == "queued user prompt"
         assert submitted[1].startswith("<system-notification>\n")

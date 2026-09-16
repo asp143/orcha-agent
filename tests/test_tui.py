@@ -1257,7 +1257,15 @@ async def test_run_app_sends_a_non_command_first_word_to_the_model(
 
     assert status == 0
     assert graph.inputs == [
-        {"messages": [{"role": "user", "content": "modeling the problem"}]}
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "modeling the problem",
+                    "additional_kwargs": {"orcha_user_origin": True},
+                }
+            ]
+        }
     ]
     assert console.warnings == []
     assert console.errors == []

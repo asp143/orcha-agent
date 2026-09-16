@@ -788,6 +788,17 @@ async def test_advisor_followup_is_dropped_after_session_switch() -> None:
     await runtime._submit_advisor_followup("old-session", "advice")
 
     assert submitted == []
+
+    from orcha_agent.tui.turn import USER_PROMPT_ORIGIN
+
+    async def check_origin(text: str) -> None:
+        assert USER_PROMPT_ORIGIN.get() is False
+        submitted.append(text)
+
+    runtime._dispatch_submission = check_origin
+    await runtime._submit_advisor_followup("new-session", "ultrathink orchestrate")
+    assert submitted == ["ultrathink orchestrate"]
+    assert USER_PROMPT_ORIGIN.get() is True
     await runtime.scheduler.aclose()
 
 

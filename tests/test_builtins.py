@@ -28,6 +28,10 @@ EXPECTED_BUILTIN_PLUGINS = {
     "context_files",
     "file_commands",
     "filesystem",
+    "hooks",
+    "magic_keywords",
+    "rules",
+    "setup",
     "mcp",
     "memory",
     "modes",
@@ -50,6 +54,9 @@ EXPECTED_COMMANDS = {
     "exit",
     "fork",
     "help",
+    "hooks",
+    "rules",
+    "setup",
     "login",
     "keys",
     "logout",
@@ -177,6 +184,7 @@ def test_loading_builtins_registers_expected_plugins_and_features(
     assert set(registry.modes) == EXPECTED_MODES
     assert set(registry.providers) == EXPECTED_PROVIDERS
     assert set(registry.commands) == EXPECTED_COMMANDS
+    assert {"hooks", "rules", "magic_keywords"} <= {entry.plugin for entry in registry.middleware}
     assert {"read", "write", "edit", "bash", "bash_jobs", "grep", "glob", "ls"} <= set(
         registry.tools
     )

@@ -989,7 +989,13 @@ async def test_streaming_enter_injects_at_tool_boundary_while_queue_keys_follow_
     injected = graph.inputs[1]
     assert isinstance(injected, Command)
     assert injected.update == {
-        "messages": [{"role": "user", "content": "steer now"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": "steer now",
+                "additional_kwargs": {"orcha_user_origin": True},
+            }
+        ],
     }
 
 

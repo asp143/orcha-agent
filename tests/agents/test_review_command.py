@@ -510,7 +510,8 @@ async def test_review_fans_out_concurrently_waits_delivers_and_notifies_with_fix
         selected.append((cwd, selector))
         return _diff("src/app.py", 101)
 
-    async def fake_run_turn(turn_ctx: Any, notification: str) -> None:
+    async def fake_run_turn(turn_ctx: Any, notification: str, *, user_origin: bool) -> None:
+        assert user_origin is False
         notifications.append((turn_ctx, notification))
         events.append("notify")
 
@@ -579,7 +580,8 @@ async def test_review_cancels_waits_for_and_delivers_a_timed_out_reviewer(
         ),
     )
 
-    async def fake_run_turn(_ctx: Any, _notification: str) -> None:
+    async def fake_run_turn(_ctx: Any, _notification: str, *, user_origin: bool) -> None:
+        assert user_origin is False
         events.append("notify")
 
     monkeypatch.setattr(

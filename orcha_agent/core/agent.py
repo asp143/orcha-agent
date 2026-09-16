@@ -15,7 +15,7 @@ from deepagents import (
 )
 import deepagents.graph as deepagents_graph
 from deepagents.backends import CompositeBackend, LocalShellBackend
-from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -23,6 +23,7 @@ from deepagents.middleware.summarization import create_summarization_middleware
 from .config import Config
 from .events import AgentBuildAfter, AgentBuildBefore, EventBus
 from .models import ModelResolver
+from .model_fallback import ModelFallbackMiddleware
 from .registry import Registry
 from .session import SessionStore
 from .tools.approvals import approval_configs
