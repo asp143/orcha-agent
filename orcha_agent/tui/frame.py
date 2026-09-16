@@ -272,6 +272,7 @@ class FrameScheduler:
         now = time.monotonic()
         elapsed = now - self._last_invalidation
         if elapsed >= self.INVALIDATE_INTERVAL:
+            self._cancel_pending_invalidation()
             self._last_invalidation = now
             self._invalidate()
             return
@@ -285,7 +286,13 @@ class FrameScheduler:
         self._last_invalidation = time.monotonic()
         self._invalidate()
 
+    def _cancel_pending_invalidation(self) -> None:
+        if self._invalidate_task is not None and not self._invalidate_task.done():
+            self._invalidate_task.cancel()
+        self._invalidate_task = None
+
     def render_now(self) -> None:
+        self._cancel_pending_invalidation()
         self._last_invalidation = time.monotonic()
         self._invalidate()
 
@@ -306,10 +313,12 @@ class FrameScheduler:
     def tick_spinners(self, *, now: float | None = None) -> None:
         current = time.monotonic() if now is None else now
         for block in self.frame.blocks:
-            if (
-                block.state is not BlockState.ACTIVE
-                or block.kind not in {"thinking", "tool", "subagents", "working"}
-            ):
+            if block.state is not BlockState.ACTIVE or block.kind not in {
+                "thinking",
+                "tool",
+                "subagents",
+                "working",
+            }:
                 continue
             changes: dict[str, Any] = {
                 "spinner_frame": int(block.data.get("spinner_frame", 0)) + 1,
@@ -330,7 +339,6 @@ class FrameScheduler:
                     f"in {remaining}s…"
                 )
             block.update(changes)
-
 
     async def _tick_spinners(self) -> None:
         while self._has_spinners():
