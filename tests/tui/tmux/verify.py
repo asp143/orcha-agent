@@ -296,8 +296,10 @@ def main() -> int:
     try:
         result = harness.run()
         from startup import verify_startup
+        from panels import verify_panels
 
         result["startup"] = verify_startup()
+        result["panels"] = verify_panels()
     finally:
         harness.stop()
     print(json.dumps(result, indent=2, sort_keys=True))

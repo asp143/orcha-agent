@@ -2,10 +2,17 @@
 
 from orcha_agent.tui.blocks.banner import render
 from orcha_agent.tui.frame import Block
-from orcha_agent.tui.panels import summary_panel
+from rich.table import Table
+
+from orcha_agent.tui.panels import summary_panel, table_panel
 
 
 def runtime_examples(theme, width):
+    compact = Table(title="Provider column gutters", padding=0)
+    for column in ("Available", "Auth / Keys", "T/S/R/O", "Status"):
+        compact.add_column(column)
+    compact.add_row("yes", "GEMINI_API_KEY: no", "T S R O", "ready")
+    yield "Compact provider table", table_panel(compact)
     yield (
         "Startup skill summary",
         render(

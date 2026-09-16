@@ -9,7 +9,7 @@ from rich.text import Text
 
 
 def summary_panel(title: str, columns: Sequence[str], rows: Iterable[Sequence[str]]) -> Panel:
-    table = Table(box=None, padding=(0, 1), expand=True, show_edge=False)
+    table = Table(box=None, padding=(0, 1), collapse_padding=False, expand=True, show_edge=False)
     for index, name in enumerate(columns):
         table.add_column(
             name,
@@ -28,6 +28,8 @@ def table_panel(table: Table) -> Panel:
     table.title = None
     table.box = None
     table.show_edge = False
+    table.padding = (0, 1)
+    table.collapse_padding = False
     return Panel(
         table, title=title, title_align="left", box=box.ROUNDED, padding=(0, 1), border_style="dim"
     )

@@ -1,3 +1,8 @@
+Compact provider table
+[2m╭─[0m[2m Provider column gutters [0m[2m───────────────────────────────────────────────────────────────────────────────────────────[0m[2m─╮[0m
+[2m│[0m [1m [0m[1mAvailable[0m[1m [0m[1m [0m[1mAuth / Keys       [0m[1m [0m[1m [0m[1mT/S/R/O[0m[1m [0m[1m [0m[1mStatus[0m[1m [0m                                                                     [2m│[0m
+[2m│[0m  yes        GEMINI_API_KEY: no  T S R O  ready                                                                       [2m│[0m
+[2m╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
 Startup skill summary
 [38;2;251;191;36m⚠ 6 skills skipped · Ctrl+O for details[0m
 Repeated warning

@@ -35,6 +35,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style, merge_styles
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
+from rich.panel import Panel
 from orcha_agent.builtin.advisor import AdvisorService
 
 from orcha_agent.core.config import Config, is_trusted_cwd
@@ -639,6 +640,9 @@ class ApplicationRuntime:
         self._todo_completed_at: dict[str, float] = {}
         self._expanded_tool_id: str | None = None
         self._last_tool_card: Block | None = None
+        # Settled command panels remain owned by the viewport until replaced.
+        # Writing them immediately would scroll them behind the full-height UI.
+        self._retained_panels: list[Block] = []
         self._theme_poll_task: asyncio.Task[Any] | None = None
         self.composer_shape = composer_shape
         self._themes = dict(themes or {})
@@ -1337,6 +1341,15 @@ class ApplicationRuntime:
     async def rebind_session(self, _event: SessionSwitch) -> None:
         """Restore editor-local state after AppContext activates a session."""
 
+        self.scheduler.commit_now()
+        await self._drain(self._terminal_pending)
+        if self._retained_panels:
+            def retire_panels() -> None:
+                previous, self._retained_panels = self._retained_panels, []
+                self._write_blocks(previous)
+                self._scrollback.print()
+
+            await self._run_in_app_terminal(retire_panels)
         self.buffer.reset(append_to_history=False)
         self.composer.forget_pastes()
         clear_terminal_cache()
@@ -2072,7 +2085,8 @@ class ApplicationRuntime:
         # Working activity is represented by the status brand; retain retry
         # information as a distinct card and leave transcript accumulation alone.
         visible_frame = Frame()
-        visible_frame.blocks = [block for block in frame.blocks if block.kind != "working" or "retry_deadline" in block.data]
+        retained = self._retained_panels if frame is self.frame else []
+        visible_frame.blocks = [*retained, *[block for block in frame.blocks if block.kind != "working" or "retry_deadline" in block.data]]
         if self._last_tool_card is not None and self._last_tool_card.id == self._expanded_tool_id and not any(block.id == self._expanded_tool_id for block in visible_frame.blocks):
             visible_frame.blocks.append(replace(self._last_tool_card, state=BlockState.SETTLED))
         if self._viewport_scroll or self._expanded_tool_id is not None:
@@ -2150,7 +2164,24 @@ class ApplicationRuntime:
 
     def _commit_blocks(self, blocks: list[Block]) -> None:
         def write_and_prune() -> None:
-            self._write_blocks(blocks)
+            first_panel = next((index for index, block in enumerate(blocks) if self._is_command_panel(block)), None)
+            panels = blocks[first_panel:] if first_panel is not None else []
+            retire = bool(panels) or any(block.kind == "user" for block in blocks)
+            previous = self._retained_panels if retire else []
+            if retire:
+                self._retained_panels = [replace(block, state=BlockState.SETTLED) for block in panels]
+            if not retire and self._retained_panels:
+                # Preserve chronology: notices following a held panel retire
+                # with it, rather than reaching scrollback ahead of it.
+                self._retained_panels.extend(replace(block, state=BlockState.SETTLED) for block in blocks)
+                written = []
+            else:
+                written = [*previous, *(blocks[:first_panel] if first_panel is not None else blocks)]
+            self._write_blocks(written)
+            if written and (panels or previous):
+                # The inline layout leaves one native terminal row above it.
+                # End the retired output on a blank line, not an orphan border.
+                self._scrollback.print()
             # Prune inside the suspended-app window: the redraw that follows
             # run_in_terminal must paint the frame WITHOUT the just-printed
             # blocks, or it re-renders them at full height and scrolls a
@@ -2177,6 +2208,13 @@ class ApplicationRuntime:
 
         self._track(write_and_release(), terminal=True)
 
+    @staticmethod
+    def _is_command_panel(block: Block) -> bool:
+        if block.kind != "raw":
+            return False
+        objects = block.data.get("objects", (block.data.get("renderable"),))
+        return any(isinstance(value, Panel) for value in objects)
+
     async def _clear_scrollback(self) -> None:
         self.scheduler.commit_now()
         await self._drain(self._terminal_pending)
@@ -2185,6 +2223,7 @@ class ApplicationRuntime:
             terminal=True,
         )
         self.transcript.clear()
+        self._retained_panels.clear()
         clear_terminal_cache()
         self._last_tool_card = None
         self._expanded_tool_id = None
