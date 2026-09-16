@@ -8,7 +8,21 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphBubbleUp
 
-from orcha_agent.extensibility.stream_rules import StreamInterrupt
+from orcha_agent.extensibility.stream_rules import (
+    StreamInterrupt,
+    _model_monitor,
+    install_model_callback,
+)
+
+
+def _prepare_attempt(request: ModelRequest[Any]) -> None:
+    monitor = _model_monitor.get()
+    if monitor is not None:
+        # A genuine provider failure can switch models after partial streaming.
+        # Give each attempt its callback and preserve the final-message fallback
+        # when the replacement provider emits no chunks.
+        monitor.inspected = False
+        install_model_callback(request.model)
 
 
 class _RuleBubbleUp(GraphBubbleUp):
@@ -33,6 +47,7 @@ class ModelFallbackMiddleware(_ModelFallbackMiddleware):
     ) -> ModelResponse[Any] | AIMessage:
         def guarded(current: ModelRequest[Any]) -> ModelResponse[Any]:
             try:
+                _prepare_attempt(current)
                 return handler(current)
             except StreamInterrupt as exc:
                 raise _RuleBubbleUp(exc) from exc
@@ -49,6 +64,7 @@ class ModelFallbackMiddleware(_ModelFallbackMiddleware):
     ) -> ModelResponse[Any] | AIMessage:
         async def guarded(current: ModelRequest[Any]) -> ModelResponse[Any]:
             try:
+                _prepare_attempt(current)
                 return await handler(current)
             except StreamInterrupt as exc:
                 raise _RuleBubbleUp(exc) from exc

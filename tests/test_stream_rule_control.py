@@ -101,3 +101,88 @@ async def test_provider_errors_still_call_fallback_model(asynchronous):
     )
     assert result == "fallback succeeded"
     assert called == [primary, fallback]
+
+
+@pytest.mark.parametrize("fallback_streaming", [False, True])
+@pytest.mark.asyncio
+async def test_fallback_response_is_checked_after_partial_primary_failure(
+    tmp_path, fallback_streaming
+):
+    import re
+
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGenerationChunk
+    from langchain_core.tools import StructuredTool
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from orcha_agent.core.events import EventBus
+    from orcha_agent.extensibility.rules import Rule, RulesMiddleware
+    from orcha_agent.extensibility.stream_rules import (
+        StreamInspect,
+        StreamRules,
+        intercepted_stream,
+    )
+
+    calls = []
+
+    class Model(GenericFakeChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+            response = next(self.messages)
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content=response.content, tool_calls=response.tool_calls)
+            )
+            if response.content == "partial primary":
+                raise ConnectionError("primary failed after streaming")
+
+    def operation() -> str:
+        """Count executions that rules should prevent."""
+        calls.append(True)
+        return "done"
+
+    rule = Rule("r", "Avoid forbidden output", conditions=(re.compile("forbidden"),))
+    manager = StreamRules({"r": rule}, {})
+    bus = EventBus()
+
+    async def inspect(event):
+        if event.item is not None and manager.inspect(event.item)[0]:
+            return StreamRetry([rule.reminder()])
+        return None
+
+    bus.on(StreamInspect, inspect)
+    primary = Model(
+        messages=iter([AIMessage(content="partial primary"), AIMessage(content="safe")])
+    )
+    fallback = Model(
+        disable_streaming=not fallback_streaming,
+        messages=iter(
+            [
+                AIMessage(
+                    content="forbidden", tool_calls=[{"name": "operation", "args": {}, "id": "bad"}]
+                )
+            ]
+        ),
+    )
+    graph = create_agent(
+        model=primary,
+        tools=[StructuredTool.from_function(operation)],
+        middleware=[RulesMiddleware({"r": rule}, tmp_path), ModelFallbackMiddleware(fallback)],
+        checkpointer=InMemorySaver(),
+    )
+    host = SimpleNamespace(
+        agent=graph, bus=bus, thread_config={"configurable": {"thread_id": "main"}}
+    )
+    async for _ in intercepted_stream(
+        host,
+        {"messages": [{"role": "user", "content": "start"}]},
+        config=host.thread_config,
+        stream_mode=["messages", "updates"],
+    ):
+        pass
+    assert calls == []
+    assert manager.fired == {"r": 0}
+    assert (await graph.aget_state(host.thread_config)).values["messages"][-1].text == "safe"
