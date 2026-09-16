@@ -342,8 +342,9 @@ async def test_automatic_summarization_preserves_injection(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trigger_source", ["text", "tool", "deferred"])
+@pytest.mark.parametrize("slow_consumer", [False, True])
 async def test_retry_does_not_replay_completed_tool(
-    tmp_path: Path, monkeypatch, trigger_source: str
+    tmp_path: Path, monkeypatch, trigger_source: str, slow_consumer: bool
 ) -> None:
     from typing import Any
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -390,6 +391,8 @@ async def test_retry_does_not_replay_completed_tool(
             response = next(self.messages)
             assert isinstance(response, AIMessage)
             if response.tool_calls:
+                # Tool arguments are the final chunk; _astream returns immediately.
+                yield ChatGenerationChunk(message=AIMessageChunk(content="Preparing operation."))
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(content="", tool_calls=response.tool_calls)
                 )
@@ -423,16 +426,18 @@ async def test_retry_does_not_replay_completed_tool(
         checkpointer=InMemorySaver(),
     )
     await bus.emit(TurnStart(thread_id="t", text="hello"))
-    _ = [
-        item
-        async for item in intercepted_stream(
-            host,
-            {"messages": [{"role": "user", "content": "hello"}]},
-            config=host.thread_config,
-            stream_mode=["messages", "updates"],
-            subgraphs=True,
-        )
-    ]
+    async for _item in intercepted_stream(
+        host,
+        {"messages": [{"role": "user", "content": "hello"}]},
+        config=host.thread_config,
+        stream_mode=["messages", "updates"],
+        subgraphs=True,
+    ):
+        if slow_consumer:
+            # Let LangGraph finish its task callbacks before consuming more output.
+            import asyncio
+
+            await asyncio.sleep(0.05)
     messages = (await host.agent.aget_state(host.thread_config)).values["messages"]
     assert calls == ([] if trigger_source == "tool" else [True])
     assert messages[-1].text == "safe answer"
@@ -539,3 +544,242 @@ def test_compaction_keeps_latest_rule_body_only() -> None:
     )
     assert sum(isinstance(m, SystemMessage) for m in context.messages) == 1
     assert all("old body" not in m.text for m in context.messages)
+
+
+def test_stream_matchers_compile_once_and_enforce_total_budget(monkeypatch) -> None:
+    from orcha_agent.extensibility import stream_rules
+
+    rules = {
+        f"r{index}": Rule(f"r{index}", "body", conditions=(re.compile("missing"),))
+        for index in range(256)
+    }
+    manager = StreamRules(rules, {})
+    monkeypatch.setattr(
+        stream_rules.regex, "compile", Mock(side_effect=AssertionError("recompile"))
+    )
+    calls = []
+    now = [0.0]
+
+    class SlowPattern:
+        def search(self, text, *, timeout):
+            calls.append(timeout)
+            now[0] += timeout
+            raise TimeoutError
+
+    manager.compiled = {name: (SlowPattern(),) for name in rules}
+    monkeypatch.setattr(stream_rules, "monotonic", lambda: now[0])
+    assert manager.inspect(chunk("text"))[0] == []
+    assert len(calls) <= 6
+    assert sum(calls) <= 0.05
+    # Budget resets per chunk, allowing progress on later output.
+    before = len(calls)
+    manager.inspect(chunk("next"))
+    assert len(calls) > before
+
+
+def test_runtime_rule_limits_cover_programmatic_rules() -> None:
+    rules = {
+        f"r{index}": Rule(
+            f"r{index}", "body", conditions=tuple(re.compile(f"pattern{n}") for n in range(12))
+        )
+        for index in range(300)
+    }
+    rules["r0"] = Rule("r0", "body", conditions=(re.compile("x" * 513),))
+    manager = StreamRules(rules, {})
+    assert len(manager.compiled) == 256
+    assert manager.compiled["r0"] == ()
+    assert all(len(patterns) <= 8 for patterns in manager.compiled.values())
+
+
+@pytest.mark.asyncio
+async def test_rulebook_has_one_registration_path(tmp_path, monkeypatch) -> None:
+    from orcha_agent.core.events import AgentBuildBefore
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    write(tmp_path, "RULES.md", "Unique sticky instruction")
+    registry, bus = Registry(), EventBus()
+    plugin.register(
+        PluginAPI(
+            name="rules", config={}, state={}, registry=registry, bus=bus, request_rebuild=Mock()
+        )
+    )
+    host = SimpleNamespace(cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True), console=Mock())
+    await bus.emit(AppStart(host))
+    assert len(registry.prompt_fragments) == 1
+    assert registry.prompt_fragments[0].text.count("Unique sticky instruction") == 1
+    assert all(registration.event_type is not AgentBuildBefore for registration in bus.handlers)
+
+
+@pytest.mark.asyncio
+async def test_aborted_attempt_is_struck_and_retry_uses_new_block() -> None:
+    from rich.console import Console
+    from orcha_agent.core.events import ModelChunk
+    from orcha_agent.extensibility.stream_rules import StreamAborted
+    from orcha_agent.tui.transcript import Transcript
+    from orcha_agent.tui.blocks.assistant import render
+
+    transcript = Transcript()
+    await transcript.handle(
+        ModelChunk(chunk=AIMessageChunk(content="discard this"), role="main", source_id="main")
+    )
+    original = transcript.frame.blocks[-1]
+    await transcript.handle(StreamAborted())
+    assert original.data["aborted"]
+    console = Console(force_terminal=True, width=60)
+    segments = list(console.render(render(original, {"colors": {"text": "white"}}, 60, 20, False)))
+    assert any(
+        "discard this" in segment.text
+        and segment.style
+        and segment.style.dim
+        and segment.style.strike
+        for segment in segments
+    )
+    await transcript.handle(
+        ModelChunk(chunk=AIMessageChunk(content="safe retry"), role="main", source_id="main")
+    )
+    assert transcript.frame.blocks[-1] is not original
+    assert transcript.frame.blocks[-1].data["text"] == "safe retry"
+
+
+@pytest.mark.asyncio
+async def test_model_monitor_preserves_usage_on_interrupt() -> None:
+    from orcha_agent.core.events import ModelChunk
+    from orcha_agent.extensibility.stream_rules import (
+        ModelStreamMonitor,
+        StreamInspect,
+        StreamRetry,
+    )
+
+    bus = EventBus()
+    events = []
+
+    async def inspect(event):
+        return (
+            StreamRetry(messages=[Rule("r", "body").reminder()]) if event.item is not None else None
+        )
+
+    async def record(event):
+        events.append(event)
+
+    bus.on(StreamInspect, inspect)
+    bus.on(ModelChunk, record)
+    host = SimpleNamespace(bus=bus)
+
+    class Agent:
+        async def astream(self, value, **kwargs):
+            if isinstance(value, dict):
+                monitor = ModelStreamMonitor(host)
+                await monitor.inspect(
+                    AIMessageChunk(
+                        content="forbidden",
+                        id="attempt",
+                        usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+                    )
+                )
+            yield ("updates", {})
+
+    host.agent = Agent()
+    items = [item async for item in intercepted_stream(host, {})]
+    assert items == [("updates", {})]
+    assert len(events) == 1
+    assert events[0].chunk.usage_metadata["total_tokens"] == 10
+    assert events[0].chunk.content == ""
+
+
+@pytest.mark.asyncio
+async def test_after_model_pending_guard_and_unrelated_failures(tmp_path, monkeypatch) -> None:
+    from orcha_agent.extensibility import rules as rules_module
+    from orcha_agent.extensibility.stream_rules import StreamInterrupt, StreamRetry
+
+    middleware = RulesMiddleware({}, tmp_path)
+    interruption = StreamInterrupt(StreamRetry(messages=[]))
+    middleware.interrupt_pending["t"] = interruption
+    monkeypatch.setattr(rules_module, "get_config", lambda: {"configurable": {"thread_id": "t"}})
+    with pytest.raises(StreamInterrupt) as raised:
+        await middleware.aafter_model({}, None)
+    assert raised.value is interruption
+
+    calls = []
+
+    class BrokenAgent:
+        async def astream(self, value, **kwargs):
+            calls.append(value)
+            raise ValueError("provider failed")
+            yield
+
+    with pytest.raises(ValueError, match="provider failed"):
+        _ = [item async for item in intercepted_stream(SimpleNamespace(agent=BrokenAgent()), {})]
+    assert calls == [{}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["assistant", "thinking"])
+async def test_aborted_markdown_rendered_segments_are_dimmed(kind) -> None:
+    from rich.console import Console
+    from orcha_agent.tui.blocks import assistant, thinking
+    from orcha_agent.tui.frame import Block
+
+    block = Block("aborted", kind, data={"text": "discarded thought", "aborted": True})
+    renderer = assistant.render if kind == "assistant" else thinking.render
+    rendered = renderer(
+        block, {"colors": {"text": "white", "thinkingText": "white"}}, 60, 20, False
+    )
+    segments = list(Console(force_terminal=True).render(rendered))
+    assert any(
+        segment.style and segment.style.dim and segment.style.strike and "discarded" in segment.text
+        for segment in segments
+    )
+
+
+def test_discovery_regex_objects_are_reused_by_stream_manager(tmp_path, monkeypatch) -> None:
+    from orcha_agent.extensibility import stream_rules
+
+    write(tmp_path, ".orcha-agent/rules/r.md", "---\ncondition: forbidden\n---\nbody")
+    rules, _ = discover_rules(tmp_path, tmp_path / "home", trust_cwd=True)
+    monkeypatch.setattr(
+        stream_rules.regex, "compile", Mock(side_effect=AssertionError("recompile"))
+    )
+    manager = StreamRules(rules, {})
+    assert manager.compiled["r"][0] is rules["r"].conditions[0]
+    assert manager.inspect(chunk("forbidden"))[0] == [rules["r"]]
+
+
+@pytest.mark.asyncio
+async def test_late_discovery_refreshes_previously_empty_stream_manager(
+    tmp_path, monkeypatch
+) -> None:
+    import asyncio
+    from orcha_agent.extensibility.stream_rules import StreamInspect, StreamRetry
+
+    release, rebuilt = asyncio.Event(), asyncio.Event()
+    rule = Rule("late", "late instruction", conditions=(re.compile("forbidden"),))
+
+    async def delayed_discovery(*args, **kwargs):
+        await release.wait()
+        return {"late": rule}, []
+
+    monkeypatch.setattr(plugin.asyncio, "to_thread", delayed_discovery)
+    registry, bus = Registry(), EventBus()
+    plugin.register(
+        PluginAPI(
+            name="rules",
+            config={},
+            state={},
+            registry=registry,
+            bus=bus,
+            request_rebuild=rebuilt.set,
+        )
+    )
+    host = SimpleNamespace(
+        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True),
+        console=Mock(),
+        session_id="s",
+        thread_config={"configurable": {"thread_id": "t"}},
+    )
+    await bus.emit(AppStart(host))  # Discovery outlasts the 250ms startup budget.
+    await bus.emit(TurnStart(thread_id="t", text="hello"))
+    release.set()
+    await asyncio.wait_for(rebuilt.wait(), timeout=1)
+    decision = await bus.emit(StreamInspect(item=chunk("forbidden"), host=host))
+    assert isinstance(decision, StreamRetry)
+    assert "late instruction" in decision.messages[0].text

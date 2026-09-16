@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
+from contextvars import ContextVar
+from time import monotonic
 import json
 import re
 from pathlib import Path
@@ -11,13 +13,14 @@ from pathlib import Path
 import regex
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.callbacks import AsyncCallbackHandler, BaseCallbackManager
 from langgraph.types import Command
 
-from orcha_agent.core.events import Event
+from orcha_agent.core.events import Event, ModelChunk
 from orcha_agent.core.plugin import Handled
 
-from .rules import Rule, matches_paths
+from .rules import MAX_CONDITIONS, MAX_PATTERN_LENGTH, MAX_RULES, Rule, matches_paths
 from .skill_globs import SkillGlobsMiddleware
 
 
@@ -32,39 +35,124 @@ class StreamRetry(Handled):
     messages: list[BaseMessage]
 
 
-async def intercepted_stream(host: Any, value: Any, **kwargs: Any) -> AsyncIterator[Any]:
-    """Close interrupted graph streams before resuming their pending model checkpoint.
+class StreamInterrupt(Exception):
+    """A model-node failure carrying the authoritative retry state."""
 
-    The graph commits complete nodes, so closing during a model node preserves
-    the pre-model checkpoint, including completed tools. Never replay user input
-    or completed tool calls on a retry.
+    def __init__(self, retry: StreamRetry, usage: list[AIMessage] | None = None) -> None:
+        super().__init__("Stream rule interrupted the model")
+        self.retry = retry
+        self.usage = usage or []
+
+
+@dataclass(slots=True)
+class StreamAborted(Event):
+    """Mark the visible partial attempt before a model retry."""
+
+
+_stream_host: ContextVar[Any] = ContextVar("rules_stream_host", default=None)
+_model_monitor: ContextVar[ModelStreamMonitor | None] = ContextVar(
+    "rules_model_monitor", default=None
+)
+
+
+class ModelStreamMonitor:
+    def __init__(self, host: Any) -> None:
+        self.host = host
+        self.pending: StreamInterrupt | None = None
+        self.usage: list[AIMessage] = []
+
+    async def inspect(self, message: AIMessage) -> None:
+        if message.usage_metadata:
+            # Keep provider-reported partial usage, even if this very chunk aborts.
+            self.usage.append(message)
+        decision = await self.host.bus.emit(
+            StreamInspect(item=((), "messages", (message, {})), host=self.host)
+        )
+        if isinstance(decision, StreamRetry):
+            self.pending = StreamInterrupt(decision, self.usage)
+            raise self.pending
+
+
+class RuleStreamCallback(AsyncCallbackHandler):
+    raise_error = True
+    run_inline = True
+
+    async def on_llm_new_token(self, token: str, *, chunk: Any = None, **kwargs: Any) -> None:
+        monitor = _model_monitor.get()
+        if monitor is not None and chunk is not None and isinstance(chunk.message, AIMessage):
+            await monitor.inspect(chunk.message)
+
+
+def install_model_callback(model: Any) -> None:
+    """Install an inert, context-local dispatcher without cloning model state.
+
+    Cloning resets stateful fake/custom models. A single permanent dispatcher also
+    avoids restoring shared callback lists in competing model-call finalizers.
+    """
+    callbacks = model.callbacks
+    handlers = callbacks.handlers if isinstance(callbacks, BaseCallbackManager) else callbacks or []
+    if any(isinstance(callback, RuleStreamCallback) for callback in handlers):
+        return
+    if isinstance(callbacks, BaseCallbackManager):
+        callbacks = callbacks.copy()
+        callbacks.add_handler(RuleStreamCallback(), inherit=False)
+    else:
+        callbacks = [*handlers, RuleStreamCallback()]
+    model.callbacks = callbacks
+
+
+async def intercepted_stream(host: Any, value: Any, **kwargs: Any) -> AsyncIterator[Any]:
+    """Retry only authoritative failures raised from inside the model node.
+
+    Closing an output iterator cannot roll back a successful LangGraph task: its
+    done callback may already have committed writes. A StreamInterrupt instead
+    leaves an ERROR task marker, so retry never restores rejected tool calls.
     """
     subscribed = any(
         issubclass(StreamInspect, registration.event_type)
-        for registration in getattr(host.bus, "handlers", ())
+        for registration in getattr(getattr(host, "bus", None), "handlers", ())
     )
     if not subscribed:
         async for item in host.agent.astream(value, **kwargs):
             yield item
         return
-    while True:
-        retry = None
-        stream = host.agent.astream(value, **kwargs)
-        try:
-            async for item in stream:
-                decision = await host.bus.emit(StreamInspect(item=item, host=host))
-                if isinstance(decision, StreamRetry):
-                    retry = decision
-                    break
-                yield item
-        finally:
-            close = getattr(stream, "aclose", None)
-            if close is not None:
-                await close()
-        if retry is None:
-            await host.bus.emit(StreamInspect(item=None, host=host))
-            return
-        value = Command(update={"messages": retry.messages})
+    token = _stream_host.set(host)
+    try:
+        while True:
+            retry = None
+            delivered_usage: set[int] = set()
+            stream = host.agent.astream(value, **kwargs)
+            try:
+                async for item in stream:
+                    mode, data = item[-2:]
+                    if mode == "messages" and isinstance(data, tuple):
+                        delivered_usage.add(id(data[0]))
+                    yield item
+            except StreamInterrupt as exc:
+                retry = exc.retry
+                await host.bus.emit(StreamAborted())
+                for chunk in exc.usage:
+                    if id(chunk) not in delivered_usage:
+                        await host.bus.emit(
+                            ModelChunk(
+                                chunk=AIMessageChunk(
+                                    content="", id=chunk.id, usage_metadata=chunk.usage_metadata
+                                ),
+                                role="main",
+                                source_id="main",
+                                request_id=chunk.id,
+                            )
+                        )
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+            if retry is None:
+                await host.bus.emit(StreamInspect(item=None, host=host))
+                return
+            value = Command(update={"messages": retry.messages})
+    finally:
+        _stream_host.reset(token)
 
 
 class StreamRules:
@@ -74,6 +162,15 @@ class StreamRules:
         self, rules: Mapping[str, Rule], settings: Mapping[str, Any], *, cwd: Path | None = None
     ) -> None:
         self.rules = rules
+        self.compiled: dict[str, tuple[Any, ...]] = {}
+        for rule in list(rules.values())[:MAX_RULES]:
+            self.compiled[rule.name] = tuple(
+                pattern
+                if isinstance(pattern, regex.Pattern)
+                else regex.compile(pattern.pattern, flags=pattern.flags)
+                for pattern in rule.conditions[:MAX_CONDITIONS]
+                if rule.trusted and len(pattern.pattern) <= MAX_PATTERN_LENGTH
+            )
         self.paths = SkillGlobsMiddleware({})
         if cwd is not None:
             self.paths.cwd = cwd
@@ -96,6 +193,7 @@ class StreamRules:
     def inspect(self, item: Any) -> tuple[list[Rule], str]:
         if not self.settings.get("enabled", True):
             return [], ""
+        deadline = monotonic() + 0.05
         if len(item) == 3:
             namespace, mode, data = item
         else:
@@ -145,7 +243,9 @@ class StreamRules:
                 )
         matches: list[Rule] = []
         for source, tool, text, paths in candidates:
-            for rule in self.rules.values():
+            for rule in list(self.rules.values())[:MAX_RULES]:
+                if monotonic() >= deadline:
+                    return matches, self.buffers.get(request + ":text", "")
                 if rule.name in self.current or not _allows(rule, source, tool, paths):
                     continue
                 if rule.name in self.fired:
@@ -153,11 +253,12 @@ class StreamRules:
                         continue
                     if self.turn - self.fired[rule.name] < int(self.settings.get("repeatGap", 10)):
                         continue
-                for pattern in rule.conditions:
+                for pattern in self.compiled.get(rule.name, ()):
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        return matches, self.buffers.get(request + ":text", "")
                     try:
-                        matched = regex.search(
-                            pattern.pattern, text, flags=pattern.flags, timeout=0.01
-                        )
+                        matched = pattern.search(text, timeout=min(0.01, remaining))
                     except TimeoutError:
                         continue
                     if matched:

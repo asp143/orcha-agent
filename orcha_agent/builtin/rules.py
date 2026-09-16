@@ -11,7 +11,7 @@ from langchain_core.tools import StructuredTool
 from rich.panel import Panel
 from rich.text import Text
 
-from orcha_agent.core.events import AgentBuildBefore, AppExit, AppStart, TurnEnd, TurnStart
+from orcha_agent.core.events import AppExit, AppStart, TurnEnd, TurnStart
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 from orcha_agent.extensibility.rules import (
     MARKER,
@@ -49,9 +49,9 @@ def register(api: PluginAPI) -> None:
     pending = middleware.pending
 
     def manager(session_id: str) -> StreamRules:
-        return sessions.setdefault(
-            session_id, StreamRules(rules, settings, cwd=middleware.paths.cwd)
-        )
+        if session_id not in sessions:
+            sessions[session_id] = StreamRules(rules, settings, cwd=middleware.paths.cwd)
+        return sessions[session_id]
 
     async def start(event: AppStart) -> None:
         nonlocal context
@@ -65,10 +65,13 @@ def register(api: PluginAPI) -> None:
 
         async def load() -> None:
             found, warnings = await asyncio.to_thread(
-                discover_rules, Path(cwd), Path.home(),
+                discover_rules,
+                Path(cwd),
+                Path.home(),
                 trust_cwd=getattr(context.cfg, "trust_cwd", False),
             )
             rules.update(found)
+            sessions.clear()
             for warning in warnings:
                 context.console.warning(warning)
             if rules:
@@ -90,13 +93,6 @@ def register(api: PluginAPI) -> None:
         if discovery is not None:
             discovery.cancel()
             await asyncio.gather(discovery, return_exceptions=True)
-
-    async def build(event: AgentBuildBefore) -> None:
-        await ready()
-        prompt = rulebook(rules)
-        current = event.kwargs.get("system_prompt", "")
-        if prompt and prompt not in current:
-            event.kwargs["system_prompt"] = current + "\n\n" + prompt
 
     async def read_rule(name: str) -> str:
         """Read a rule body by name or rule://name URL."""
@@ -173,7 +169,6 @@ def register(api: PluginAPI) -> None:
     api.add_middleware(middleware, priority=65)
     api.on(AppStart, start)
     api.on(AppExit, stop)
-    api.on(AgentBuildBefore, build)
     api.on(TurnStart, turn_start)
     api.on(TurnEnd, turn_end)
     api.on(StreamInspect, inspect)

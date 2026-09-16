@@ -24,10 +24,15 @@ def render(
 ) -> Group:
     del width, budget_rows, expanded
     subagent = bool(block.data.get("subagent"))
+    aborted = bool(block.data.get("aborted"))
     markdown = Markdown(
         str(block.data.get("text", "")),
         style=(
-            f"dim {theme_value(theme, 'text')}" if subagent else str(theme_value(theme, "text"))
+            f"dim strike {theme_value(theme, 'text')}"
+            if aborted
+            else f"dim {theme_value(theme, 'text')}"
+            if subagent
+            else str(theme_value(theme, "text"))
         ),
         code_theme=syntax_style(theme),
     )

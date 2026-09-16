@@ -176,6 +176,7 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
     def __init__(self, rules: Mapping[str, Rule], cwd: Path) -> None:
         self.rules = rules
         self.pending: dict[str, list[SystemMessage]] = {}
+        self.interrupt_pending: dict[str, Any] = {}
         self.paths = SkillGlobsMiddleware({})
         self.paths.cwd = cwd
 
@@ -223,7 +224,10 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
         selected = [
             rule.reminder()
             for rule in self.rules.values()
-            if rule.trusted and rule.name not in attached and not rule.always_apply and matches_paths(rule, paths)
+            if rule.trusted
+            and rule.name not in attached
+            and not rule.always_apply
+            and matches_paths(rule, paths)
         ]
         if self.pending:
             config = get_config()
@@ -240,7 +244,7 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
             update["rule_reminders"] = durable
         return update or None
 
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+    async def _with_reminders(self, request: Any, handler: Any) -> Any:
         reminders, ordinary = [], []
         for message in request.messages:
             if isinstance(message, SystemMessage) and MARKER in message.additional_kwargs:
@@ -257,3 +261,41 @@ class RulesMiddleware(AgentMiddleware[RulesState]):
         blocks.extend({"type": "text", "text": message.text} for message in reminders)
         system = SystemMessage(content=blocks)
         return await handler(request.override(messages=ordinary, system_message=system))
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        from .stream_rules import (
+            ModelStreamMonitor,
+            _model_monitor,
+            _stream_host,
+            install_model_callback,
+        )
+
+        host = _stream_host.get()
+        if host is None:
+            return await self._with_reminders(request, handler)
+        config = get_config()
+        # Subagent graphs own their own retry boundaries; never rewind a task.
+        namespace = str(config.get("configurable", {}).get("checkpoint_ns", ""))
+        if "|" in namespace:
+            return await self._with_reminders(request, handler)
+        thread = str(config.get("configurable", {}).get("thread_id", ""))
+        self.interrupt_pending.pop(thread, None)
+        monitor = ModelStreamMonitor(host)
+        install_model_callback(request.model)
+        token = _model_monitor.set(monitor)
+        try:
+            result = await self._with_reminders(request, handler)
+            if monitor.pending is not None:
+                raise monitor.pending
+            return result
+        finally:
+            _model_monitor.reset(token)
+            if monitor.pending is not None:
+                self.interrupt_pending[thread] = monitor.pending
+
+    async def aafter_model(self, state: Any, runtime: Any) -> None:
+        config = get_config()
+        thread = str(config.get("configurable", {}).get("thread_id", ""))
+        pending = self.interrupt_pending.get(thread)
+        if pending is not None:
+            raise pending

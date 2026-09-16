@@ -29,7 +29,7 @@ def render(
     if visible:
         content: Markdown | Text = Markdown(
             str(block.data.get("text", "")),
-            style=f"italic {theme_value(theme, 'thinkingText')}",
+            style=f"{'dim strike' if block.data.get('aborted') else 'italic'} {theme_value(theme, 'thinkingText')}",
             code_theme=syntax_style(theme),
         )
     else:
