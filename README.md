@@ -935,3 +935,13 @@ custom memory sources remain available. Turso's structured-memory-only mode stay
 structured-only. To try it, add `AGENTS.md` at the repository root and a closer
 `.orcha-agent/AGENTS.md`, launch from that directory, and ask the agent which
 repository instructions apply.
+
+### HTML session export
+
+`/export --html [path]` saves a standalone HTML transcript using the active theme
+colours. Markdown is rendered locally; tool calls and results use expandable
+cards, with added/removed diff lines highlighted. Every ledger branch is included
+in chronological order. No scripts, remote assets, or image requests are needed.
+The default filename is `<session-id>.html`; paths may contain spaces.
+As with JSONL export, existing files require `--force`, for example
+`/export --html --force review.html`. The output file is private (0600).

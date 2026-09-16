@@ -11,6 +11,7 @@ dependencies = [
     "langchain-openai>=1.6.0",
     "langgraph-checkpoint-sqlite>=3.1.1",
     "mcp>=2.2.0",
+    "markdown-it-py>=4.0.0",
     "prompt-toolkit>=3.0.53",
     "pyte>=0.8.2,<0.9",
     "python-dotenv>=1.2.3",

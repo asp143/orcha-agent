@@ -320,24 +320,37 @@ async def _compact(ctx: Any, args: str) -> None:
 
 async def _export(ctx: Any, args: str) -> None:
     raw = args.strip()
-    first_and_path = raw.split(maxsplit=1)
-    force = bool(first_and_path and first_and_path[0] == "--force")
-    if force:
-        raw = first_and_path[1].strip() if len(first_and_path) == 2 else ""
-    tokens = raw.split()
-    if (tokens and tokens[0].startswith("-")) or "--force" in tokens:
-        ctx.console.error("Usage: /export [--force] [path]")
+    flags: set[str] = set()
+    while raw.startswith("--"):
+        parts = raw.split(maxsplit=1)
+        flag = parts[0]
+        if flag not in {"--force", "--html"} or flag in flags:
+            ctx.console.error("Usage: /export [--html] [--force] [path]")
+            return
+        flags.add(flag)
+        raw = parts[1].strip() if len(parts) == 2 else ""
+    if raw.startswith("-") or any(token in {"--force", "--html"} for token in raw.split()):
+        ctx.console.error("Usage: /export [--html] [--force] [path]")
         return
-
+    force = "--force" in flags
+    html = "--html" in flags
     path = (
         Path(raw).expanduser()
         if raw
-        else Path.cwd() / f"{ctx.session_id}.jsonl"
+        else Path.cwd() / f"{ctx.session_id}.{'html' if html else 'jsonl'}"
     )
     try:
-        output = export_session(
-            ctx.session, ctx.session_id, path, force=force
-        ).resolve()
+        if html:
+            from orcha_agent.core.export_html import export_session_html
+
+            output = await asyncio.to_thread(
+                export_session_html, ctx.session, ctx.session_id, path,
+                force=force, theme=getattr(getattr(ctx, "ui", None), "theme", None),
+            )
+        else:
+            output = export_session(
+                ctx.session, ctx.session_id, path, force=force
+            ).resolve()
     except FileExistsError:
         ctx.console.error(
             f"Export destination already exists: {path}. "
@@ -560,7 +573,7 @@ def register(api: PluginAPI) -> None:
     api.add_command(
         "export",
         _export,
-        help="Export the current session: /export [--force] [path]",
+        help="Export the current session: /export [--html] [--force] [path]",
     )
     api.add_command("sessions", _sessions, help="List saved sessions")
     api.add_command("resume", _resume, help="Resume a saved session: /resume <session-id>")
