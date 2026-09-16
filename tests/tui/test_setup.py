@@ -148,3 +148,12 @@ async def test_unavailable_model_saves_default_without_mutating_active_session(t
     assert ctx.cfg.model == original
     assert tomllib.loads(ctx.cfg.user_config_path.read_text())["core"]["model"] == "example:example"
     ctx.console.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_provider_picker_excludes_generic_langchain_adapter(tmp_path):
+    ctx = context(tmp_path, ("dark", "box", None))
+    ctx.registry.providers["langchain"] = SimpleNamespace()
+    await run_setup(ctx)
+    provider_pick = ctx.ui.show.call_args_list[2]
+    assert provider_pick.kwargs["items"] == ("example",)

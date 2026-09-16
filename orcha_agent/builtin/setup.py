@@ -65,7 +65,10 @@ async def run_setup(ctx: Any, _args: str = "") -> None:
     composer = await pick("2/4 Composer", ("box", "claude", "borderless", "band", "rail"))
     if composer is None:
         return
-    prefix = await pick("3/4 Provider", tuple(sorted(ctx.registry.providers)))
+    prefix = await pick(
+        "3/4 Provider",
+        tuple(sorted(name for name in ctx.registry.providers if name != "langchain")),
+    )
     if prefix is None:
         return
     provider = ctx.registry.providers[prefix]
