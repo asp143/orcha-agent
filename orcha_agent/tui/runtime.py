@@ -265,8 +265,7 @@ class _PaintOutput:
                 or program in {"wezterm", "ghostty", "iterm.app", "vscode"}
             ))
         )
-        self.synchronized = enabled and self._detected_synchronized
-        self._enabled = enabled
+        self.set_enabled(enabled)
         self._original_flush = self.output.flush
         self._original_redraw = application._redraw
         self._parser: Any = None
@@ -288,12 +287,17 @@ class _PaintOutput:
                     self._original_parser_flush()
                 parser.flush = flush_parser
 
+    def set_enabled(self, enabled: bool) -> None:
+        """Apply the preference without changing an already-open transaction."""
+        self._enabled = enabled
+        self.synchronized = enabled and self._detected_synchronized
+
     def report(self, value: str) -> None:
         if value in {"\x1b[I", "\x1b[O"}:
             self.focus_changed(value == "\x1b[I")
         if value.startswith("\x1b[?2026;"):
             self._detected_synchronized = value[-3] in "12"
-            self.synchronized = self._enabled and self._detected_synchronized
+            self.set_enabled(self._enabled)
         elif value.startswith("\x1b]11;"):
             self.background = value[5:].rstrip("\x07\x1b\\")
 
@@ -1881,8 +1885,7 @@ class ApplicationRuntime:
         self.composer.set_shape(cfg.composer)
         self.composer_shape = cfg.composer
         self.application.editing_mode = EditingMode.VI if getattr(self._tui_config, "vim", False) else EditingMode.EMACS
-        self._paint_output._enabled = getattr(self._tui_config, "synchronized_output", True)
-        self._paint_output.synchronized = self._paint_output._enabled and self._paint_output._detected_synchronized
+        self._paint_output.set_enabled(getattr(self._tui_config, "synchronized_output", True))
         self._apply_theme(self._base_theme)
 
     def _apply_theme(self, selected: Any) -> Any:

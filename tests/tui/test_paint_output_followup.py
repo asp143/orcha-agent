@@ -49,3 +49,32 @@ def test_frame_close_reschedules_skipped_repaint_without_watchdog(
     paint.end_frame()
     assert calls == ["invalidate", "draw"]
     assert not paint._redraw_skipped
+
+
+def test_sync_setting_preserves_open_frame_and_negotiated_support(monkeypatch):
+    paint, _calls, writes = paint_output(monkeypatch)
+    paint.begin_frame()
+    paint.output._buffer.append("before-disable")
+    paint.set_enabled(False)
+    paint.report("\x1b[?2026;2$y")
+    assert not paint.synchronized
+    paint.end_frame()
+    assert writes == ["\x1b[?2026h", "before-disable", "\x1b[?2026l"]
+
+    paint.output._buffer.append("disabled")
+    paint.flush()
+    assert writes[-1] == "disabled"
+    paint.set_enabled(True)
+    paint.output._buffer.append("enabled")
+    paint.flush()
+    assert writes[-1] == "\x1b[?2026henabled\x1b[?2026l"
+
+    paint.report("\x1b[?2026;0$y")
+    paint.set_enabled(False)
+    paint.set_enabled(True)
+    assert not paint.synchronized
+    paint.output._buffer.append("unsupported")
+    paint.flush()
+    assert writes[-1] == "unsupported"
+    paint.report("\x1b[?2026;1$y")
+    assert paint.synchronized
