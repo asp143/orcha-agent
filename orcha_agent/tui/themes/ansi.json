@@ -6,6 +6,7 @@
     "thinkingText": "", "selectedBg": "", "userMessageBg": "", "customMessageBg": "", "toolPendingBg": "", "toolSuccessBg": "", "toolErrorBg": "", "statusLineBg": "",
     "userMessageText": "", "toolTitle": "", "toolOutput": "", "mdHeading": "", "mdLink": "", "mdLinkUrl": "", "mdCode": "", "mdCodeBlock": "", "mdCodeBlockBorder": "",
     "mdQuote": "", "mdQuoteBorder": "", "mdHr": "", "mdListBullet": "", "toolDiffAdded": "", "toolDiffRemoved": "", "toolDiffContext": "",
+    "toolDiffAddedBg": "#22222a", "toolDiffRemovedBg": "#22222a",
     "syntaxComment": "", "syntaxKeyword": "", "syntaxFunction": "", "syntaxVariable": "", "syntaxString": "", "syntaxNumber": "", "syntaxType": "", "syntaxOperator": "", "syntaxPunctuation": "",
     "thinkingOff": "", "thinkingLow": "", "thinkingMedium": "", "thinkingHigh": "", "thinkingMax": "", "bashMode": "", "statusLineSep": "", "statusLineModel": "", "statusLinePath": "",
     "statusLineGitClean": "", "statusLineGitDirty": "", "statusLineContext": "", "statusLineCost": "", "statusLineSubagents": ""

@@ -27,7 +27,8 @@ STATUSLINE_SEPARATORS = frozenset(
 class TuiConfig:
     hyperlinks: bool = True
     vim: bool = False
-    mouse: bool = True
+    mouse: str = "scroll"
+    colorblind: bool = False
     synchronized_output: bool = True
     resize: str = "preserve"
 
@@ -672,17 +673,22 @@ def load_config(
     if not isinstance(tui_values, dict):
         parser.error("[tui] must be a TOML table")
     tui_options = {}
-    for key, default in (("hyperlinks", True), ("vim", False), ("mouse", True), ("synchronized_output", True)):
+    for key, default in (("hyperlinks", True), ("vim", False), ("colorblind", False), ("synchronized_output", True)):
         value = tui_values.get(key, default)
         if not isinstance(value, bool):
             parser.error(f"[tui] {key} must be true or false")
         tui_options[key] = value
+    mouse = tui_values.get("mouse", "scroll")
+    if isinstance(mouse, bool):
+        mouse = "full" if mouse else "off"
+    if not isinstance(mouse, str) or mouse not in {"scroll", "full", "off"}:
+        parser.error("[tui] mouse must be scroll, full, or off")
     resize = tui_values.get("resize", "preserve")
     if not isinstance(resize, str) or resize not in {"preserve", "rebuild"}:
         parser.error("[tui] resize must be preserve or rebuild")
-    tui_config = TuiConfig(**tui_options, resize=resize)
+    tui_config = TuiConfig(**tui_options, mouse=mouse, resize=resize)
     if isinstance(ui, dict):
-        ui = {**ui, **{key: value for key, value in tui_values.items() if key not in {*tui_options, "resize"}}}
+        ui = {**ui, **{key: value for key, value in tui_values.items() if key not in {*tui_options, "mouse", "resize"}}}
     pricing = values.get("pricing", {})
     agents = values.get("agents", {})
     advisor = values.get("advisor", {})

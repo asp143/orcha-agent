@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#dbbc7f",
     "statusLineContext": "#d699b6",
     "statusLineCost": "#a7c080",
-    "statusLineSubagents": "#83c092"
+    "statusLineSubagents": "#83c092",
+    "toolDiffAddedBg": "#26292a",
+    "toolDiffRemovedBg": "#2e1e25"
   },
   "symbols": {
     "preset": "nerd",

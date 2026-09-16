@@ -1,5 +1,5 @@
 {
-  "name": "Dark Tokyo Night",
+  "name": "Tokyo Night",
   "colors": {
     "accent": "#bb9af7",
     "border": "#7aa2f7",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#e0af68",
     "statusLineContext": "#7aa2f7",
     "statusLineCost": 205,
-    "statusLineSubagents": "#ff9e64"
+    "statusLineSubagents": "#ff9e64",
+    "toolDiffAddedBg": "#242b26",
+    "toolDiffRemovedBg": "#2c222a"
   },
   "symbols": {
     "preset": "nerd"

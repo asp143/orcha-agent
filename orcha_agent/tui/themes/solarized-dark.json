@@ -1,5 +1,5 @@
 {
-  "name": "Dark Solarized",
+  "name": "Solarized Dark",
   "colors": {
     "accent": "#268bd2",
     "border": "#586e75",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#b58900",
     "statusLineContext": "#6c71c4",
     "statusLineCost": "#cb4b16",
-    "statusLineSubagents": "#268bd2"
+    "statusLineSubagents": "#268bd2",
+    "toolDiffAddedBg": "#0d3631",
+    "toolDiffRemovedBg": "#162c35"
   },
   "symbols": {
     "preset": "nerd"

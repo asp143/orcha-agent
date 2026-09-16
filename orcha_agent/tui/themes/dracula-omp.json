@@ -1,5 +1,5 @@
 {
-  "name": "Dark Dracula",
+  "name": "Dracula Omp",
   "colors": {
     "accent": "#BD93F9",
     "border": "#BD93F9",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#FFB86C",
     "statusLineContext": "#BD93F9",
     "statusLineCost": "#FF79C6",
-    "statusLineSubagents": "#BD93F9"
+    "statusLineSubagents": "#BD93F9",
+    "toolDiffAddedBg": "#1f3527",
+    "toolDiffRemovedBg": "#312424"
   },
   "symbols": {
     "preset": "nerd"

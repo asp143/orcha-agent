@@ -1,5 +1,5 @@
 {
-  "name": "Dark Github",
+  "name": "Github Dark",
   "colors": {
     "accent": "#58a6ff",
     "border": "#30363d",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#ffa657",
     "statusLineContext": "#d2a8ff",
     "statusLineCost": "#d2a8ff",
-    "statusLineSubagents": "#f2cc60"
+    "statusLineSubagents": "#f2cc60",
+    "toolDiffAddedBg": "#182622",
+    "toolDiffRemovedBg": "#251c20"
   },
   "symbols": {
     "preset": "nerd"

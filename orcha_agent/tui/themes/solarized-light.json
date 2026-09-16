@@ -1,5 +1,5 @@
 {
-  "name": "Light Solarized",
+  "name": "Solarized Light",
   "colors": {
     "accent": "#2aa198",
     "border": "#268bd2",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#b58900",
     "statusLineContext": "#6c71c4",
     "statusLineCost": "#dc322f",
-    "statusLineSubagents": "#2aa198"
+    "statusLineSubagents": "#2aa198",
+    "toolDiffAddedBg": "#e4ecd5",
+    "toolDiffRemovedBg": "#ede2da"
   },
   "symbols": {
     "preset": "nerd"

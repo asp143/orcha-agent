@@ -8,7 +8,7 @@ from orcha_agent.tui.blocks.syntax import highlight, language_from_path, syntax_
 from orcha_agent.tui.blocks.terminal import terminal_rows
 from orcha_agent.tui.blocks.tool import render
 from orcha_agent.tui.frame import Block, BlockState
-from orcha_agent.tui.theme import ThemeWatcher, load_themes, theme_from_background
+from orcha_agent.tui.theme import ThemeWatcher, apply_colorblind, load_themes, theme_from_background
 
 
 def test_language_selectors_and_unknown_files():
@@ -84,6 +84,7 @@ def test_incremental_markdown_matches_rich_and_reuses_stable_blocks():
     from rich.markdown import Markdown
     from orcha_agent.tui.blocks.markdown import StreamingMarkdown, _LAYOUTS
 
+    _LAYOUTS.clear()
     markup = "# Heading\n\n> quote\n> - nested\n\n- first\n  - nested\n- second\n\n|a|b|\n|-|-|\n|1|2|\n\n---\n\n```python\nreturn 1\n```\n\ntail"
 
     def capture(cls, text):
@@ -116,10 +117,17 @@ def test_image_protocols_validate_data_and_fallback():
     assert image_protocol(malformed, {"TERM": "xterm-kitty"}) == ""
 
 
-def test_image_and_syntax_palette_goldens(tmp_path: Path, update_goldens: bool):
+def test_image_and_syntax_palette_goldens(tmp_path: Path, update_goldens: bool, monkeypatch):
+    for variable in ("NO_COLOR", "TERM", "COLORTERM"):
+        monkeypatch.delenv(variable, raising=False)
     from orcha_agent.tui.blocks.image import render as render_image
     from orcha_agent.tui.gallery_fixtures.blocks import GALLERY_FIXTURES
 
+    # Rich caches parsed Style instances, including the ANSI depth of their first use.
+    from rich.style import Style
+
+    Style.parse.cache_clear()
+    Style._add.cache_clear()
     stream = StringIO()
     console = Console(file=stream, width=60, force_terminal=True, color_system="truecolor")
     for name, theme in load_themes(home=tmp_path).items():
@@ -147,7 +155,7 @@ def test_image_and_syntax_palette_goldens(tmp_path: Path, update_goldens: bool):
             False,
         )
     )
-    colorblind = load_themes(home=tmp_path, symbols="colorblind")["dark"]
+    colorblind = apply_colorblind(load_themes(home=tmp_path, symbols="colorblind")["dark"])
     console.print(highlight("return True", "python", colorblind))
     console.print(
         render_todo(
@@ -172,8 +180,8 @@ def test_requested_theme_families_and_colorblind_preset(tmp_path: Path):
         "catppuccin-frappe",
         "catppuccin-macchiato",
         "catppuccin-mocha",
-        "dark-tokyo-night",
-        "light-tokyo-night",
+        "tokyo-night",
+        "tokyo-night-day",
         "tokyo-night-storm",
         "rose-pine",
         "rose-pine-moon",
@@ -181,6 +189,7 @@ def test_requested_theme_families_and_colorblind_preset(tmp_path: Path):
         "kanagawa",
         "everforest",
     } <= themes.keys()
+    themes["dark"] = apply_colorblind(themes["dark"])
     assert themes["dark"].color("success") == "#56b4e9"
     assert themes["dark"].color("error") == "#e69f00"
     assert themes["dark"].symbol("status.success") != themes["dark"].symbol("status.error")

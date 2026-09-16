@@ -1,5 +1,5 @@
 {
-  "name": "Dark Rose Pine",
+  "name": "Rose Pine Legacy",
   "colors": {
     "accent": "#c4a7e7",
     "border": "#31748f",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#f6c177",
     "statusLineContext": "#908caa",
     "statusLineCost": "#ebbcba",
-    "statusLineSubagents": "#c4a7e7"
+    "statusLineSubagents": "#c4a7e7",
+    "toolDiffAddedBg": "#2d323f",
+    "toolDiffRemovedBg": "#352838"
   },
   "symbols": {
     "preset": "nerd"

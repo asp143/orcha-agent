@@ -1,5 +1,5 @@
 {
-  "name": "Dark Nord",
+  "name": "Nord Omp",
   "colors": {
     "accent": "#88c0d0",
     "border": "#5e81ac",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#ebcb8b",
     "statusLineContext": "#81a1c1",
     "statusLineCost": "#d08770",
-    "statusLineSubagents": "#88c0d0"
+    "statusLineSubagents": "#88c0d0",
+    "toolDiffAddedBg": "#3a4248",
+    "toolDiffRemovedBg": "#3c3944"
   },
   "symbols": {
     "preset": "nerd"

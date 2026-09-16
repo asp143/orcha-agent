@@ -1,5 +1,5 @@
 {
-  "name": "Dark Gruvbox",
+  "name": "Gruvbox Dark",
   "colors": {
     "accent": "#fe8019",
     "border": "#458588",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#d79921",
     "statusLineContext": "#83a598",
     "statusLineCost": "#d3869b",
-    "statusLineSubagents": "#fe8019"
+    "statusLineSubagents": "#fe8019",
+    "toolDiffAddedBg": "#2c3022",
+    "toolDiffRemovedBg": "#332423"
   },
   "symbols": {
     "preset": "nerd"

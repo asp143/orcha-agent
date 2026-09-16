@@ -1,5 +1,5 @@
 {
-  "name": "Light Catppuccin",
+  "name": "Catppuccin Latte Legacy",
   "colors": {
     "accent": "#8839ef",
     "border": "#7287fd",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#df8e1d",
     "statusLineContext": "#7287fd",
     "statusLineCost": "#e64553",
-    "statusLineSubagents": "#8839ef"
+    "statusLineSubagents": "#8839ef",
+    "toolDiffAddedBg": "#d5e2db",
+    "toolDiffRemovedBg": "#e4d3dd"
   },
   "symbols": {
     "preset": "nerd"

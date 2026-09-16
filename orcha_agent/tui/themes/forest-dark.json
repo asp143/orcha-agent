@@ -1,5 +1,5 @@
 {
-  "name": "Dark Forest",
+  "name": "Forest Dark",
   "colors": {
     "accent": "#8FBC8F",
     "border": "#01796F",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#D4A574",
     "statusLineContext": "#355E3B",
     "statusLineCost": "#A0522D",
-    "statusLineSubagents": "#8FBC8F"
+    "statusLineSubagents": "#8FBC8F",
+    "toolDiffAddedBg": "#1e3023",
+    "toolDiffRemovedBg": "#292c23"
   },
   "symbols": {
     "preset": "nerd"

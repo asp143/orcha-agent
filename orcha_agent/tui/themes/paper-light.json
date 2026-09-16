@@ -1,5 +1,5 @@
 {
-  "name": "Light Paper",
+  "name": "Paper Light",
   "colors": {
     "accent": "#d19a66",
     "border": "#4271ae",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#eab700",
     "statusLineContext": "#4d4d4c",
     "statusLineCost": 205,
-    "statusLineSubagents": "#d19a66"
+    "statusLineSubagents": "#d19a66",
+    "toolDiffAddedBg": "#dce6ca",
+    "toolDiffRemovedBg": "#e5dcce"
   },
   "symbols": {
     "preset": "nerd"

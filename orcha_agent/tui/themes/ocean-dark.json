@@ -1,5 +1,5 @@
 {
-  "name": "Dark Ocean",
+  "name": "Ocean Dark",
   "colors": {
     "accent": "#FF8B6D",
     "border": "#5BC0BE",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#FFD166",
     "statusLineContext": "#778DA9",
     "statusLineCost": 204,
-    "statusLineSubagents": "#FF8B6D"
+    "statusLineSubagents": "#FF8B6D",
+    "toolDiffAddedBg": "#1a2a2d",
+    "toolDiffRemovedBg": "#221d1f"
   },
   "symbols": {
     "preset": "nerd"

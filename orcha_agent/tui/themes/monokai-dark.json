@@ -1,5 +1,5 @@
 {
-  "name": "Dark Monokai",
+  "name": "Monokai Dark",
   "colors": {
     "accent": "#fd971f",
     "border": "#66d9ef",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#fd971f",
     "statusLineContext": "#ae81ff",
     "statusLineCost": "#f92672",
-    "statusLineSubagents": "#fd971f"
+    "statusLineSubagents": "#fd971f",
+    "toolDiffAddedBg": "#313821",
+    "toolDiffRemovedBg": "#392528"
   },
   "symbols": {
     "preset": "nerd"

@@ -15,13 +15,15 @@ synchronized_output = false
 resize = "rebuild"
 composer = "rail"
 symbols = "colorblind"
+colorblind = true
 [tui.statusline]
 preset = "powerline"
 """)
     cfg = load_config([], cwd=tmp_path, env={"HOME": str(tmp_path)}, user_config_path=config)
     assert cfg.tui.vim
     assert not cfg.tui.hyperlinks
-    assert not cfg.tui.mouse
+    assert cfg.tui.mouse == "off"
+    assert cfg.tui.colorblind
     assert not cfg.tui.synchronized_output
     assert cfg.tui.resize == "rebuild"
     assert cfg.composer == "rail"

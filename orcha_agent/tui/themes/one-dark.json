@@ -1,5 +1,5 @@
 {
-  "name": "Dark One",
+  "name": "One Dark",
   "colors": {
     "accent": "#e5c07b",
     "border": "#61afef",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#d19a66",
     "statusLineContext": "#528bff",
     "statusLineCost": "#e06c75",
-    "statusLineSubagents": "#e5c07b"
+    "statusLineSubagents": "#e5c07b",
+    "toolDiffAddedBg": "#2f3838",
+    "toolDiffRemovedBg": "#362f38"
   },
   "symbols": {
     "preset": "nerd"

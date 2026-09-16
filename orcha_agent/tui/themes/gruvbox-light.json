@@ -1,5 +1,5 @@
 {
-  "name": "Light Gruvbox",
+  "name": "Gruvbox Light",
   "colors": {
     "accent": "#689d6a",
     "border": "#458588",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#af3a03",
     "statusLineContext": "#458588",
     "statusLineCost": "#b16286",
-    "statusLineSubagents": "#689d6a"
+    "statusLineSubagents": "#689d6a",
+    "toolDiffAddedBg": "#e3d4a3",
+    "toolDiffRemovedBg": "#e8c9a3"
   },
   "symbols": {
     "preset": "nerd"

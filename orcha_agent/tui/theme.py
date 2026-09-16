@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,8 @@ COLOR_TOKENS = (
     "toolDiffAdded",
     "toolDiffRemoved",
     "toolDiffContext",
+    "toolDiffAddedBg",
+    "toolDiffRemovedBg",
     "syntaxComment",
     "syntaxKeyword",
     "syntaxFunction",
@@ -93,27 +95,48 @@ _BUILTIN_NAMES = (
     "tokyo-night-storm",
     "kanagawa",
     "everforest",
-    "dark-catppuccin",
-    "light-catppuccin",
-    "dark-dracula",
-    "dark-nord",
-    "dark-gruvbox",
-    "light-gruvbox",
-    "dark-tokyo-night",
-    "light-tokyo-night",
-    "dark-solarized",
-    "light-solarized",
-    "dark-one",
-    "light-one",
-    "dark-github",
-    "light-github",
-    "dark-rose-pine",
-    "dark-forest",
-    "light-forest",
-    "dark-monokai",
-    "dark-ocean",
-    "light-paper",
+    "catppuccin-latte-legacy",
+    "dracula-omp",
+    "nord-omp",
+    "gruvbox-dark",
+    "gruvbox-light",
+    "tokyo-night",
+    "tokyo-night-day",
+    "solarized-dark",
+    "solarized-light",
+    "one-dark",
+    "one-light",
+    "github-dark",
+    "github-light",
+    "rose-pine-legacy",
+    "forest-dark",
+    "forest-light",
+    "monokai-dark",
+    "ocean-dark",
+    "paper-light",
 )
+_THEME_ALIASES = {
+    "dark-catppuccin": "catppuccin-mocha",
+    "light-catppuccin": "catppuccin-latte-legacy",
+    "dark-dracula": "dracula-omp",
+    "dark-nord": "nord-omp",
+    "dark-gruvbox": "gruvbox-dark",
+    "light-gruvbox": "gruvbox-light",
+    "dark-tokyo-night": "tokyo-night",
+    "light-tokyo-night": "tokyo-night-day",
+    "dark-solarized": "solarized-dark",
+    "light-solarized": "solarized-light",
+    "dark-one": "one-dark",
+    "light-one": "one-light",
+    "dark-github": "github-dark",
+    "light-github": "github-light",
+    "dark-rose-pine": "rose-pine-legacy",
+    "dark-forest": "forest-dark",
+    "light-forest": "forest-light",
+    "dark-monokai": "monokai-dark",
+    "dark-ocean": "ocean-dark",
+    "light-paper": "paper-light",
+}
 Warn = Callable[[str], None]
 
 
@@ -321,15 +344,6 @@ def load_theme_file(
     preset = symbols if symbols is not None else raw_symbols.get("preset", "nerd")
     if not isinstance(preset, str):
         raise ValueError(f"theme {identifier} symbol preset must be a string")
-    if preset == "colorblind":
-        # Blue/orange encode polarity, while distinct symbols convey state without color.
-        colors.update(
-            success="#56b4e9",
-            error="#e69f00",
-            toolDiffAdded="#56b4e9",
-            toolDiffRemoved="#e69f00",
-            warning="#cc79a7",
-        )
     overrides = raw_symbols.get("overrides", {})
     if not isinstance(overrides, Mapping):
         raise ValueError(f"theme {identifier} symbol overrides must be an object")
@@ -343,6 +357,33 @@ def load_theme_file(
             encoding=encoding,
             warn=warn,
         ),
+    )
+
+
+def apply_colorblind(theme: Theme, enabled: bool = True) -> Theme:
+    """Apply an explicit palette option independently of the symbol preset."""
+    if not enabled:
+        return theme
+    background = _prompt_color(theme.color("toolSuccessBg")) or "#181820"
+
+    def tint(color: str) -> str:
+        return "#" + "".join(
+            f"{round(int(background[i : i + 2], 16) * 0.9 + int(color[i : i + 2], 16) * 0.1):02x}"
+            for i in (1, 3, 5)
+        )
+
+    return replace(
+        theme,
+        colors={
+            **theme.colors,
+            "success": "#56b4e9",
+            "error": "#e69f00",
+            "toolDiffAdded": "#56b4e9",
+            "toolDiffRemoved": "#e69f00",
+            "toolDiffAddedBg": tint("#56b4e9"),
+            "toolDiffRemovedBg": tint("#e69f00"),
+            "warning": "#cc79a7",
+        },
     )
 
 
@@ -447,11 +488,14 @@ def select_theme(
 
     selected = _auto_theme(os.environ if environ is None else environ) if name == "auto" else name
     if selected not in themes:
+        selected = _THEME_ALIASES.get(selected, selected)
+    if selected not in themes:
         raise KeyError(selected)
     return themes[selected]
 
 
 __all__ = [
+    "apply_colorblind",
     "COLOR_TOKENS",
     "Theme",
     "load_theme_file",

@@ -1,5 +1,5 @@
 {
-  "name": "Light Tokyo Night",
+  "name": "Tokyo Night Day",
   "colors": {
     "accent": "#118c74",
     "border": "#b4b5b9",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#506d9c",
     "statusLineContext": "#92a6d5",
     "statusLineCost": "#8c6c3e",
-    "statusLineSubagents": "#118c74"
+    "statusLineSubagents": "#118c74",
+    "toolDiffAddedBg": "#aec5c5",
+    "toolDiffRemovedBg": "#bdbeca"
   },
   "symbols": {
     "preset": "nerd"

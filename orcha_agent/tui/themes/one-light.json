@@ -1,5 +1,5 @@
 {
-  "name": "Light One",
+  "name": "One Light",
   "colors": {
     "accent": "#0184BC",
     "border": "#4078F2",
@@ -57,7 +57,9 @@
     "statusLineGitDirty": "#C18401",
     "statusLineContext": "#4078F2",
     "statusLineCost": "#A626A4",
-    "statusLineSubagents": "#0184BC"
+    "statusLineSubagents": "#0184BC",
+    "toolDiffAddedBg": "#e0f1e0",
+    "toolDiffRemovedBg": "#efeadf"
   },
   "symbols": {
     "preset": "nerd"
