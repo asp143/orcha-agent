@@ -48,6 +48,8 @@ class StreamInterrupt(Exception):
 class StreamAborted(Event):
     """Mark the visible partial attempt before a model retry."""
 
+    source_id: str = "main"
+
 
 _stream_host: ContextVar[Any] = ContextVar("rules_stream_host", default=None)
 _model_monitor: ContextVar[ModelStreamMonitor | None] = ContextVar(
@@ -130,7 +132,7 @@ async def intercepted_stream(host: Any, value: Any, **kwargs: Any) -> AsyncItera
                     yield item
             except StreamInterrupt as exc:
                 retry = exc.retry
-                await host.bus.emit(StreamAborted())
+                await host.bus.emit(StreamAborted(source_id=getattr(host, "source_id", "main")))
                 for chunk in exc.usage:
                     if id(chunk) not in delivered_usage:
                         await host.bus.emit(

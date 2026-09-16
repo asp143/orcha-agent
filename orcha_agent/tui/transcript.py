@@ -298,11 +298,11 @@ class Transcript:
     async def handle(self, event: object) -> None:
         if isinstance(event, StreamAborted):
             for key, block in list(self._source_blocks.items()):
-                if key[0] == "main" and block.state is BlockState.ACTIVE:
+                if key[0] == event.source_id and block.state is BlockState.ACTIVE:
                     block.update(aborted=True)
                     self._settle(block)
                     self._source_blocks.pop(key)
-            self._source_tails.pop("main", None)
+            self._source_tails.pop(event.source_id, None)
             if self.scheduler is not None:
                 self.scheduler.request_invalidate()
                 self.scheduler.request_commit()
