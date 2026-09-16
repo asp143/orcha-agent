@@ -245,9 +245,9 @@ All cases retain 1,000 active entries. `Ledger.path` below measures repeated rea
 | `Ledger.fork` | 100,000 | 7.877 | 9.601 | milliseconds |
 | `build_context` | 100,000 | 0.383 | 0.396 | milliseconds |
 
-Unbranched warm path median improves from sprint 1’s 12.157 ms to 2.277 ms (original reference: 5.678 ms); context reconstruction improves from 4.258 ms to 0.378 ms (original: 2.958 ms). At 10,000 abandoned entries, warm path/fork p95 falls from 121.014/125.944 ms to 2.849/9.611 ms.
+First-load cost is at parity with pre-sprint: roughly 11 ms per 1,000 entries in the reviewer’s comparable measurement, including validation now moved into decode. Only repeated/warm reads improved (roughly 3× versus pre-sprint); the historical 5.678 ms path-only number is not a like-for-like first-load comparison across that validation boundary. The round 1 warm path median is 2.277 ms and context-only reconstruction is 0.378 ms. At 10,000 abandoned entries, warm path/fork p95 falls from sprint 1’s 121.014/125.944 ms to 2.849/9.611 ms. Fresh-store measurements are recorded below; cache-cleared measurements above must not be presented as evidence of a pre-sprint first-load speedup.
 
-The cold unbranched median is still 8.126 ms, above the requested 5.7 ms target. Cold p95 remains about 117–118 ms with abandoned branches. EXPLAIN QUERY PLAN confirms indexed `(session_id, id)` lookups for the recursive seed, parent and payload join; no abandoned-payload scan occurs. Local profiling attributes the large cold outliers to generation-2 garbage collection from repeated decoded-object allocation. The bounded cache removes that work from repeated reads; it does not solve first-load allocation cost or cache-thrashing workloads. No GC disabling or timing exclusions were used.
+The cache-cleared unbranched median is 8.126 ms; this reuses a store/connection and is distinct from a first load with a fresh SessionStore. Cold p95 remains about 117–118 ms with abandoned branches. EXPLAIN QUERY PLAN confirms indexed `(session_id, id)` lookups for the recursive seed, parent and payload join; no abandoned-payload scan occurs. Local profiling attributes the large cold outliers to generation-2 garbage collection from repeated decoded-object allocation. The bounded cache removes that work from repeated reads; it does not solve first-load allocation cost or cache-thrashing workloads. No GC disabling or timing exclusions were used.
 
 ### Turn capture after review
 
@@ -281,3 +281,20 @@ The ordinary append path skips replacement/order scans after validating an uncha
 `uv sync --extra turso`, Ruff check, Ruff format check, Pyright, the full default benchmark command, and the tmux harness passed. Final full pytest: **1,178 passed in 16.95 s, no skips**. Tmux recorded zero repaint growth for both turns and fanout, one occurrence per marker, and one narrow/wide resize frame. Golden files are unchanged.
 
 Capture, ledger, renderer and status work/review ran concurrently. Integration and commits were serialized; independent quality gates ran concurrently, followed by the isolated full benchmark run. Existing mutation-isolation tests were intentionally changed to the requested immutable snapshot contract, with a regression at the actual consumer mutation boundary. All changes are local conventional commits on `perf/smoothness-sprint`; no push or PR was performed.
+
+## Review round 2: fresh-store first load — 2026-09-17
+
+`first_load_wall` opens a fresh `SessionStore` for every iteration, then times `Ledger.path`, including message decoding and validation. Store initialization and fixture construction are excluded. Each sample starts with a new SQLite connection and empty decoded-message cache; OS caches are not flushed. The source fixture remains open while each fresh reader is measured. Garbage collection remains enabled. These measurements support the first-load parity interpretation above, not a claim that cold loads beat pre-sprint. The approximately 11 ms comparison comes from the independent review; the exact medians measured in this run are shown here.
+
+| Operation | Active entries | Abandoned entries | Median | P95 |
+| --- | ---: | ---: | ---: | ---: |
+| `Ledger.path` first load (fresh store) | 1,000 | 0 | 8.802 ms | 10.160 ms |
+| `Ledger.path` repeated/warm | 1,000 | 0 | 2.330 ms | 2.423 ms |
+| `Ledger.path` first load (fresh store) | 1,000 | 10,000 | 9.633 ms | 121.931 ms |
+| `Ledger.path` repeated/warm | 1,000 | 10,000 | 2.430 ms | 2.741 ms |
+| `Ledger.path` first load (fresh store) | 1,000 | 100,000 | 9.343 ms | 120.806 ms |
+| `Ledger.path` repeated/warm | 1,000 | 100,000 | 2.555 ms | 2.625 ms |
+
+Measured base commit: `9db0e1d4c18736d766e660aae731bb94de77ecb2`; dirty: `true` (only the fresh-store benchmark addition in `benchmarks/persistence.py`). Scoped working-tree SHA-256: `4f36f167c5e08ec70746b8add53a350a6ff29498f987e34d2aff7501735bdd78`. Ledger generated UTC: `2026-09-16T16:20:25+00:00`. Runtime code is unchanged from round 1. CPython 3.12.13; `Linux-7.2.3-arch1-3-x86_64-with-glibc2.44`.
+
+Validation: `uv sync --extra turso`, Ruff check/format, Pyright, **1,178 tests passed in 16.89 s**, the full default `uv run python -m benchmarks` (20 samples per case), and the tmux harness all passed. Independent gates ran concurrently; benchmarks ran afterward in isolation. No push.

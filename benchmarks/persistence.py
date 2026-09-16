@@ -126,6 +126,17 @@ def run_ledger(config: RunConfig) -> dict[str, Any]:
                     abandoned_entries=abandoned_entries,
                 )
                 fixture_sizes = database_file_bytes(database)
+                first_load_samples: list[float] = []
+                for _ in range(config.repetitions):
+                    # A new connection and empty decoded cache for every sample.
+                    # Store setup is excluded; path decoding/validation is timed.
+                    with SessionStore(database) as fresh_store:
+                        started = perf_counter_ns()
+                        resolved = Ledger(fresh_store).path(source.thread_id)
+                        first_load_samples.append((perf_counter_ns() - started) / 1_000_000_000)
+                        if len(resolved) != active_entries:
+                            raise AssertionError("first ledger load lost active fixture messages")
+
                 active_path = Ledger(store).path(source.thread_id)
                 ledger = Ledger(store)
 
@@ -171,9 +182,12 @@ def run_ledger(config: RunConfig) -> dict[str, Any]:
                             "active_entries": active_entries,
                             "abandoned_entries": abandoned_entries,
                             "fixture_population_timed": False,
+                            "first_load_store_setup_timed": False,
+                            "first_load_store": "fresh SessionStore per iteration",
                             "path_cache": "warm; cold_path_wall clears decoded message cache",
                         },
                         "measurements": {
+                            "first_load_wall": measurement(first_load_samples, "seconds"),
                             "cold_path_wall": measurement(cold_path_samples, "seconds"),
                             "path_wall": measurement(path_samples, "seconds"),
                             "fork_wall": measurement(fork_samples, "seconds"),
