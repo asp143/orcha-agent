@@ -20,6 +20,7 @@ def test_builtin_registers_native_block_renderers_only() -> None:
     render_default.register(api)
 
     assert {entry.kind for entry in registry.block_renderers} == {
+        "image",
         "user",
         "assistant",
         "thinking",

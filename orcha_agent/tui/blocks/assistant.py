@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Group
-from rich.markdown import Markdown
 from rich.padding import Padding
 
 from orcha_agent.tui.frame import Block
+
+from .syntax import syntax_style
+from .markdown import StreamingMarkdown as Markdown
 
 from . import theme_value, with_leading_spacer
 
@@ -25,11 +27,9 @@ def render(
     markdown = Markdown(
         str(block.data.get("text", "")),
         style=(
-            f"dim {theme_value(theme, 'text')}"
-            if subagent
-            else str(theme_value(theme, "text"))
+            f"dim {theme_value(theme, 'text')}" if subagent else str(theme_value(theme, "text"))
         ),
-        code_theme="monokai",
+        code_theme=syntax_style(theme),
     )
     content = Padding(markdown, (0, 2), expand=True) if subagent else markdown
     return with_leading_spacer(content)

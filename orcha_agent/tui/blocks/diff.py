@@ -12,6 +12,8 @@ from rich.text import Text
 from orcha_agent.tui.frame import Block, BlockState
 
 from . import theme_value
+from .syntax import highlight, language_from_path
+from .limits import DIFF_HUNKS, DIFF_LINES
 
 _HUNK = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _TOKENS = re.compile(r"\s+|\w+|[^\w\s]", re.UNICODE)
@@ -35,19 +37,31 @@ def _changes(before: str, after: str) -> tuple[set[int], set[int]]:
     return left, right
 
 
-def _append(target: Text, value: str, color: str, changed: set[int]) -> None:
-    for index, token in enumerate(_TOKENS.findall(_visualize_indent(value))):
-        target.append(token, style=Style(color=color, reverse=index in changed))
+def _append(
+    target: Text, value: str, color: str, changed: set[int], language: str, theme: Any
+) -> None:
+    colored = highlight(value, language, theme)
+    colored.plain = _visualize_indent(value)
+    offset = 0
+    for index, token in enumerate(_TOKENS.findall(colored.plain)):
+        if index in changed:
+            colored.stylize(Style(reverse=True), offset, offset + len(token))
+        offset += len(token)
+    target.append(colored)
 
 
 def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: bool) -> Text:
     del width, budget_rows
     lines = str(block.data.get("text", block.data.get("diff", ""))).splitlines()
+    path = str(block.data.get("path", ""))
+    if not path:
+        path = next((line[4:] for line in lines if line.startswith("+++ ")), "")
+    language = language_from_path(path)
     if block.state is BlockState.ACTIVE:
         while lines and lines[-1].startswith("-") and not lines[-1].startswith("---"):
             lines.pop()
     hunks = sum(1 for line in lines if line.startswith("@@ "))
-    maximum = len(lines) if expanded else 40
+    maximum = len(lines) if expanded else DIFF_LINES
     output = Text()
     old_line = new_line = 0
     digits = 3
@@ -65,7 +79,7 @@ def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: boo
         hunk = _HUNK.search(line)
         if hunk:
             visible_hunks += 1
-            if not expanded and visible_hunks > 8:
+            if not expanded and visible_hunks > DIFF_HUNKS:
                 continue
             old_line, new_line = int(hunk.group(1)), int(hunk.group(2))
             digits = max(3, len(str(old_line)), len(str(new_line)))
@@ -83,24 +97,28 @@ def render(block: Block, theme: Any, width: int, budget_rows: int, expanded: boo
         if line.startswith("-"):
             color = str(theme_value(theme, "toolDiffRemoved"))
             output.append(f"-{old_line:>{digits}}│", style=color)
-            _append(output, line[1:], color, paired.get(index, (set(), set()))[0])
+            _append(output, line[1:], color, paired.get(index, (set(), set()))[0], language, theme)
             old_line += 1
         elif line.startswith("+"):
             color = str(theme_value(theme, "toolDiffAdded"))
             output.append(f"+{new_line:>{digits}}│", style=color)
-            _append(output, line[1:], color, paired.get(index - 1, (set(), set()))[1])
+            _append(
+                output, line[1:], color, paired.get(index - 1, (set(), set()))[1], language, theme
+            )
             new_line += 1
         else:
             content = line[1:] if line.startswith(" ") else line
             color = str(theme_value(theme, "toolDiffContext"))
             output.append(f" {new_line:>{digits}}│", style=color)
-            output.append(_visualize_indent(content), style=f"dim {color}")
+            colored = highlight(content, language, theme)
+            colored.plain = _visualize_indent(content)
+            output.append(colored)
             old_line += 1
             new_line += 1
         rendered_lines += 1
     content_lines = [line for line in lines if not line.startswith(("@@ ", "---", "+++"))]
     hidden_lines = max(0, len(content_lines) - maximum)
-    hidden_hunks = max(0, hunks - 8)
+    hidden_hunks = max(0, hunks - DIFF_HUNKS)
     if not expanded and (hidden_lines or hidden_hunks):
         if output:
             output.append("\n")

@@ -15,11 +15,16 @@ from typing import Any
 from rich.cells import cell_len, set_cell_size, split_graphemes
 from rich.console import Group
 from rich.text import Text
+from rich.style import Style
 
 from orcha_agent.tui.frame import Block, BlockState
 
 from . import theme_spinner, theme_symbol, theme_value, with_leading_spacer
 from .diff import render as render_diff
+from .syntax import highlight, language_from_path
+from .terminal import terminal_rows
+from .image import has_image, render as render_image
+from .limits import BASH_LINES, GROUP_READ_LINES, LIST_LINES, READ_LINES, SEARCH_LINES
 
 SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 EXPAND_HINT = "⟦Ctrl+O: Expand⟧"
@@ -113,7 +118,9 @@ def _state(block: Block) -> str:
         return "warning"
     if code not in (None, 0):
         return "error"
-    if block.state is BlockState.ACTIVE and "result" not in block.data:
+    if block.state is BlockState.ACTIVE and (
+        "result" not in block.data or (str(block.data.get("name")) in _BASH and code is None)
+    ):
         return "running"
     return "done"
 
@@ -148,7 +155,7 @@ def _path(args: Mapping[str, Any], cwd: Any = None) -> str:
     for key in ("path", "file_path", "filename"):
         if not args.get(key):
             continue
-        value = _one_line(args[key])
+        value = re.sub(r":\d+(?:-\d+)?$", "", _one_line(args[key]))
         if not value or "://" in value:
             return value
         candidate = Path(value)
@@ -171,6 +178,9 @@ def _path(args: Mapping[str, Any], cwd: Any = None) -> str:
 
 
 def _selection(args: Mapping[str, Any], line_count: int | None = None) -> str:
+    selector = re.search(r":(\d+)(?:-(\d+))?$", str(args.get("path", args.get("file_path", ""))))
+    if selector:
+        return selector.group(0)
     offset = args.get("offset")
     if isinstance(offset, int):
         start = max(0, offset) + 1
@@ -313,6 +323,9 @@ def _frame(
     header_value = header.copy() if isinstance(header, Text) else Text(_one_line(header))
     if "\n" in header_value.plain or "\r" in header_value.plain:
         header_value = Text(_one_line(header_value.plain))
+    if len(rows) > max(0, budget_rows - 2):
+        hint = "[Ctrl+O: Expand]" if theme_symbol(theme, "preset", "") == "ascii" else EXPAND_HINT
+        header_value.append(f" {hint}", style=str(theme_value(theme, "dim")))
     max_header_width = max(0, width - 8)
     if header_value.cell_len > max_header_width:
         header_value = Text(_middle_ellipsis(header_value.plain, max_header_width))
@@ -377,7 +390,8 @@ def _diff(value: Any) -> str | None:
         supplied = item.get("diff")
         if isinstance(supplied, str):
             return supplied
-        before, after = item.get("before"), item.get("after")
+        before = item.get("before", item.get("old_string"))
+        after = item.get("after", item.get("new_string"))
         if isinstance(before, str) and isinstance(after, str):
             path = str(item.get("path") or item.get("file_path") or "file")
             return "\n".join(
@@ -413,7 +427,10 @@ def _read_source_rows(
     if isinstance(offset, int):
         start = max(0, offset) + 1
     else:
-        supplied = args.get("start_line", args.get("start", 1))
+        selector = re.search(r":(\d+)(?:-\d+)?$", str(args.get("path", args.get("file_path", ""))))
+        supplied = args.get(
+            "start_line", args.get("start", int(selector.group(1)) if selector else 1)
+        )
         start = supplied if isinstance(supplied, int) else 1
     generated = [(str(start + index), line) for index, line in enumerate(lines)]
     end = start + len(generated) - 1 if generated else None
@@ -421,15 +438,18 @@ def _read_source_rows(
 
 
 def _read_display_rows(
-    source_rows: list[tuple[str, str]], *, expanded: bool, theme: Any
+    source_rows: list[tuple[str, str]], *, expanded: bool, theme: Any, path: str = ""
 ) -> list[Text]:
-    visible = source_rows if expanded else source_rows[:12]
+    visible = source_rows if expanded else source_rows[:READ_LINES]
     gutter_width = max(2, max((len(marker) for marker, _ in source_rows), default=0))
     rows: list[Text] = []
     gutter_style = str(theme_value(theme, "dim", theme_value(theme, "muted")))
-    for marker, source in visible:
+    highlighted = highlight(
+        "\n".join(source[:4000] for _, source in visible), language_from_path(path), theme
+    ).split("\n")
+    for index, (marker, source) in enumerate(visible):
         row = Text(f"{marker:>{gutter_width}}│", style=gutter_style)
-        row.append(source[:4000])
+        row.append(highlighted[index] if index < len(highlighted) else source[:4000])
         rows.append(row)
     hidden = len(source_rows) - len(visible)
     if hidden:
@@ -455,8 +475,16 @@ def _read_rows(
             branch = "└─" if index == len(calls) - 1 else "├─"
             selection = f":{first}-{last}" if first is not None and last is not None else ""
             rows.append(f"{branch} {_path(call_args, cwd)}{selection}")
-            preview = source_rows if expanded else source_rows[:3]
-            rows.extend(f"   {source[:4000]}" for _marker, source in preview)
+            preview = source_rows if expanded else source_rows[:GROUP_READ_LINES]
+            colored = highlight(
+                "\n".join(source[:4000] for _marker, source in preview),
+                language_from_path(_path(call_args, cwd)),
+                theme,
+            ).split("\n")
+            for line in colored if preview else []:
+                row = Text("   ")
+                row.append(line)
+                rows.append(row)
         return f"• Read ({len(calls)})", rows
     path = _path(args, cwd)
     if _state(block) == "running":
@@ -464,7 +492,7 @@ def _read_rows(
     source_rows, first, last = _read_source_rows(block.data.get("result"), args)
     selection = f":{first}-{last}" if first is not None and last is not None else ""
     return f"• Read {path}{selection}", _read_display_rows(
-        source_rows, expanded=expanded, theme=theme
+        source_rows, expanded=expanded, theme=theme, path=path
     )
 
 
@@ -496,7 +524,11 @@ def _edit_rows(
         f"{_glyph(block, _state(block), theme)} Edit: {_path(args)}{line} ⟦+{added}/-{removed}⟧"
     )
     rendered = render_diff(
-        replace(block, kind="diff", data={"text": diff}), theme, width, 10_000, expanded
+        replace(block, kind="diff", data={"text": diff, "path": _path(args)}),
+        theme,
+        width,
+        10_000,
+        expanded,
     )
     rows = list(rendered.split("\n", allow_blank=True))
     if block.state is BlockState.ACTIVE:
@@ -514,7 +546,7 @@ def _edit_rows(
 
 
 def _bash_rows(
-    block: Block, args: Mapping[str, Any], expanded: bool
+    block: Block, args: Mapping[str, Any], expanded: bool, width: int = 80
 ) -> tuple[list[str | Text], dict[int, str]]:
     command_lines = str(args.get("command", args.get("cmd", ""))).splitlines() or [""]
     if len(command_lines) > 6 and not expanded:
@@ -522,17 +554,24 @@ def _bash_rows(
             f"… {len(command_lines) - 6} earlier lines {EXPAND_HINT}",
             *command_lines[-6:],
         ]
-    output = _result_text(block.data.get("result")).splitlines()
-    if len(output) > 10 and not expanded:
+    output = terminal_rows(
+        block.id,
+        _result_text(block.data.get("result")),
+        width - 4,
+        streaming=block.state is BlockState.ACTIVE,
+    )
+    if len(output) > BASH_LINES and not expanded:
         total = len(output)
         output = [
-            f"… ({total - 10} earlier lines, showing 10 of {total}) (ctrl+o to expand)",
-            *output[-10:],
+            Text(
+                f"… ({total - BASH_LINES} earlier lines, showing {BASH_LINES} of {total}) (ctrl+o to expand)"
+            ),
+            *output[-BASH_LINES:],
         ]
     rows: list[str | Text] = [*(f"$ {line}" for line in command_lines)]
     section_index = len(rows)
     rows.append("")
-    rows.extend(Text.from_ansi(line) for line in output)
+    rows.extend(output)
     result = block.data.get("result")
     wall = _value(
         result,
@@ -541,6 +580,7 @@ def _bash_rows(
         if _state(block) == "running"
         else block.data.get("duration", 0.0),
     )
+    wall = wall if isinstance(wall, (int, float)) and math.isfinite(wall) else 0.0
     footer = f"⟦Wall: {float(wall):.1f}s | Exit: {_exit_code(result) if _exit_code(result) is not None else '—'}"
     if args.get("timeout") is not None:
         footer += f" | Timeout: {args['timeout']}s"
@@ -709,7 +749,7 @@ def _inline_rows(
             theme,
         )
         return _tree_output(
-            header, items, total=total, limit=24 if expanded else 6, item_type="match"
+            header, items, total=total, limit=24 if expanded else SEARCH_LINES, item_type="match"
         )
     if name == "ls":
         items = [
@@ -726,7 +766,7 @@ def _inline_rows(
             _timed_inline_header(f"📂 Ls: {path}  {total} items", timing, theme),
             items,
             total=total,
-            limit=24 if expanded else 8,
+            limit=24 if expanded else LIST_LINES,
             item_type="item",
         )
 
@@ -768,14 +808,22 @@ def _todo_rows(args: Mapping[str, Any], result: Any, theme: Any) -> tuple[str, l
             "status.success" if done else "status.pending",
             "☑" if done else "☐",
         )
-        rows.append(
-            Text(
-                f"{glyph} {label}",
-                style=f"{theme_value(theme, 'success')} strike"
-                if done
-                else str(theme_value(theme, "accent")),
-            )
+        row = Text(
+            f"{glyph} {label}", style=str(theme_value(theme, "success" if done else "accent"))
         )
+        if done:
+            supplied = value.get("completion_progress", 1.0)
+            progress = (
+                min(1.0, max(0.0, float(supplied))) if isinstance(supplied, (int, float)) else 1.0
+            )
+            # Leave the status symbol legible; sweep the strike through the label.
+            if progress >= 1:
+                row.stylize("strike")
+            else:
+                row.stylize(
+                    "strike", len(str(glyph)) + 1, len(str(glyph)) + 1 + int(len(label) * progress)
+                )
+        rows.append(row)
     header_glyph = theme_symbol(theme, "status.success", "☑")
     separator = theme_symbol(theme, "sep.thin", "·")
     return f"{header_glyph} Todo {separator} {len(items)} tasks", rows
@@ -825,7 +873,23 @@ def _render_impl(
             style=str(theme_value(theme, _border_token(name, state))),
         )
     if name in _INLINE:
-        return _inline_rows(block, name, args, expanded, theme)
+        inline = _inline_rows(block, name, args, expanded, theme)
+        if bool(theme_value(theme, "hyperlinks", False)) and name in {"grep", "glob", "ls"}:
+            for match in re.finditer(r"(?m)^  [├└]─ (.+)$", inline.plain):
+                content = match.group(1)
+                location = re.match(r"^(.*?):(\d+):", content) if name == "grep" else None
+                path = location.group(1) if location else content
+                if not path or path.startswith("…"):
+                    continue
+                target = Path(path).expanduser()
+                if not target.is_absolute():
+                    root = Path(str(block.data.get("cwd", Path.cwd())))
+                    if name == "ls":
+                        root = root / str(args.get("path", "."))
+                    target = root / target
+                uri = target.absolute().as_uri() + (f"#L{location.group(2)}" if location else "")
+                inline.stylize(Style(link=uri), match.start(1), match.start(1) + len(path))
+        return inline
     if state == "error" and name not in _BASH:
         header = _header_with_timing(
             f"✘ {label}{f' {detail}' if detail else ''}", block, state, theme
@@ -839,6 +903,8 @@ def _render_impl(
             border_token="error",
             state=state,
         )
+    if has_image(block):
+        return render_image(block, theme, width, budget_rows, expanded)
     sections: dict[int, str] | None = None
     edit = False
     if name in _READ:
@@ -850,13 +916,25 @@ def _render_impl(
         edit = True
     elif name in _BASH:
         header = f"{_glyph(block, state, theme)} Bash"
-        rows, sections = _bash_rows(block, args, expanded)
+        rows, sections = _bash_rows(block, args, expanded, width)
     elif name == "todo":
         header, rows = _todo_rows(args, block.data.get("result"), theme)
     else:
         header = f"{_glyph(block, state, theme)} {label}{f': {detail}' if detail else ''}"
         rows = _generic_rows(args, block.data.get("result"), expanded)
     timed_header = _header_with_timing(header, block, state, theme)
+    if bool(theme_value(theme, "hyperlinks", False)) and name in _READ | _WRITE | _EDIT:
+        raw_path = str(args.get("path", args.get("file_path", "")))
+        display_path = _path(args, block.data.get("cwd"))
+        if raw_path and display_path in timed_header.plain:
+            selector = re.search(r":(\d+)(?:-\d+)?$", raw_path)
+            clean_path = raw_path[: selector.start()] if selector else raw_path
+            target = Path(clean_path).expanduser()
+            if not target.is_absolute():
+                target = Path(str(block.data.get("cwd", Path.cwd()))) / target
+            uri = target.absolute().as_uri() + (f"#L{selector.group(1)}" if selector else "")
+            start = timed_header.plain.index(display_path)
+            timed_header.stylize(Style(link=uri), start, start + len(display_path))
     return _frame(
         timed_header,
         rows,

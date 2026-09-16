@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Group
-from rich.markdown import Markdown
 from rich.text import Text
 
 from orcha_agent.tui.frame import Block
+
+from .syntax import syntax_style
+from .markdown import StreamingMarkdown as Markdown
 
 from . import theme_spinner, theme_symbol, theme_value, with_leading_spacer
 
@@ -28,7 +30,7 @@ def render(
         content: Markdown | Text = Markdown(
             str(block.data.get("text", "")),
             style=f"italic {theme_value(theme, 'thinkingText')}",
-            code_theme="monokai",
+            code_theme=syntax_style(theme),
         )
     else:
         frame = int(block.data.get("spinner_frame", 0))

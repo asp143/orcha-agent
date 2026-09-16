@@ -1,0 +1,119 @@
+dark
+def greet(name): return "Hello"  # greeting
+
+light
+def greet(name): return "Hello"  # greeting
+
+ansi
+def greet(name): return "Hello"  # greeting
+
+dracula
+def greet(name): return "Hello"  # greeting
+
+nord
+def greet(name): return "Hello"  # greeting
+
+gruvbox
+def greet(name): return "Hello"  # greeting
+
+catppuccin-latte
+def greet(name): return "Hello"  # greeting
+
+catppuccin-frappe
+def greet(name): return "Hello"  # greeting
+
+catppuccin-macchiato
+def greet(name): return "Hello"  # greeting
+
+catppuccin-mocha
+def greet(name): return "Hello"  # greeting
+
+rose-pine
+def greet(name): return "Hello"  # greeting
+
+rose-pine-moon
+def greet(name): return "Hello"  # greeting
+
+rose-pine-dawn
+def greet(name): return "Hello"  # greeting
+
+tokyo-night-storm
+def greet(name): return "Hello"  # greeting
+
+kanagawa
+def greet(name): return "Hello"  # greeting
+
+everforest
+def greet(name): return "Hello"  # greeting
+
+dark-catppuccin
+def greet(name): return "Hello"  # greeting
+
+light-catppuccin
+def greet(name): return "Hello"  # greeting
+
+dark-dracula
+def greet(name): return "Hello"  # greeting
+
+dark-nord
+def greet(name): return "Hello"  # greeting
+
+dark-gruvbox
+def greet(name): return "Hello"  # greeting
+
+light-gruvbox
+def greet(name): return "Hello"  # greeting
+
+dark-tokyo-night
+def greet(name): return "Hello"  # greeting
+
+light-tokyo-night
+def greet(name): return "Hello"  # greeting
+
+dark-solarized
+def greet(name): return "Hello"  # greeting
+
+light-solarized
+def greet(name): return "Hello"  # greeting
+
+dark-one
+def greet(name): return "Hello"  # greeting
+
+light-one
+def greet(name): return "Hello"  # greeting
+
+dark-github
+def greet(name): return "Hello"  # greeting
+
+light-github
+def greet(name): return "Hello"  # greeting
+
+dark-rose-pine
+def greet(name): return "Hello"  # greeting
+
+dark-forest
+def greet(name): return "Hello"  # greeting
+
+light-forest
+def greet(name): return "Hello"  # greeting
+
+dark-monokai
+def greet(name): return "Hello"  # greeting
+
+dark-ocean
+def greet(name): return "Hello"  # greeting
+
+light-paper
+def greet(name): return "Hello"  # greeting
+
+[Image · PNG · 70 bytes]
+╭─── ☑ Todo · 2 tasks ─────────────────────────────────────╮
+│ ☑ <ESC>[9mrender <ESC>[0mfixtures                                        │
+│ ☐ inspect output                                         │
+╰──────────────────────────────────────────────────────────╯
+return True
+
+╭─── + Todo · 2 tasks ─────────────────────────────────────╮
+│ + <ESC>[9mrender <ESC>[0mfixtures                                        │
+│ o inspect output                                         │
+╰──────────────────────────────────────────────────────────╯

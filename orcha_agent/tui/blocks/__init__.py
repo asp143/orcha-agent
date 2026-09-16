@@ -211,6 +211,7 @@ from .advisory import render as render_advisory
 from .banner import render as render_banner
 from .diff import render as render_diff
 from .hud import render_todo
+from .image import render as render_image
 from .marker import render as render_marker
 from .review import render as render_review
 from .task import render_delivery, render_task
@@ -221,6 +222,7 @@ from .working import render as render_working
 from .user import render as render_user
 
 DEFAULT_RENDERERS: dict[str, BlockRenderer] = {
+    "image": render_image,
     "user": render_user,
     "assistant": render_assistant,
     "advisory": render_advisory,
