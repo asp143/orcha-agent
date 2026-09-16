@@ -64,6 +64,7 @@ _GIT_TIMEOUT_SECONDS = 1.0
 _CONTEXT_BAR_CELLS = 20
 _GIT_LOCK = threading.Lock()
 _SESSION_LOCK = threading.Lock()
+_SESSION_REFRESH_TASKS: set[asyncio.Task[None]] = set()
 _USAGE_TRACKERS: deque[tuple[dict[str, Any], deque[Any]]] = deque(maxlen=16)
 _GIT_VOLATILE = (
     "_git_at",
@@ -383,12 +384,21 @@ def session_segment(ctx: Any) -> Segment | None:
             and monotonic() >= state.get("_session_retry_at", 0)
         ):
             state["_session_refreshing"] = True
-            threading.Thread(
-                target=_refresh_session,
-                args=(ctx, state, session_id, int(state.get("_session_generation", 0))),
-                name="orcha-status-session",
-                daemon=True,
-            ).start()
+            args = (ctx, state, session_id, int(state.get("_session_generation", 0)))
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                threading.Thread(
+                    target=_refresh_session,
+                    args=args,
+                    name="orcha-status-session",
+                    daemon=True,
+                ).start()
+            else:
+                # Hold the task outside serializable plugin state until complete.
+                task = loop.create_task(asyncio.to_thread(_refresh_session, *args))
+                _SESSION_REFRESH_TASKS.add(task)
+                task.add_done_callback(_SESSION_REFRESH_TASKS.discard)
         title = state.get("_session_title")
     return Segment(str(title), "text") if title else None
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gc
 import subprocess
 import threading
@@ -485,7 +486,8 @@ def test_git_segment_stays_hidden_outside_repository(
     assert len(calls) == 1
 
 
-def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     registry = Registry()
     _register_provider(registry)
     cwd = tmp_path / "parent" / "project"
@@ -510,10 +512,11 @@ def test_all_builtin_segments_report_runtime_state(tmp_path: Path) -> None:
     assert mode_segment(ctx).text == "ask"
     assert path_segment(ctx).text == "project"
     assert git_segment(ctx).text == "main"
+    ready = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    ctx.ui.invalidate = lambda: loop.call_soon_threadsafe(ready.set)
     session_segment(ctx)
-    deadline = time.monotonic() + 2
-    while not state.get("_session_ready") and time.monotonic() < deadline:
-        time.sleep(0.001)
+    await asyncio.wait_for(ready.wait(), 2)
     assert session_segment(ctx).text == "Status line session"
     assert subagents_segment(ctx).text == "1"
     assert tokens_segment(ctx).text == "136k in 12k out"

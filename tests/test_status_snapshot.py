@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from types import SimpleNamespace
 
@@ -74,3 +75,42 @@ async def test_session_snapshot_invalidates_on_relevant_events() -> None:
         await bus.emit(event)
         assert "_session_title" not in state
         assert not state.get("_session_ready")
+
+
+@pytest.mark.asyncio
+async def test_session_snapshot_uses_executor_on_running_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orcha_agent.tui import statusline
+
+    ready = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    worker_threads: list[int] = []
+    dispatched: list[object] = []
+    original = asyncio.to_thread
+
+    async def traced(callback, *args):
+        dispatched.append(callback)
+        return await original(callback, *args)
+
+    def get(_session_id: str) -> SimpleNamespace:
+        worker_threads.append(threading.get_ident())
+        return SimpleNamespace(title="cached")
+
+    monkeypatch.setattr(statusline.asyncio, "to_thread", traced)
+    state: dict = {}
+    ctx = SimpleNamespace(
+        session_id="session",
+        session=SimpleNamespace(get=get),
+        plugin_states={"statusbar": state},
+        ui=SimpleNamespace(invalidate=lambda: loop.call_soon_threadsafe(ready.set)),
+    )
+    assert session_segment(ctx) is None
+    await asyncio.wait_for(ready.wait(), 2)
+    assert dispatched == [statusline._refresh_session]
+    assert worker_threads[0] != threading.get_ident()
+    for _ in range(120):
+        assert session_segment(ctx).text == "cached"
+    assert len(dispatched) == 1
+    # Runtime tasks must not leak into persisted plugin state.
+    assert not any(isinstance(value, asyncio.Task) for value in state.values())
