@@ -63,6 +63,7 @@ from .blocks import (
     BlockRendererDispatcher,
     DEFAULT_RENDERERS,
     DEFAULT_THEME,
+    theme_id,
     LEADING_SPACER_KINDS,
     render_delivery,
     render_task,
@@ -1578,7 +1579,7 @@ class ApplicationRuntime:
             width,
             rows,
             force_terminal,
-            id(self.theme),
+            theme_id(self.theme),
             self.ui.tools_expanded,
         )
         if key in block._rendered_rows:
