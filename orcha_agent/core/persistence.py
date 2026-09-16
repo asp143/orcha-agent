@@ -447,7 +447,6 @@ class TursoSessionStore(SessionStore):
                 )
 
 
-
 def open_session_store(
     config: (
         PersistenceSettings | ApplicationPersistenceConfig | Mapping[str, object] | str | Path
