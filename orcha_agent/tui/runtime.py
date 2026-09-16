@@ -315,6 +315,10 @@ class _PaintOutput:
                 self.pump.write("\x1b[?2026l")
             self._sync_open = False
         self._sync_depth -= 1
+        if self._sync_depth == 0 and self._redraw_skipped:
+            # run_in_terminal may have erased the UI before its restoring paint
+            # hit backpressure. Schedule recovery now, without a watchdog tick.
+            self.application.invalidate()
 
     def flush(self) -> None:
         data = "".join(self.output._buffer)
