@@ -33,24 +33,41 @@ def test_user_and_trusted_project_hooks_are_additive(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_commands_receive_json_and_exit_semantics(tmp_path: Path) -> None:
-    result = await run_hook(HookConfig("turn_start", command="cat"), {"text": "hello"}, tmp_path)
+    result = await run_hook(
+        HookConfig("turn_start", command="cat"),
+        {"text": "hello"},
+        tmp_path,
+        user_config_dir=tmp_path,
+    )
     assert result.code == 0 and "hello" in result.output
     result = await run_hook(
-        HookConfig("turn_start", command="echo denied >&2; exit 2"), {}, tmp_path
+        HookConfig("turn_start", command="echo denied >&2; exit 2"),
+        {},
+        tmp_path,
+        user_config_dir=tmp_path,
     )
     assert result.code == 2 and result.error.strip() == "denied"
     result = await run_hook(
-        HookConfig("turn_start", command="sleep 10", timeout=0.01), {}, tmp_path
+        HookConfig("turn_start", command="sleep 10", timeout=0.01),
+        {},
+        tmp_path,
+        user_config_dir=tmp_path,
     )
     assert result.code == 1 and "timed out" in result.error
 
 
 @pytest.mark.asyncio
 async def test_python_hook_supports_async_and_timeout(tmp_path: Path) -> None:
-    (tmp_path / "hookfn.py").write_text(
+    (tmp_path / "hooks").mkdir()
+    (tmp_path / "hooks" / "hookfn.py").write_text(
         'async def run(payload):\n return {"args": {"value": payload["value"] + 1}}\n'
     )
-    result = await run_hook(HookConfig("turn_start", python="hookfn:run"), {"value": 2}, tmp_path)
+    result = await run_hook(
+        HookConfig("turn_start", python="hookfn:run"),
+        {"value": 2},
+        tmp_path,
+        user_config_dir=tmp_path,
+    )
     assert result.code == 0 and "3" in result.output
 
 
@@ -72,6 +89,9 @@ def test_matchers() -> None:
         ("write", """echo '{"args":{"path":"new"}}' """, True, "new"),
         ("read", """echo '{"args":{"path":"new"}}' """, True, "old"),
         ("write", "echo denied >&2; exit 2", False, "old"),
+        ("write", "echo ordinary informational output", True, "old"),
+        ("write", "echo '[1, 2]'", True, "old"),
+        ("write", "echo '{malformed'", True, "failed"),
     ],
 )
 async def test_real_tool_boundary(
@@ -85,6 +105,7 @@ async def test_real_tool_boundary(
     ctx = SimpleNamespace(
         cfg=SimpleNamespace(
             cwd=tmp_path,
+            user_config_path=tmp_path / "config.toml",
             hooks=(HookConfig("tool_call_before", command=command, blocking=blocking),),
         ),
         console=Mock(),
@@ -94,9 +115,12 @@ async def test_real_tool_boundary(
     request = SimpleNamespace(tool_call=call, override=lambda **kwargs: SimpleNamespace(**kwargs))
     handler = AsyncMock(return_value=ToolMessage(content="ok", tool_call_id="x"))
     result = await HooksMiddleware(api.emit).awrap_tool_call(request, handler)
-    if expected == "blocked":
+    if expected in {"blocked", "failed"}:
         handler.assert_not_called()
-        assert result.status == "error" and result.content == "denied"
+        assert result.status == "error"
+        assert result.content == (
+            "denied" if expected == "blocked" else "Hook failed; tool execution blocked"
+        )
     else:
         assert handler.call_args.args[0].tool_call["args"]["path"] == expected
     from orcha_agent.core.events import AppExit
@@ -106,7 +130,9 @@ async def test_real_tool_boundary(
 
 @pytest.mark.asyncio
 async def test_output_limit(tmp_path: Path) -> None:
-    result = await run_hook(HookConfig("turn_start", command="yes", timeout=2), {}, tmp_path)
+    result = await run_hook(
+        HookConfig("turn_start", command="yes", timeout=2), {}, tmp_path, user_config_dir=tmp_path
+    )
     assert result.code == 1 and "exceeded" in result.error
 
 
@@ -169,3 +195,106 @@ async def test_automatic_compaction_extended_response_and_resumed_threads() -> N
         ("first", "Keep the user's constraint"),
         ("second", "Keep the user's constraint"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_python_hook_never_imports_repository_modules(tmp_path: Path, monkeypatch) -> None:
+    repo, user = tmp_path / "repo", tmp_path / "user"
+    repo.mkdir()
+    user.mkdir()
+    (user / "hooks").mkdir()
+    (repo / "trusted_hook.py").write_text('def run(payload): return "repository executed"')
+    monkeypatch.setenv("PYTHONPATH", str(repo))
+    hook = HookConfig("turn_start", python="trusted_hook:run", env_passthrough=("PYTHONPATH",))
+    missing = await run_hook(hook, {}, repo, user_config_dir=user)
+    assert missing.code != 0 and "ModuleNotFoundError" in missing.error
+    (user / "hooks" / "trusted_hook.py").write_text('def run(payload): return "user executed"')
+    trusted = await run_hook(hook, {}, repo, user_config_dir=user)
+    assert trusted.code == 0 and "user executed" in trusted.output
+    assert "repository executed" not in trusted.output
+
+
+@pytest.mark.asyncio
+async def test_hook_shell_scope_selects_working_directory(tmp_path: Path) -> None:
+    repo, user = tmp_path / "repo", tmp_path / "user"
+    repo.mkdir()
+    user.mkdir()
+    (repo / "origin").write_text("repo")
+    (user / "origin").write_text("user")
+    for scope in ("user", "project"):
+        result = await run_hook(
+            HookConfig("turn_start", command="cat origin", scope=scope),
+            {},
+            repo,
+            user_config_dir=user,
+        )
+        assert result.code == 0
+        assert result.output == ("user" if scope == "user" else "repo")
+
+
+@pytest.mark.asyncio
+async def test_hooks_drop_secrets_even_when_explicitly_allowed(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import shlex
+    import sys
+
+    secrets = (
+        "OPENAI_API_KEY",
+        "CUSTOM_TOKEN",
+        "APP_SECRET_VALUE",
+        "DB_PASSWORD",
+        "PROVIDER_LOGIN",
+    )
+    for key in (*secrets, "ORDINARY_HOOK_VALUE", "ORDINARY_SHELL_VALUE", "NOT_ALLOWED"):
+        monkeypatch.setenv(key, "sentinel")
+    command = shlex.join(
+        [sys.executable, "-I", "-c", "import os,json; print(json.dumps(dict(os.environ)))"]
+    )
+    result = await run_hook(
+        HookConfig(
+            "turn_start", command=command, env_passthrough=(*secrets, "ORDINARY_HOOK_VALUE")
+        ),
+        {},
+        tmp_path,
+        user_config_dir=tmp_path,
+        shell_env_passthrough=("ORDINARY_SHELL_VALUE",),
+        provider_env_keys=("PROVIDER_LOGIN",),
+    )
+    assert result.code == 0
+    environment = json.loads(result.output)
+    assert not set(secrets) & environment.keys()
+    assert "NOT_ALLOWED" not in environment
+    assert environment["ORDINARY_HOOK_VALUE"] == environment["ORDINARY_SHELL_VALUE"] == "sentinel"
+
+
+@pytest.mark.asyncio
+async def test_hook_result_payload_is_bounded_utf8_text(tmp_path: Path) -> None:
+    import json
+
+    result = await run_hook(
+        HookConfig("tool_call_after", command="cat"),
+        {
+            "event": "tool_call_after",
+            "name": "read",
+            "id": "call",
+            "result": ToolMessage(content="界" * 20_000, tool_call_id="call"),
+        },
+        tmp_path,
+        user_config_dir=tmp_path,
+    )
+    payload = json.loads(result.output)
+    assert len(payload["result"].encode()) <= 20_000
+    assert payload["result"] == "界" * (20_000 // 3)
+    assert payload["name"] == "read" and payload["id"] == "call"
+
+
+def test_hook_env_passthrough_config(tmp_path: Path) -> None:
+    user = tmp_path / "config.toml"
+    user.write_text(
+        '[[hooks]]\nevent="turn_start"\ncommand="true"\nenv_passthrough=["HOOK_COLOR"]\n'
+    )
+    cfg = load_config([], env={"HOME": str(tmp_path)}, cwd=tmp_path, user_config_path=user)
+    assert cfg.hooks[0].env_passthrough == ("HOOK_COLOR",)
+    user.write_text('[[hooks]]\nevent="turn_start"\ncommand="true"\nenv_passthrough="ALL"\n')
+    with pytest.raises(SystemExit):
+        load_config([], env={"HOME": str(tmp_path)}, cwd=tmp_path, user_config_path=user)

@@ -23,7 +23,13 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
-from orcha_agent.extensibility.hooks import HooksMiddleware, WRITE_TOOLS, matches, run_hook
+from orcha_agent.extensibility.hooks import (
+    HooksMiddleware,
+    WRITE_TOOLS,
+    hook_payload,
+    matches,
+    run_hook,
+)
 
 PLUGIN = PluginSpec(name="hooks", version="1.0.0")
 _EVENTS = {
@@ -45,14 +51,27 @@ def register(api: PluginAPI) -> None:
     async def dispatch(name: str, payload: dict[str, Any], event: Event | None = None) -> None:
         if ctx is None:
             return
-        payload = {"event": name, **payload}
+        payload = hook_payload({"event": name, **payload})
         for hook in getattr(getattr(ctx, "cfg", None), "hooks", ()):
             if hook.event != name or not matches(hook, payload):
                 continue
 
             async def execute(hook: Any = hook) -> None:
                 try:
-                    result = await run_hook(hook, payload, Path(ctx.cfg.cwd))
+                    user_path = getattr(ctx.cfg, "user_config_path", None)
+                    providers = getattr(getattr(ctx, "registry", None), "providers", {})
+                    result = await run_hook(
+                        hook,
+                        payload,
+                        Path(ctx.cfg.cwd),
+                        user_config_dir=Path(user_path).parent if user_path else None,
+                        shell_env_passthrough=getattr(
+                            getattr(ctx.cfg, "tools", None), "shell_env_passthrough", ()
+                        ),
+                        provider_env_keys=tuple(
+                            key for provider in providers.values() for key in provider.env_keys
+                        ),
+                    )
                     if result.code == 2 and hook.blocking and isinstance(event, ToolCallBefore):
                         event.block_message = result.error.strip() or "Blocked by hook"
                     elif result.code != 0:
@@ -64,6 +83,9 @@ def register(api: PluginAPI) -> None:
                         and isinstance(event, ToolCallBefore)
                         and result.output.strip()
                     ):
+                        if not result.output.lstrip().startswith("{"):
+                            ctx.console.print(result.output.strip(), markup=False)
+                            return
                         data = json.loads(result.output)
                         if not isinstance(data, dict):
                             raise ValueError("hook output must be a JSON object")

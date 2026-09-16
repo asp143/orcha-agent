@@ -287,6 +287,7 @@ class HookConfig:
     timeout: float = 10.0
     blocking: bool = True
     scope: str = "user"
+    env_passthrough: tuple[str, ...] = ()
 
 
 def _hooks_config(
@@ -326,8 +327,23 @@ def _hooks_config(
         blocking = item.get("blocking", True)
         if not isinstance(blocking, bool):
             parser.error("hook blocking must be true or false")
+        env_passthrough = item.get("env_passthrough", [])
+        if not isinstance(env_passthrough, list) or any(
+            not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", key)
+            for key in env_passthrough
+        ):
+            parser.error("hook env_passthrough must be an array of environment variable names")
         hooks.append(
-            HookConfig(item["event"], matcher, command, python, float(timeout), blocking, scope)
+            HookConfig(
+                item["event"],
+                matcher,
+                command,
+                python,
+                float(timeout),
+                blocking,
+                scope,
+                tuple(env_passthrough),
+            )
         )
     return tuple(hooks)
 

@@ -960,21 +960,54 @@ matcher = "write*"
 command = "python scripts/check_write.py"
 timeout = 10
 blocking = true
+env_passthrough = ["HOOK_COLOR"] # optional non-secret environment names
 ```
 
 Events are `session_start`, `session_end`, `turn_start`, `turn_end`,
 `tool_call_before`, `tool_call_after`, `model_switch`, `compaction`,
 `agent_spawned`, and `agent_finished`. Tool matchers are name globs; `regex:`
 selects a regex over the JSON payload. Other matchers are regexes over event
-text (or its JSON payload). Commands receive JSON on stdin and run in the
-workspace. Alternatively, `python = "package.module:function"` invokes a sync
-or async function with the payload in a bounded subprocess.
+text (or its JSON payload). Commands receive JSON on stdin. User-scope shell
+commands resolve relative to the user config directory; trusted project shell
+commands run in the workspace. `python = "package.module:function"` invokes a
+sync or async function in an isolated Python subprocess (`-I`), loading hook
+modules from `~/.config/orcha-agent/hooks/`, never from the repository or
+`PYTHONPATH`. A custom user config path places that hook directory alongside
+its config file. Project Python hooks use the same user-owned module directory.
+
+Hooks inherit the shell tool's minimal environment plus names explicitly allowed
+by `[tools] shell_env_passthrough` or the hook's `env_passthrough`. Registered
+provider credential names and names matching `*_API_KEY`, `*_TOKEN`, `*SECRET*`,
+or `*PASSWORD*` are always removed, even when explicitly allowed. Project hooks
+are executable code: `--trust-cwd` or a saved trusted directory authorizes them.
+Untrusted project hooks never run.
+
+Each stdin JSON object contains `event` and its event fields:
+
+| Event | Payload fields besides `event` |
+| --- | --- |
+| `session_start`, `session_end` | `session_id` |
+| `turn_start` | `thread_id`, `text`, `source_id` |
+| `turn_end` | `thread_id`, `source_id` |
+| `tool_call_before` | `name`, `args`, `id`, `block_message` |
+| `tool_call_after` | `name`, `id`, `result` |
+| `model_switch` | `old`, `new` |
+| `compaction` | `session_id`, `summary` |
+| `agent_spawned` | `run_id`, `parent_id`, `name`, `agent_type` |
+| `agent_finished` | `run_id`, `parent_id`, `name`, `agent_type`, `result` |
+
+`result` is plain tool content (or JSON/string for structured results), truncated
+to 20,000 UTF-8 bytes without splitting characters. Hook payloads can contain
+prompt text, tool arguments, and output; enable only hooks you trust with those
+contents. They do not include the application context or provider configuration.
 
 Exit 0 succeeds; exit 2 blocks a before-tool call with stderr as the explanation.
 A successful before hook can return `{"block": true, "message": "reason"}` or
 `{"args": {"path": "corrected-path", "content": "..."}}` to replace arguments
 for file-writing tools. Hooks run in declaration order and stop on a block.
-Other exit codes and timeouts produce warnings. `blocking = false` runs an
+Successful plain-text stdout is informational and does not block a tool. Only
+stdout beginning with `{` is parsed as a control object; malformed JSON objects
+fail closed. Other exit codes and timeouts produce warnings. `blocking = false` runs an
 observational hook in the background; it cannot block or rewrite a call.
 
 ## First-run setup

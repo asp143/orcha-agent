@@ -7,10 +7,11 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import signal
 import sys
 from dataclasses import dataclass
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Any, NotRequired
 
@@ -20,9 +21,11 @@ from langchain_core.messages import ToolMessage
 
 from orcha_agent.core.config import HookConfig
 from orcha_agent.core.events import Compaction, Event, ToolCallAfter, ToolCallBefore
+from orcha_agent.core.tools.shell import OUTPUT_BYTES, session_environment
 
 WRITE_TOOLS = frozenset({"write", "write_file", "edit", "edit_file", "delete", "apply_patch"})
 _PYTHON_RUNNER = """import asyncio, importlib, inspect, json, sys
+sys.path.insert(0, sys.argv[2])
 module, name = sys.argv[1].split(":", 1)
 fn = getattr(importlib.import_module(module), name)
 result = fn(json.load(sys.stdin))
@@ -89,23 +92,60 @@ async def _exchange(process: asyncio.subprocess.Process, data: bytes) -> tuple[b
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def run_hook(hook: HookConfig, payload: dict[str, Any], cwd: Path) -> HookResult:
+def hook_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Bound tool output independently of the command's original representation."""
+    if "result" not in payload:
+        return payload
+    result = payload["result"]
+    content = result.content if isinstance(result, ToolMessage) else result
+    text = content if isinstance(content, str) else json.dumps(content, default=str)
+    return {
+        **payload,
+        "result": text.encode("utf-8")[:OUTPUT_BYTES].decode("utf-8", errors="ignore"),
+    }
+
+
+async def run_hook(
+    hook: HookConfig,
+    payload: dict[str, Any],
+    cwd: Path,
+    *,
+    user_config_dir: Path | None = None,
+    shell_env_passthrough: Sequence[str] = (),
+    provider_env_keys: Sequence[str] = (),
+) -> HookResult:
+    config_dir = user_config_dir or Path.home() / ".config" / "orcha-agent"
+    environment = session_environment((*shell_env_passthrough, *hook.env_passthrough))
+    denied = {name.upper() for name in provider_env_keys}
+    environment = {
+        key: value
+        for key, value in environment.items()
+        if key.upper() not in denied
+        and not re.search(r"(?:_API_KEY$|_TOKEN$|SECRET|PASSWORD)", key, re.I)
+    }
     options: dict[str, Any] = dict(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
+        cwd=config_dir if hook.scope == "user" else cwd,
+        env=environment,
         start_new_session=True,
     )
     if hook.command is not None:
         process = await asyncio.create_subprocess_shell(hook.command, **options)
     else:
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", _PYTHON_RUNNER, str(hook.python), **options
+            sys.executable,
+            "-I",
+            "-c",
+            _PYTHON_RUNNER,
+            str(hook.python),
+            str(config_dir / "hooks"),
+            **options,
         )
     try:
         stdout, stderr = await asyncio.wait_for(
-            _exchange(process, json.dumps(payload, default=str).encode()),
+            _exchange(process, json.dumps(hook_payload(payload), default=str).encode()),
             hook.timeout,
         )
     except (TimeoutError, ValueError, asyncio.CancelledError) as exc:
