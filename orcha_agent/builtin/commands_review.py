@@ -1,8 +1,4 @@
-"""Fan-out code review slash command.
-
-The plugin entry point is intentionally inert: the runtime owns when the command is
-made available, while keeping this module loadable by the built-in plugin loader.
-"""
+"""Fan-out code review slash command."""
 
 from __future__ import annotations
 
@@ -1002,8 +998,8 @@ async def review(ctx: Any, args: str) -> None:
     await run_turn(ctx, _notification(merged, fix=fix))
 
 
-def register(_api: PluginAPI) -> None:
-    """Satisfy the built-in loader without mutating the static command set."""
+def register(api: PluginAPI) -> None:
+    api.add_command("review", review, "Review code changes with parallel agents")
 
 
 # Stable private aliases retained for focused helper tests and internal callers.

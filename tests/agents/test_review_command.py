@@ -601,12 +601,22 @@ async def test_review_cancels_waits_for_and_delivers_a_timed_out_reviewer(
     assert transcript.reviews[0]["explanation"] == "1 reviewer failed or returned invalid output."
 
 
-def test_runtime_dynamically_registers_review_command() -> None:
-    from orcha_agent.tui.runtime import _ensure_review_command
+def test_plugin_registers_review_command() -> None:
+    from orcha_agent.core.events import EventBus
+    from orcha_agent.core.plugin import PluginAPI
 
     registry = Registry()
 
-    _ensure_review_command(registry)
+    commands_review.register(
+        PluginAPI(
+            name="commands_review",
+            registry=registry,
+            bus=EventBus(),
+            config={},
+            state={},
+            request_rebuild=lambda: None,
+        )
+    )
 
     registration = registry.commands["review"]
     assert registration.plugin == "commands_review"
