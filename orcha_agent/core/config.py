@@ -447,6 +447,7 @@ def _parser() -> argparse.ArgumentParser:
     gallery.add_argument("--width", type=int, metavar="N")
     gallery.add_argument("--expanded", action="store_true")
     gallery.add_argument("--plain", action="store_true")
+    gallery.add_argument("--theme", default=argparse.SUPPRESS)
     return parser
 
 
@@ -850,7 +851,7 @@ def load_config(
     thinking = str(ui.get("thinking", "summary"))
     if thinking not in {"summary", "off", "all"}:
         parser.error("[ui] thinking must be summary, off, or all")
-    theme = ui.get("theme", "dark")
+    theme = getattr(args, "theme", None) or ui.get("theme", "dark")
     if not isinstance(theme, str) or not theme.strip():
         parser.error("[ui] theme must be a non-empty string")
     explicit_symbols = ui.get("symbols")
