@@ -23,6 +23,7 @@ def test_reference_hash_vectors(text, tag):
 def test_read_format_selectors_and_repeat_guard(tmp_path):
     service, _, header = setup(tmp_path)
     assert re.fullmatch(r"\[a.txt#[0-9A-F]{4}\]", header)
+    assert "1:one" in service.read("a.txt")
     assert "Unchanged" in service.read("a.txt")
     assert "2:two\n3:three" in service.read("a.txt:2-3")
 
@@ -132,11 +133,11 @@ def test_multifile_io_failure_rolls_back_prior_write(tmp_path, monkeypatch):
     original_write = hashline.atomic_write
     failed = [False]
 
-    def fail_once(path, content):
+    def fail_once(path, content, **kwargs):
         if path == second and not failed[0]:
             failed[0] = True
             raise OSError("simulated write failure")
-        original_write(path, content)
+        original_write(path, content, **kwargs)
 
     monkeypatch.setattr(hashline, "atomic_write", fail_once)
     result = service.edit(header + "\nPUT 1:\n+ONE\n" + other_header + "\nPUT 1:\n+SECOND")
@@ -198,3 +199,63 @@ def test_snapshot_byte_budget_releases_older_revisions(tmp_path, monkeypatch):
     (tmp_path / "other").write_text("some content\n")
     service.read("other")
     assert len(service.snapshots) == 1
+
+
+def test_colliding_tags_keep_versions_and_reject_ambiguity(tmp_path):
+    service, file, header = setup(tmp_path)
+    file.write_text("one \ntwo\nthree\n")
+    assert service.read("a.txt").splitlines()[0] == header
+    assert len(service.snapshots) == 2
+    assert all(len(key) == 4 for key in service.snapshots)
+    before = file.read_bytes()
+    assert "Ambiguous snapshot tag collision" in service.edit(header + "\nPUT 2:\n+TWO")
+    assert file.read_bytes() == before
+
+
+def test_hashline_policy_and_read_cap(tmp_path):
+    service, file, header = setup(tmp_path)
+    assert service.edit(header + "\nMV ../outside").startswith("Error:")
+    assert file.exists()
+    denied = tmp_path / ".env.fixture"
+    denied.touch()
+    assert service.read(str(denied)).startswith("Error:")
+    tiny = HashlineTools(FilesystemTools(tmp_path, max_read_bytes=2))
+    assert "max_read_bytes" in tiny.read("a.txt")
+    service.service.max_read_bytes = 2
+    assert "max_read_bytes" in service.edit(header + "\nPUT 1:\n+ONE")
+
+
+def test_collision_remains_rejected_after_snapshot_eviction(tmp_path, monkeypatch):
+    monkeypatch.setattr("orcha_agent.core.tools.hashline.MAX_SNAPSHOTS", 1)
+    service, file, header = setup(tmp_path)
+    file.write_text("one \ntwo\nthree\n")
+    assert service.read("a.txt").splitlines()[0] == header
+    assert len(service.snapshots) == 1
+    assert "Ambiguous snapshot tag collision" in service.edit(header + "\nPUT 2:\n+TWO")
+
+
+def test_eviction_before_collision_cannot_reassign_old_tag(tmp_path, monkeypatch):
+    monkeypatch.setattr("orcha_agent.core.tools.hashline.MAX_SNAPSHOTS", 1)
+    service, file, header = setup(tmp_path)
+    (tmp_path / "other").write_text("other\n")
+    service.read("other")
+    assert not any(key[1] == file for key in service.snapshots)
+    file.write_text("one \ntwo \nthree\n")
+    assert service.read("a.txt").splitlines()[0] == header
+    before = file.read_bytes()
+    assert "Ambiguous snapshot tag collision" in service.edit(header + "\nPUT 2:\n+TWO")
+    assert file.read_bytes() == before
+
+
+def test_evicted_natural_hash_collision_rejects_old_header(tmp_path, monkeypatch):
+    monkeypatch.setattr("orcha_agent.core.tools.hashline.MAX_SNAPSHOTS", 1)
+    old = "item 232\noriginal 232\n"
+    new = "item 338\noriginal 338\n"
+    assert file_hash(old) == file_hash(new) == "122D"
+    service, file, header = setup(tmp_path, old)
+    (tmp_path / "other").write_text("other\n")
+    service.read("other")
+    file.write_text(new)
+    assert service.read("a.txt").splitlines()[0] == header
+    assert "Ambiguous snapshot tag collision" in service.edit(header + "\nPUT 2:\n+wrong version")
+    assert file.read_text() == new

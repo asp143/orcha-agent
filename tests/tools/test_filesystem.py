@@ -33,7 +33,7 @@ def test_raw_and_default(fs: FilesystemTools):
 
 def test_repeat_and_changes(fs: FilesystemTools):
     fs.read("sample.txt", thread="one", turn="a")
-    assert "Unchanged" in fs.read("sample.txt", thread="one", turn="a")
+    assert "line 1" in fs.read("sample.txt", thread="one", turn="a")
     assert "will not change" in fs.read("sample.txt", thread="one", turn="a")
     assert "Unchanged" not in fs.read("sample.txt", thread="one", turn="b")
     assert "Unchanged" not in fs.read("sample.txt", thread="two", turn="a")
@@ -95,7 +95,7 @@ def test_write_ls_images_and_errors(fs: FilesystemTools):
     assert "+hello" in fs.write("sub/new.txt", "hello again")
     assert "new.txt\t11 bytes" in fs.read("sub")
     assert "omitted_entries" in fs.ls(".", limit=1)
-    (fs.cwd / "image.png").write_bytes(b"\xff")
+    (fs.cwd / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     assert "Image file:" in fs.read("image.png")
     assert fs.read("missing").startswith("Error:")
     assert fs.read("sample.txt:5-2").startswith("Error:")
@@ -114,7 +114,8 @@ def test_summary(fs: FilesystemTools):
     (fs.cwd / "large.py").write_text(
         "def first():\n" + "    pass\n" * 500 + "def second():\n    pass\n"
     )
-    result = fs.read("large.py")
+    assert "Declaration outline" not in fs.read("large.py")
+    result = fs.read("large.py:summary")
     assert "Declaration outline" in result and "def second" in result
     assert "Declaration outline" not in fs.read("large.py:1-2")
 
@@ -269,3 +270,93 @@ def test_clipping_retains_middle_elision_notice(fs: FilesystemTools):
         recovery["recovery_command"], shell=True, capture_output=True, check=True
     )
     assert completed.stdout == omitted
+
+
+def test_write_registers_current_thread_digest(tmp_path):
+    fs = FilesystemTools(tmp_path)
+    assert not fs.write("new", "before", thread="one").startswith("Error:")
+    assert "Read the current file" in fs.edit("new", "before", "after", thread="two")
+    assert not fs.edit("new", "before", "after", thread="one").startswith("Error:")
+    assert (tmp_path / "new").read_text() == "after"
+
+
+def test_magic_not_extension_identifies_images(tmp_path):
+    fs = FilesystemTools(tmp_path)
+    (tmp_path / "text.png").write_text("actually text")
+    (tmp_path / "picture").write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert "actually text" in fs.read("text.png")
+    assert fs.read("picture").startswith("Image file:")
+
+
+def test_max_read_bytes_and_fifo_refused(tmp_path):
+    import os
+
+    fs = FilesystemTools(tmp_path, max_read_bytes=32)
+    (tmp_path / "large").write_bytes(b"x" * 33)
+    assert "max_read_bytes=32" in fs.read("large:1")
+    os.mkfifo(tmp_path / "pipe")
+    assert "Not a regular file" in fs.read("pipe")
+
+
+def test_selectors_stream_without_read_bytes(tmp_path, monkeypatch):
+    fs = FilesystemTools(tmp_path)
+    (tmp_path / "many").write_text("unselected\n" * 10000 + "wanted\n")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("full-file convenience read used")
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    monkeypatch.setattr(fs.policy, "read_bytes", forbidden)
+    result = fs.read("many:10001")
+    assert "wanted" in result and "unselected" not in result
+
+
+def test_policy_blocks_before_file_open_and_lists_safe_names(tmp_path, monkeypatch):
+    from orcha_agent.core.tools.common import PathPolicy
+
+    denied = tmp_path / ".env.fixture"
+    denied.touch()
+    (tmp_path / "alias").symlink_to(denied)
+    (tmp_path / "safe").write_text("allowed")
+    policy = PathPolicy(tmp_path)
+    fs = FilesystemTools(tmp_path, policy=policy)
+    original = policy.open_read
+    opened = []
+
+    def tracked(path):
+        opened.append(path)
+        return original(path)
+
+    monkeypatch.setattr(policy, "open_read", tracked)
+    for name in (".env.fixture", "alias", "../outside"):
+        assert fs.read(name).startswith("Error:")
+        assert fs.write(name, "replacement").startswith("Error:")
+        assert fs.edit(name, "old", "new").startswith("Error:")
+    assert opened == []
+    listing = fs.ls()
+    assert "safe" in listing and "alias" not in listing and ".env.fixture" not in listing
+
+
+def test_allowed_roots_and_summary_option(tmp_path):
+    from orcha_agent.core.tools.common import PathPolicy
+
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "shared"
+    workspace.mkdir()
+    outside.mkdir()
+    target = outside / "sample.py"
+    target.write_text("def first():\n" + "    pass\n" * 500)
+    fs = FilesystemTools(workspace, policy=PathPolicy(workspace, [outside]), read_summary=True)
+    assert "Declaration outline" in fs.read(str(target))
+    assert "    pass" in fs.read(str(target) + ":2")
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_repeated_summary_keeps_outline_and_adds_hint(tmp_path, configured):
+    (tmp_path / "large.py").write_text("def first():\n" + "    pass\n" * 500)
+    fs = FilesystemTools(tmp_path, read_summary=configured)
+    path = "large.py" if configured else "large.py:summary"
+    for count in range(1, 4):
+        result = fs.read(path)
+        assert "Declaration outline" in result and "def first" in result
+        assert ("Unchanged" in result) == (count == 3)

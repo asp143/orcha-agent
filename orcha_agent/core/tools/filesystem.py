@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from difflib import unified_diff
 import hashlib
+import codecs
+import os
+import stat
 from pathlib import Path
 import re
 import shlex
@@ -10,18 +13,39 @@ import shlex
 from langchain.tools import ToolRuntime, tool
 from langchain_core.tools import BaseTool, ToolException
 
-from .common import atomic_write, notice, resolve_path, split_text_lines
+from .common import PathPolicy, atomic_write, notice, split_text_lines
 from .fuzzy import find_matches, replace
 
-_IMAGE = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff", ".avif"}
+
+def _image_magic(data: bytes) -> bool:
+    return (
+        data.startswith(
+            (
+                b"\x89PNG\r\n\x1a\n",
+                b"\xff\xd8\xff",
+                b"GIF87a",
+                b"GIF89a",
+                b"BM",
+                b"\x00\x00\x01\x00",
+                b"II*\x00",
+                b"MM\x00*",
+            )
+        )
+        or (data.startswith(b"RIFF") and data[8:12] == b"WEBP")
+        or (data[4:8] == b"ftyp" and data[8:12] in (b"avif", b"avis"))
+    )
 
 
 def parse_selector(path: str, total: int) -> tuple[str, list[tuple[int, int]], bool]:
     raw = False
     chunks = path.split(":")
     selectors: list[str] = []
-    while len(chunks) > 1 and (chunks[-1] == "raw" or re.fullmatch(r"[-\d,+]+", chunks[-1])):
+    while len(chunks) > 1 and (
+        chunks[-1] in ("raw", "summary") or re.fullmatch(r"[-\d,+]+", chunks[-1])
+    ):
         selectors.insert(0, chunks.pop())
+    if "summary" in selectors:
+        selectors.remove("summary")
     if "raw" in selectors:
         raw = True
         selectors.remove("raw")
@@ -64,18 +88,25 @@ def _diff(path: str, old: str, new: str) -> str:
 
 
 def _bounded_read(
-    selected: list[tuple[int, str]], content: str, target: Path, bare: str, raw: bool
+    selected: list[tuple[int, str]],
+    content: str | None,
+    target: Path,
+    bare: str,
+    raw: bool,
+    byte_offsets: dict[int, tuple[int, int]] | None = None,
 ) -> str:
     """Clip source text without clipping metadata or confusing gutters with file bytes."""
     head, tail = selected[:60], selected[max(60, len(selected) - 25) :]
     kept = head + tail
-    source_lines = split_text_lines(content, keepends=True)
-    offsets = [0]
-    for line in source_lines:
-        offsets.append(offsets[-1] + len(line.encode()))
+    if byte_offsets is None:
+        byte_offsets = {}
+        offset = 0
+        for number, line in enumerate(split_text_lines(content or "", keepends=True), 1):
+            end = offset + len(line.encode())
+            byte_offsets[number] = (offset, end)
+            offset = end
     omitted_ranges = [
-        (offsets[number - 1], offsets[number])
-        for number, _ in selected[60 : max(60, len(selected) - 25)]
+        byte_offsets[number] for number, _ in selected[60 : max(60, len(selected) - 25)]
     ]
     rows: list[str] = []
     budget = 20_000
@@ -93,7 +124,7 @@ def _bounded_read(
         shown_bytes = len(shown.encode())
         if shown_bytes < len(encoded) or budget < separator + len(prefix.encode()):
             clipped = True
-            omitted_ranges.append((offsets[number - 1] + shown_bytes, offsets[number]))
+            omitted_ranges.append((byte_offsets[number][0] + shown_bytes, byte_offsets[number][1]))
         if budget >= separator + len(prefix.encode()):
             row = prefix + shown
             rows.append(row)
@@ -137,78 +168,147 @@ def _bounded_read(
 
 
 class FilesystemTools:
-    def __init__(self, cwd: Path):
+    def __init__(
+        self,
+        cwd: Path,
+        *,
+        policy: PathPolicy | None = None,
+        max_read_bytes: int = 64 * 1024 * 1024,
+        read_summary: bool = False,
+    ):
+        if max_read_bytes < 1:
+            raise ValueError("max_read_bytes must be positive")
         self.cwd = cwd
+        self.policy = policy or PathPolicy(cwd)
+        self.max_read_bytes = max_read_bytes
+        self.read_summary = read_summary
         self.reads: dict[tuple[str, Path], str] = {}
         self.repeats: dict[tuple[str, str, str], tuple[str, int]] = {}
+
+    def _repeat_hint(self, key: tuple[str, str, str], digest: str) -> str:
+        previous, count = self.repeats.get(key, ("", 0))
+        count = count + 1 if previous == digest else 1
+        thread, turn, _ = key
+        self.repeats = {k: v for k, v in self.repeats.items() if k[0] != thread or k[1] == turn}
+        self.repeats[key] = (digest, count)
+        return (
+            (
+                "\n"
+                + notice(
+                    "Unchanged since previous reads in this turn; repeated reads will not change the content. Choose a different range or use the content above."
+                )
+            )
+            if count >= 3
+            else ""
+        )
 
     def read(self, path: str, *, thread: str = "default", turn: str = "default") -> str:
         try:
             bare, _, _ = parse_selector(path, 0)
-            target = resolve_path(self.cwd, bare)
-            if target.is_dir():
+            target = self.policy.resolve(bare)
+            if stat.S_ISDIR(self.policy.stat(target).st_mode):
                 return self.ls(bare)
-            if target.suffix.lower() in _IMAGE:
-                return f"Image file: {bare} ({target.stat().st_size} bytes). Image bytes are not included."
-            data = target.read_bytes()
-            content = data.decode("utf-8")
-            if "\x00" in content:
-                return f"Binary file: {bare} ({len(data)} bytes); contents are not displayed."
-            digest = hashlib.sha256(data).hexdigest()
-            lines = split_text_lines(content)
-            _, ranges, raw = parse_selector(path, len(lines))
-            key = (thread, turn, str(target) + repr(ranges) + str(raw))
-            previous, count = self.repeats.get(key, ("", 0))
-            if previous == digest:
-                self.repeats[key] = (digest, count + 1)
-                warning = (
-                    " Re-reading this range will not change the output; choose a different range or act on the content already read."
-                    if count >= 2
-                    else ""
-                )
-                return notice("Unchanged since last read of this range in this turn." + warning)
-            # Retain only this thread's current turn to keep long sessions bounded.
-            self.repeats = {k: v for k, v in self.repeats.items() if k[0] != thread or k[1] == turn}
-            self.repeats[key] = (digest, 1)
-            self.reads[(thread, target)] = digest
-            selected = [(i, lines[i - 1]) for start, end in ranges for i in range(start, end + 1)]
-            if not selected and lines:
-                return notice(
-                    f"Range is outside this file ({len(lines)} lines); use {bare}:1.",
-                    total_lines=len(lines),
-                )
-
-            def render(rows: list[tuple[int, str]]) -> str:
-                return "\n".join(text if raw else f"{i:6}  {text}" for i, text in rows)
-
-            if path == bare and 500 <= len(lines) <= 20_000 and len(data) <= 2 * 1024 * 1024:
-                outline = _outline(target, content)
-                if outline:
-                    return (
-                        render(outline)
-                        + "\n"
-                        + notice(
-                            f"Declaration outline of {len(lines)} lines; bodies elided. Read {bare}:N-M to inspect a declaration body.",
-                            total_lines=len(lines),
-                            omitted_lines=len(lines) - len(outline),
-                        )
+            # Hash/count in fixed blocks, then retain only requested lines. The
+            # same descriptor prevents a path replacement between both passes.
+            with self.policy.open_read(target) as stream:
+                info = os.fstat(stream.fileno())
+                if info.st_size > self.max_read_bytes:
+                    raise ValueError(
+                        f"File exceeds max_read_bytes={self.max_read_bytes}; use a bounded shell command or raise tools.max_read_bytes explicitly."
                     )
-            result = render(selected)
+                digest_builder = hashlib.sha256()
+                decoder = codecs.getincrementaldecoder("utf-8")()
+                total_bytes = total_lines = 0
+                last = b""
+                binary = False
+                first = stream.read(16)
+                if _image_magic(first):
+                    return (
+                        f"Image file: {bare} ({info.st_size} bytes). Image bytes are not included."
+                    )
+                stream.seek(0)
+                while chunk := stream.read(64 * 1024):
+                    total_bytes += len(chunk)
+                    if total_bytes > self.max_read_bytes:
+                        raise ValueError(
+                            f"File exceeds max_read_bytes={self.max_read_bytes}; use a bounded shell command or raise tools.max_read_bytes explicitly."
+                        )
+                    binary |= b"\x00" in chunk
+                    if not binary:
+                        decoder.decode(chunk)
+                    digest_builder.update(chunk)
+                    total_lines += chunk.count(b"\n")
+                    last = chunk[-1:]
+                if binary:
+                    return f"Binary file: {bare} ({total_bytes} bytes); contents are not displayed."
+                decoder.decode(b"", final=True)
+                total_lines += int(bool(last) and last != b"\n")
+                digest = digest_builder.hexdigest()
+                _, ranges, raw = parse_selector(path, total_lines)
+                summary = path.endswith(":summary") or (path == bare and self.read_summary)
+                if summary and 500 <= total_lines <= 20_000 and total_bytes <= 2 * 1024 * 1024:
+                    stream.seek(0)
+                    summary_data = stream.read(self.max_read_bytes + 1)
+                    if hashlib.sha256(summary_data).hexdigest() != digest:
+                        raise ValueError("File changed during read; read again before editing.")
+                    content = summary_data.decode("utf-8")
+                    outline = _outline(target, content)
+                    if outline:
+                        self.reads[(thread, target)] = digest
+                        return (
+                            "\n".join(f"{i:6}  {text}" for i, text in outline)
+                            + "\n"
+                            + notice(
+                                f"Declaration outline of {total_lines} lines; bodies elided. Read {bare}:N-M to inspect a declaration body.",
+                                total_lines=total_lines,
+                                omitted_lines=total_lines - len(outline),
+                            )
+                            + self._repeat_hint((thread, turn, str(target) + ":summary"), digest)
+                        )
+                stream.seek(0)
+                selected = []
+                offsets = {}
+                offset = 0
+                second_digest = hashlib.sha256()
+                for number, line in enumerate(
+                    iter(lambda: stream.readline(self.max_read_bytes + 1), b""), 1
+                ):
+                    end = offset + len(line)
+                    if end > self.max_read_bytes:
+                        raise ValueError(
+                            "File grew beyond max_read_bytes during read; retry with a bounded file."
+                        )
+                    second_digest.update(line)
+                    if any(start <= number <= end_line for start, end_line in ranges):
+                        text = line[:-1].removesuffix(b"\r") if line.endswith(b"\n") else line
+                        selected.append((number, text.decode("utf-8")))
+                        offsets[number] = (offset, end)
+                    offset = end
+                if second_digest.hexdigest() != digest:
+                    raise ValueError("File changed during read; read again before editing.")
+            key = (thread, turn, str(target) + repr(ranges) + str(raw))
+            repeat_hint = self._repeat_hint(key, digest)
+            self.reads[(thread, target)] = digest
+            if not selected and total_lines:
+                return notice(
+                    f"Range is outside this file ({total_lines} lines); use {bare}:1.",
+                    total_lines=total_lines,
+                )
+            result = "\n".join(text if raw else f"{i:6}  {text}" for i, text in selected)
             elided = len(result.encode()) > 20_000
             if elided:
-                result = _bounded_read(selected, content, target, bare, raw)
-            selected_count = len(set(i for i, _ in selected))
-            if selected_count < len(lines):
-                last = max((i for i, _ in selected), default=0)
-                continuation = f"{bare}:{last + 1}" if last < len(lines) else f"{bare}:1"
-                first = min((i for i, _ in selected), default=0)
+                result = _bounded_read(selected, None, target, bare, raw, offsets)
+            if len(selected) < total_lines:
+                last_line = max((i for i, _ in selected), default=0)
+                continuation = f"{bare}:{last_line + 1}" if last_line < total_lines else f"{bare}:1"
+                first_line = min((i for i, _ in selected), default=0)
                 result += "\n" + notice(
-                    f"{'Requested' if elided else 'Showing'} lines {first}-{last} of {len(lines)}; use {continuation} to continue.",
+                    f"{'Requested' if elided else 'Showing'} lines {first_line}-{last_line} of {total_lines}; use {continuation} to continue.",
                     shown_ranges=ranges,
-                    total_lines=len(lines),
+                    total_lines=total_lines,
                     next_path=continuation,
                 )
-            return result or "(empty file)"
+            return (result or "(empty file)") + repeat_hint
         except (OSError, UnicodeError, ValueError) as exc:
             return f"Error: {exc}"
 
@@ -223,8 +323,8 @@ class FilesystemTools:
         thread: str = "default",
     ) -> str:
         try:
-            target = resolve_path(self.cwd, path)
-            data = target.read_bytes()
+            target = self.policy.resolve(path)
+            data = self.policy.read_bytes(target, self.max_read_bytes)
             if self.reads.get((thread, target)) != hashlib.sha256(data).hexdigest():
                 return "Error: Read the current file before editing; it has not been read or changed since your last read."
             original = data.decode("utf-8")
@@ -240,7 +340,7 @@ class FilesystemTools:
                     raise ValueError("Each edit requires old and new strings")
                 content = _replace_eol(content, old, new, replace_all)
             updated = content
-            atomic_write(target, updated)
+            atomic_write(target, updated, policy=self.policy)
             self.reads[(thread, target)] = hashlib.sha256(updated.encode()).hexdigest()
             return f"Edited {path} ({len(changes)} replacement requests).\n" + _diff(
                 path, original, updated
@@ -248,11 +348,16 @@ class FilesystemTools:
         except (OSError, UnicodeError, ValueError) as exc:
             return f"Error: {exc}"
 
-    def write(self, path: str, content: str) -> str:
+    def write(self, path: str, content: str, *, thread: str = "default") -> str:
         try:
-            target = resolve_path(self.cwd, path)
-            original = target.read_text() if target.exists() else ""
-            atomic_write(target, content)
+            target = self.policy.resolve(path)
+            original = (
+                self.policy.read_bytes(target, self.max_read_bytes).decode("utf-8")
+                if target.exists()
+                else ""
+            )
+            atomic_write(target, content, policy=self.policy)
+            self.reads[(thread, target)] = hashlib.sha256(content.encode()).hexdigest()
             return (
                 f"Wrote {path}: {len(content.encode())} bytes, {len(split_text_lines(content))} lines.\n"
                 + _diff(path, original, content)
@@ -262,17 +367,20 @@ class FilesystemTools:
 
     def ls(self, path: str = ".", limit: int = 200) -> str:
         try:
-            target = resolve_path(self.cwd, path)
-            if not target.is_dir():
+            target = self.policy.resolve(path)
+            if not stat.S_ISDIR(self.policy.stat(target).st_mode):
                 return f"Error: Not a directory: {path}"
             if limit < 1:
                 return "Error: limit must be positive"
-            entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            entries = sorted(
+                self.policy.listdir(target),
+                key=lambda p: (not stat.S_ISDIR(self.policy.stat(p).st_mode), p.name.lower()),
+            )
             rows: list[str] = []
             for entry in entries[:limit]:
-                info = entry.stat()
+                info = self.policy.stat(entry)
                 rows.append(
-                    f"{entry.name}{'/' if entry.is_dir() else ''}\t{info.st_size} bytes\t{datetime.fromtimestamp(info.st_mtime).isoformat(timespec='seconds')}"
+                    f"{entry.name}{'/' if stat.S_ISDIR(info.st_mode) else ''}\t{info.st_size} bytes\t{datetime.fromtimestamp(info.st_mtime).isoformat(timespec='seconds')}"
                 )
             if len(entries) > limit:
                 rows.append(
@@ -350,12 +458,21 @@ def _identity(runtime: ToolRuntime) -> tuple[str, str]:
     return thread, turn
 
 
-def create_filesystem_tools(cwd: Path, edit_format: str = "replace") -> list[BaseTool]:
-    service = FilesystemTools(cwd)
+def create_filesystem_tools(
+    cwd: Path,
+    edit_format: str = "replace",
+    *,
+    policy: PathPolicy | None = None,
+    max_read_bytes: int = 64 * 1024 * 1024,
+    read_summary: bool = False,
+) -> list[BaseTool]:
+    service = FilesystemTools(
+        cwd, policy=policy, max_read_bytes=max_read_bytes, read_summary=read_summary
+    )
 
     @tool
     def read(path: str, runtime: ToolRuntime) -> str:
-        """Read text files with numbered lines, or list directories. Use file:N (page), file:N-M, file:N+K, file:-N (tail), file:5-16,960-973, or file:raw. Defaults to 200 lines / 20 KB. Read before editing; follow notices for omitted content. Images return a descriptive note."""
+        """Read text files with numbered lines, or list directories. Use file:N (page), file:N-M, file:N+K, file:-N (tail), file:5-16,960-973, file:raw, or file:summary for a declaration outline. Defaults to 200 lines / 20 KB. Read before editing; follow notices for omitted content. Images return a descriptive note."""
         thread, turn = _identity(runtime)
         return _checked(service.read(path, thread=thread, turn=turn))
 
@@ -375,9 +492,10 @@ def create_filesystem_tools(cwd: Path, edit_format: str = "replace") -> list[Bas
         )
 
     @tool
-    def write(path: str, content: str) -> str:
+    def write(path: str, content: str, runtime: ToolRuntime) -> str:
         """Create or overwrite a UTF-8 file. Creates parent directories automatically. Prefer edit for precise changes to existing files. Returns byte/line counts and a diff."""
-        return _checked(service.write(path, content))
+        thread, _ = _identity(runtime)
+        return _checked(service.write(path, content, thread=thread))
 
     @tool
     def ls(path: str = ".", limit: int = 200) -> str:

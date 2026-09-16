@@ -11,7 +11,7 @@ import re
 from langchain.tools import ToolRuntime, tool
 from langchain_core.tools import BaseTool
 
-from .common import atomic_write, resolve_path, split_text_lines
+from .common import atomic_write, split_text_lines
 from .filesystem import FilesystemTools, _checked, _diff, _identity, parse_selector
 
 _MASK = 0xFFFFFFFF
@@ -187,9 +187,22 @@ def _apply_hunks(original: str, hunks: list[Hunk]) -> str:
 class HashlineTools:
     def __init__(self, service: FilesystemTools):
         self.service = service
-        self.snapshots: dict[tuple[str, Path, str], Snapshot] = {}
+        self.snapshots: dict[tuple[str, Path, str, str], Snapshot] = {}
+        self.ambiguous_tags: set[tuple[str, Path, str]] = set()
+        self.tag_digests: dict[tuple[str, Path, str], str] = {}
 
-    def _remember(self, key: tuple[str, Path, str], snapshot: Snapshot) -> None:
+    def _remember(self, key: tuple[str, Path, str, str], snapshot: Snapshot) -> None:
+        identity = key[:3]
+        first_digest = self.tag_digests.setdefault(identity, snapshot.digest)
+        if first_digest != snapshot.digest:
+            # Retain compact identity history independently of snapshot content:
+            # eviction must not let an old tag acquire a new file version.
+            self.ambiguous_tags.add(identity)
+        previous = self.snapshots.get(key)
+        if previous is not None and previous.digest != snapshot.digest:
+            raise ValueError(
+                "Ambiguous snapshot digest prefix; read a changed file in a new session before editing."
+            )
         self.snapshots.pop(key, None)
         self.snapshots[key] = snapshot
         size = sum(len(item.content.encode()) for item in self.snapshots.values())
@@ -203,7 +216,7 @@ class HashlineTools:
     def read(self, path: str, *, thread: str = "default", turn: str = "default") -> str:
         try:
             bare, _, _ = parse_selector(path, 0)
-            target = resolve_path(self.service.cwd, bare)
+            target = self.service.policy.resolve(bare)
             if not any(key[0] == thread and key[1] == target for key in self.snapshots):
                 # An expired snapshot must be recoverable even in the same turn.
                 self.service.repeats = {
@@ -211,17 +224,17 @@ class HashlineTools:
                     for key, value in self.service.repeats.items()
                     if not (key[0] == thread and key[2].startswith(str(target)))
                 }
-        except ValueError:
+        except (OSError, ValueError):
             pass
         result = self.service.read(path, thread=thread, turn=turn)
         if result.startswith(("Error:", "Image file:", "Binary file:")):
             return result
         try:
             bare, _, raw = parse_selector(path, 0)
-            target = resolve_path(self.service.cwd, bare)
+            target = self.service.policy.resolve(bare)
             if not target.is_file():
                 return result
-            data = target.read_bytes()
+            data = self.service.policy.read_bytes(target, self.service.max_read_bytes)
             digest = hashlib.sha256(data).hexdigest()
             if self.service.reads.get((thread, target)) != digest:
                 return "Error: File changed during read. Read again before editing."
@@ -239,10 +252,10 @@ class HashlineTools:
                     output.append(f"{match[1]}:{match[2]}")
                 else:
                     output.append(row)
-            previous = self.snapshots.get((thread, target, tag))
+            previous = self.snapshots.get((thread, target, tag, digest[:8]))
             if previous and previous.digest == digest:
                 seen |= previous.seen
-            self._remember((thread, target, tag), Snapshot(content, digest, seen))
+            self._remember((thread, target, tag, digest[:8]), Snapshot(content, digest, seen))
             return f"[{bare}#{tag}]\n" + "\n".join(output)
         except (OSError, UnicodeError, ValueError) as exc:
             return f"Error: {exc}"
@@ -275,16 +288,27 @@ class HashlineTools:
             plans: list[tuple[Path, Path | None, str, str, str, bool, set[int]]] = []
             touched: set[Path] = set()
             for section in _sections(patch):
-                target = resolve_path(self.service.cwd, section.path)
+                target = self.service.policy.resolve(section.path)
                 if target in touched:
                     raise ValueError(
                         "Use one section per source path; duplicate/overlapping paths are not supported."
                     )
-                data = target.read_bytes()
+                data = self.service.policy.read_bytes(target, self.service.max_read_bytes)
                 original = data.decode("utf-8")
                 digest = hashlib.sha256(data).hexdigest()
                 current_tag = file_hash(original)
-                snapshot = self.snapshots.get((thread, target, section.tag))
+                candidates = [
+                    value
+                    for key, value in self.snapshots.items()
+                    if key[:3] == (thread, target, section.tag)
+                ]
+                if (thread, target, section.tag) in self.ambiguous_tags or len(
+                    {candidate.digest for candidate in candidates}
+                ) > 1:
+                    raise ValueError(
+                        "Ambiguous snapshot tag collision; this tag identifies different file versions. Read a changed file with a distinct tag before editing."
+                    )
+                snapshot = candidates[0] if candidates else None
                 hunks, operation = _hunks(
                     section.rows, len(split_text_lines(snapshot.content if snapshot else original))
                 )
@@ -335,7 +359,7 @@ class HashlineTools:
                 if operation == "REM":
                     destination = None
                 elif operation and operation.startswith("MV "):
-                    destination = resolve_path(self.service.cwd, operation[3:].strip())
+                    destination = self.service.policy.resolve(operation[3:].strip())
                     if destination.exists() or destination in touched:
                         raise ValueError(
                             f"Move destination already exists or overlaps another section: {destination}"
@@ -368,19 +392,19 @@ class HashlineTools:
             applied: list[tuple[Path, Path | None, str, int]] = []
             try:
                 for target, destination, original, updated, _, _, _ in plans:
-                    mode = target.stat().st_mode
+                    mode = self.service.policy.stat(target).st_mode
                     applied.append((target, destination, original, mode))
                     if destination is not None:
-                        atomic_write(destination, updated)
-                        destination.chmod(mode)
+                        atomic_write(destination, updated, policy=self.service.policy)
+                        self.service.policy.chmod(destination, mode)
                     if destination != target:
-                        target.unlink()
+                        self.service.policy.unlink(target)
             except OSError:
                 for target, destination, original, mode in reversed(applied):
-                    atomic_write(target, original)
-                    target.chmod(mode)
+                    atomic_write(target, original, policy=self.service.policy)
+                    self.service.policy.chmod(target, mode)
                     if destination is not None and destination != target and destination.exists():
-                        destination.unlink()
+                        self.service.policy.unlink(destination)
                 raise
             output: list[str] = []
             for target, destination, original, updated, label, recovered, new_seen in plans:
@@ -395,7 +419,9 @@ class HashlineTools:
                 digest = hashlib.sha256(updated.encode()).hexdigest()
                 tag = file_hash(updated)
                 self.service.reads[(thread, destination)] = digest
-                self._remember((thread, destination, tag), Snapshot(updated, digest, new_seen))
+                self._remember(
+                    (thread, destination, tag, digest[:8]), Snapshot(updated, digest, new_seen)
+                )
                 shown = label if destination == target else str(destination)
                 output.append(f"[{shown}#{tag}]\n" + _diff(shown, original, updated))
             return "\n".join(output)
@@ -408,7 +434,7 @@ def create_hashline_tools(service: FilesystemTools) -> list[BaseTool]:
 
     @tool
     def read(path: str, runtime: ToolRuntime) -> str:
-        """Read numbered text with [path#TAG] snapshot headers for hashline edit. Select ranges with file:N-M, file:N+K, file:-N or comma-separated ranges. Copy tags exactly; read every line before editing it. Repeated ranges in one turn return unchanged notices."""
+        """Read numbered text with [path#TAG] snapshot headers for hashline edit. Select ranges with file:N-M, file:N+K, file:-N or comma-separated ranges. Copy tags exactly; read every line before editing it. Repeated ranges retain content and add a hint after three reads."""
         thread, turn = _identity(runtime)
         return _checked(implementation.read(path, thread=thread, turn=turn))
 
