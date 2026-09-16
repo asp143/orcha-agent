@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
-    HumanMessage,
     ToolMessage,
     messages_from_dict,
 )
@@ -931,7 +930,8 @@ def build_context(
 
     messages: list[BaseMessage] = []
     if summary is not None:
-        messages.append(HumanMessage(content=f"[Conversation summary]\n{summary}"))
+        from .summary import create_summary_message
+        messages.append(create_summary_message(summary))
     positions: dict[str, int] = {}
     for entry in message_entries:
         if isinstance(entry, MessageEntry):

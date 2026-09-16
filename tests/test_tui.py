@@ -1,3 +1,4 @@
+from orcha_agent.core.summary import create_summary_message
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
@@ -141,7 +142,7 @@ async def test_compact_uses_the_configured_summarizer_model(tmp_path: Path) -> N
         ctx.thread_config,
         {
             "messages": [
-                HumanMessage(content="[Conversation summary]\ncompact summary")
+                create_summary_message("compact summary")
             ],
             "todos": [],
             "files": {},
@@ -4066,9 +4067,7 @@ async def test_restart_reseed_deletes_orphan_checkpoint_before_state_update(
                 ctx.thread_config,
                 {
                     "messages": [
-                        HumanMessage(
-                            content="[Conversation summary]\nrebuilt once"
-                        )
+                        create_summary_message("rebuilt once")
                     ],
                     "todos": [],
                     "files": {},

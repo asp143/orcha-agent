@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from langchain_core.messages import HumanMessage, message_to_dict
+from langchain_core.messages import BaseMessage, HumanMessage, message_to_dict, messages_from_dict
 
 from .capture_cursor import CaptureBatch, FingerprintCache, message_digest
 from .ledger import (
@@ -21,6 +21,7 @@ from .ledger import (
     build_context,
 )
 from .session import SessionStore
+from .summary import extract_summary
 
 _SUMMARIZATION_PREFIX = "Here is a summary of the conversation to date:\n\n"
 
@@ -28,6 +29,49 @@ _CaptureReport = tuple[Callable[[str], None], str]
 _DEFERRED_ERRORS: ContextVar[list[_CaptureReport] | None] = ContextVar(
     "capture_deferred_errors", default=None
 )
+
+
+def first_kept_marker(path: list[Entry], first: BaseMessage) -> str | None:
+    """Locate the ledger boundary by message identity, never message count.
+
+    Legacy messages without IDs use their immutable content fingerprint. Ambiguous
+    legacy matches cannot establish a safe boundary and require a snapshot.
+    """
+    matches = [
+        index
+        for index, entry in enumerate(path)
+        if isinstance(entry, MessageEntry)
+        and (
+            entry.message["data"].get("id") == first.id
+            if first.id is not None
+            else message_digest(entry._validated_message or messages_from_dict([entry.message])[0])
+            == message_digest(first)
+        )
+    ]
+    if not matches or (first.id is None and len(matches) != 1):
+        return None
+    index = matches[-1]
+    return path[index - 1].id if index else ""
+
+
+def compaction_metadata(value: Any, *, method: str = "summary") -> dict[str, Any]:
+    """Checkpoint annotations are data, never constructor keyword authority."""
+    if not isinstance(value, Mapping):
+        return {"method": method}
+    result: dict[str, Any] = {"method": method}
+    if (
+        method != "shake"
+        and isinstance(value.get("method"), str)
+        and value["method"] in {"summary", "handoff"}
+    ):
+        result["method"] = value["method"]
+    short = value.get("short_summary")
+    if isinstance(short, str):
+        result["short_summary"] = short
+    tokens = value.get("tokens_before")
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
+        result["tokens_before"] = tokens
+    return result
 
 
 @contextmanager
@@ -86,7 +130,7 @@ def capture_graph_values(
             "SELECT digest FROM capture_state WHERE thread_id = ?", (thread_id,)
         ).fetchone()
 
-    messages = values.get("messages", ())
+    messages: list[BaseMessage] = list(values.get("messages", ()))
     fingerprints = cache.messages_digest(messages)
     previous = persisted
     if not previous and thread["captured"]:
@@ -155,25 +199,14 @@ def capture_graph_values(
                     retained_count = len(suffix)
         marker = None
         if retained_count:
-            first_id = retained_ids[0]
-            first_at = next(
-                (
-                    index
-                    for index in range(len(path) - 1, -1, -1)
-                    if isinstance(entry := path[index], MessageEntry)
-                    and entry.message["data"].get("id") == first_id
-                ),
-                None,
-            )
-            if first_at is not None:
-                marker = path[first_at - 1].id if first_at else ""
-            else:
+            marker = first_kept_marker(path, candidates[0])
+            if marker is None:
                 retained_count = 0
         summary = messages[summary_index].content
         entries.append(
             CompactionEntry(
-                summary=str(summary).removeprefix(_SUMMARIZATION_PREFIX),
-                **messages[summary_index].additional_kwargs.get("compaction", {}),
+                summary=extract_summary(str(summary)),
+                **compaction_metadata(messages[summary_index].additional_kwargs.get("compaction")),
                 first_kept_id=marker,
             )
         )
@@ -225,9 +258,18 @@ def capture_graph_values(
     for message in [*changed, *candidates]:
         metadata = message.additional_kwargs.get("compaction_shake")
         if isinstance(metadata, dict):
+            # An unchanged marker replayed in a reset snapshot is not a new event.
+            old_messages = build_context(Ledger(store).path(session_id)).messages
+            if any(
+                old.id == message.id and old.additional_kwargs.get("compaction_shake") == metadata
+                for old in old_messages
+            ):
+                continue
             entries.append(
                 CompactionEntry(
-                    summary="Superseded tool results removed.", first_kept_id="", **metadata
+                    summary="Superseded tool results removed.",
+                    first_kept_id="",
+                    **compaction_metadata(metadata, method="shake"),
                 )
             )
     state = {"todos": values.get("todos", []), "files": values.get("files", {})}

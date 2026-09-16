@@ -183,6 +183,7 @@ def test_loading_builtins_registers_expected_plugins_and_features(
         registry.tools
     )
     assert {entry.kind for entry in registry.block_renderers} == {
+        "compaction",
         "assistant",
         "banner",
         "diff",

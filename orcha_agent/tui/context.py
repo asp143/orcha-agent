@@ -205,6 +205,7 @@ class AppContext:
     compaction_status: str = ""
     _idle_compaction: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _shown_compactions: set[str] = field(default_factory=set, init=False, repr=False)
+    _compaction_leaf: str | None = field(default=None, init=False, repr=False)
     _pending_switch_old_thread: str | None = field(
         default=None, init=False, repr=False
     )
@@ -249,6 +250,7 @@ class AppContext:
             self._bus.on(ModelSwitch, self._compaction_activity, plugin="compaction")
             self._bus.on(ThreadSwitch, self._compaction_activity, plugin="compaction")
             self._bus.on(CompactionStatus, self._compaction_status_changed, plugin="compaction")
+        self._seed_compaction_cards()
         if self.agents is None:
             self.agents = AgentRegistry(
                 self._registry,
@@ -948,12 +950,28 @@ class AppContext:
             if task is not asyncio.current_task():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+        if isinstance(event, (SessionSwitch, ThreadSwitch)):
+            self._seed_compaction_cards()
         if isinstance(event, TurnEnd):
-            for entry in self.ledger.path(self.session_id):
+            leaf = self.ledger.leaf(self.session_id)
+            unseen = []
+            cursor = leaf
+            while cursor is not None and cursor != self._compaction_leaf:
+                entry = self.ledger.get(self.session_id, cursor)
+                if entry is None:
+                    break
                 if isinstance(entry, CompactionEntry) and entry.id not in self._shown_compactions:
-                    self._compaction_card(entry)
+                    unseen.append(entry)
+                cursor = entry.parent_id
+            self._compaction_leaf = leaf
+            for entry in reversed(unseen):
+                self._compaction_card(entry)
             if self.cfg.compaction.enabled:
                 self._idle_compaction = asyncio.create_task(self._compact_when_idle())
+
+    def _seed_compaction_cards(self) -> None:
+        self._compaction_leaf = self.ledger.leaf(self.session_id)
+        self._shown_compactions = {entry.id for entry in self.ledger.path(self.session_id) if isinstance(entry, CompactionEntry)}
 
     async def _compact_when_idle(self) -> None:
         await asyncio.sleep(self.cfg.compaction.idle_seconds)
@@ -975,10 +993,16 @@ class AppContext:
             await self.compact()
 
     def _compaction_card(self, entry: CompactionEntry) -> None:
-        from rich.panel import Panel
-        from rich.text import Text
+        from orcha_agent.tui.blocks.compaction import render
+        from orcha_agent.tui.blocks import DEFAULT_THEME
+        from orcha_agent.tui.frame import Block
         self._shown_compactions.add(entry.id)
-        self.console.print(Panel(Text(entry.short_summary or entry.summary[:160]), title=f"Compacted · {entry.method} · {entry.tokens_before or 0:,} tokens before", border_style="yellow"))
+        data = {"summary": entry.short_summary or entry.summary[:160], "method": entry.method, "tokens_before": entry.tokens_before or 0}
+        transcript = getattr(self.console, "transcript", None)
+        if transcript is not None:
+            transcript.append_compaction(data)
+        else:
+            self.console.print(render(Block(id=entry.id, kind="compaction", data=data), DEFAULT_THEME, 80, 20, False))
 
     async def compact(self, instructions: str = "") -> None:
         if self._idle_compaction is not None and self._idle_compaction is not asyncio.current_task():
@@ -1016,18 +1040,14 @@ class AppContext:
             await self.agent.aupdate_state(self.thread_config, _update(result.messages))
             self.capture_turn()
             entry = next((item for item in reversed(self.ledger.path(self.session_id)) if isinstance(item, CompactionEntry) and item.method == "shake"), None)
-            if entry is not None:
+            if entry is not None and entry.id not in self._shown_compactions:
                 self._compaction_card(entry)
             return
         summary_text = result.summary
         retained = result.messages[1:]
-        first_kept_id = None
-        if retained:
-            path = self.ledger.path(self.session_id)
-            message_positions = [index for index, entry in enumerate(path) if isinstance(entry, MessageEntry)]
-            first_at = message_positions[-len(retained)] if len(message_positions) >= len(retained) else None
-            if first_at is not None:
-                first_kept_id = path[first_at - 1].id if first_at else ""
+        from orcha_agent.core.capture import first_kept_marker
+        path = self.ledger.path(self.session_id)
+        first_kept_id = first_kept_marker(path, retained[0]) if retained else None
         ledger = self.ledger
         prior_leaf = ledger.leaf(self.session_id)
         prior_thread = self.thread_id
@@ -1045,6 +1065,10 @@ class AppContext:
             ),
             thread_id=None,
         )
+        snapshots = []
+        if retained and first_kept_id is None:
+            from langchain_core.messages import message_to_dict
+            snapshots = ledger.append_many(self.session_id, [MessageEntry(message=message_to_dict(message)) for message in retained], thread_id=None)
         if not was_pending:
             self.thread_id = self.session.next_thread_id(self.session_id)
             self._pending_switch_old_thread = prior_thread
@@ -1052,6 +1076,8 @@ class AppContext:
             await self._seed_ready_thread("compact")
         except BaseException:
             if self._reseed_pending():
+                for snapshot in reversed(snapshots):
+                    ledger.set_position(self.session_id, leaf_id=snapshot.parent_id, thread_id=None, discard_entry_id=snapshot.id)
                 ledger.set_position(
                     self.session_id,
                     leaf_id=prior_leaf,

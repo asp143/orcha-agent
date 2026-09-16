@@ -1,0 +1,3 @@
+╭─ Compacted · handoff · 84,000 tokens before ─────────────────────────────╮
+│ Preserved decisions and next steps.                                      │
+╰──────────────────────────────────────────────────────────────────────────╯
