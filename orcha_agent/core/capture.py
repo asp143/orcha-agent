@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from langchain_core.messages import HumanMessage, message_to_dict
+from langchain_core.messages import HumanMessage, SystemMessage, message_to_dict
 
 from .capture_cursor import CaptureBatch, FingerprintCache, message_digest
 from .ledger import (
@@ -222,6 +222,13 @@ def capture_graph_values(
         )
     entries.extend(MessageEntry(message=message_to_dict(message)) for message in candidates)
     state = {"todos": values.get("todos", []), "files": values.get("files", {})}
+    reminders = values.get("rule_reminders", {})
+    if isinstance(reminders, Mapping) and reminders:
+        state["rule_reminders"] = {
+            name: message_to_dict(message)
+            for name, message in reminders.items()
+            if isinstance(message, SystemMessage)
+        }
     digest = cache.live_state_digest(state)
     if state_row is None or state_row["digest"] != digest:
         entries.append(CustomEntry(custom_type="turn_state", data=state))

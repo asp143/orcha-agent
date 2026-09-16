@@ -1005,3 +1005,55 @@ blocked. These controls do not change saved model settings or the session mode.
 Keywords inside fenced or inline code, XML/HTML sections, identifiers, paths,
 filenames, and immediate function calls remain literal. The notices enter only
 the model request and do not appear as extra conversation messages.
+
+### Rulebook and time-traveling stream rules
+
+Put always-active instructions in `RULES.md`, or named Markdown rules in
+`.orcha-agent/rules/*.md`. User rules live in `~/.config/orcha-agent/rules/`.
+Claude `.claude/rules/*.md` and Cursor `.cursor/rules/*.mdc` files are imported
+at project and user scope. Native project rules take precedence by filename,
+then native user rules, then imports. `/rules` lists the rulebook; the model
+reads bodies on demand through the `rule` tool with `rule://name`. Matching
+file paths automatically attach rule bodies using the skill path normalizer.
+
+```markdown
+---
+globs: ["**/*.py"]
+alwaysApply: false
+---
+Use explicit type annotations in Python code.
+```
+
+A `condition` regex (or list of regexes) monitors streamed assistant text, even
+when a match spans chunks. On a match the stream closes, a durable system
+reminder is inserted, and generation retries from the pending model checkpoint
+without replaying completed tools. The transcript shows **⚠ Injecting rule:
+<name>**. Reminders survive compaction and session reload; reset clears them.
+Scopes include `text`, `thinking`, `tool`/`toolcall`, and named tools such as
+`tool:write(*.py)`; a list combines scopes. The default monitors text and tool
+arguments. `globs` also gate stream matches by tool file path. Nested agent
+streams are not interrupted by the parent monitor.
+
+```markdown
+---
+condition: "TODO: implement later"
+scope: text
+interruptMode: always
+---
+Finish the implementation instead of leaving placeholder TODOs.
+```
+
+```toml
+[plugins.rules]
+enabled = true
+contextMode = "discard" # discard partial output, or "keep" it in model context
+interruptMode = "always" # also "prose-only", "tool-only", or "never"
+repeatMode = "once" # use "after-gap" to permit later reinjection
+repeatGap = 10 # completed user turns between reinjections
+```
+
+A rule's `interruptMode` overrides the plugin setting. `never` and `tool-only`
+defer text-match reminders until the stream finishes, without a retry. Tool
+argument matches can abort before the tool runs; `prose-only` defers them. A rule
+can interrupt at most once per user turn, so a noncompliant model cannot create
+an endless retry loop. Invalid condition regexes warn without stopping startup.

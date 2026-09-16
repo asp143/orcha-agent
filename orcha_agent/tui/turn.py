@@ -24,6 +24,7 @@ from orcha_agent.core.events import (
     TurnStart,
 )
 from orcha_agent.core.plugin import Handled, Resolved
+from orcha_agent.extensibility.stream_rules import intercepted_stream
 
 from .queue import PromptQueue
 
@@ -508,7 +509,7 @@ async def run_turn(host: TurnHost, text: str) -> None:
         while True:
             resolution: Resolved | None = None
             static_tool_boundary = False
-            async for stream_item in host.agent.astream(next_input, **stream_kwargs):
+            async for stream_item in intercepted_stream(host, next_input, **stream_kwargs):
                 if len(stream_item) == 3:
                     namespace, mode, data = stream_item
                 else:

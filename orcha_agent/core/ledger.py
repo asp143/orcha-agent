@@ -16,6 +16,7 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
     messages_from_dict,
 )
@@ -923,7 +924,26 @@ def build_context(
     post_reset = _after_last_reset(path)
     message_entries, summary = _apply_last_compaction(post_reset)
 
-    messages: list[BaseMessage] = []
+    # Rule injections are durable instructions, not summarizable conversation.
+    # Preserve their original messages across compaction, but never across reset.
+    retained_rules: dict[str, BaseMessage] = {}
+    if summary is not None:
+        kept_ids = {entry.id for entry in message_entries}
+        kept_rules = {
+            name for entry in message_entries if isinstance(entry, MessageEntry)
+            for name in _message_from_entry(entry).additional_kwargs.get("orcha_rules", [])
+        }
+        for entry in post_reset:
+            if isinstance(entry, MessageEntry) and entry.id not in kept_ids:
+                message = _message_from_entry(entry)
+                if (
+                    isinstance(message, SystemMessage)
+                    and "orcha_rules" in message.additional_kwargs
+                ):
+                    for name in message.additional_kwargs["orcha_rules"]:
+                        if name not in kept_rules:
+                            retained_rules[name] = message
+    messages: list[BaseMessage] = list({id(m): m for m in retained_rules.values()}.values())
     if summary is not None:
         messages.append(HumanMessage(content=f"[Conversation summary]\n{summary}"))
     positions: dict[str, int] = {}
@@ -945,6 +965,7 @@ def build_context(
     mode: str | None = None
     todos: list[Any] = []
     files: dict[str, Any] = {}
+    durable_rules: dict[str, Any] = {}
     for entry in post_reset:
         if isinstance(entry, ModelChangeEntry):
             model = deepcopy(entry.model)
@@ -957,6 +978,21 @@ def build_context(
                 raw_files = data.get("files", {})
                 todos = deepcopy(raw_todos) if isinstance(raw_todos, list) else []
                 files = deepcopy(raw_files) if isinstance(raw_files, dict) else {}
+                raw_rules = data.get("rule_reminders", {})
+                durable_rules = raw_rules if isinstance(raw_rules, dict) else {}
+
+    attached = {
+        name for message in messages if isinstance(message, SystemMessage)
+        for name in message.additional_kwargs.get("orcha_rules", [])
+    }
+    for name, serialized in durable_rules.items():
+        if name not in attached:
+            try:
+                restored = messages_from_dict([serialized])[0]
+            except (TypeError, ValueError, KeyError, IndexError):
+                continue
+            if isinstance(restored, SystemMessage):
+                messages.insert(0, restored)
 
     return Context(
         messages=messages,
