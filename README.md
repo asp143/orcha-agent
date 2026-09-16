@@ -945,3 +945,34 @@ in chronological order. No scripts, remote assets, or image requests are needed.
 The default filename is `<session-id>.html`; paths may contain spaces.
 As with JSONL export, existing files require `--force`, for example
 `/export --html --force review.html`. The output file is private (0600).
+
+## Declarative hooks
+
+Add `[[hooks]]` entries to `~/.config/orcha-agent/config.toml` or trusted
+`.orcha-agent/config.toml`. Project hooks load only with `--trust-cwd` or an
+existing trusted directory; user and project hooks are combined. `/hooks` lists
+active hooks.
+
+```toml
+[[hooks]]
+event = "tool_call_before"
+matcher = "write*"
+command = "python scripts/check_write.py"
+timeout = 10
+blocking = true
+```
+
+Events are `session_start`, `session_end`, `turn_start`, `turn_end`,
+`tool_call_before`, `tool_call_after`, `model_switch`, `compaction`,
+`agent_spawned`, and `agent_finished`. Tool matchers are name globs; `regex:`
+selects a regex over the JSON payload. Other matchers are regexes over event
+text (or its JSON payload). Commands receive JSON on stdin and run in the
+workspace. Alternatively, `python = "package.module:function"` invokes a sync
+or async function with the payload in a bounded subprocess.
+
+Exit 0 succeeds; exit 2 blocks a before-tool call with stderr as the explanation.
+A successful before hook can return `{"block": true, "message": "reason"}` or
+`{"args": {"path": "corrected-path", "content": "..."}}` to replace arguments
+for file-writing tools. Hooks run in declaration order and stop on a block.
+Other exit codes and timeouts produce warnings. `blocking = false` runs an
+observational hook in the background; it cannot block or rewrite a call.

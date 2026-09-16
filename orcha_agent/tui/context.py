@@ -22,7 +22,7 @@ from orcha_agent.core.agent import build_agent
 from orcha_agent.core.agents import AgentRegistry
 from orcha_agent.core.capture import capture_graph_values
 from orcha_agent.core.config import Config, is_trusted_cwd
-from orcha_agent.core.events import ModelSwitch, SessionSwitch, ThreadSwitch
+from orcha_agent.core.events import Compaction, ModelSwitch, SessionSwitch, ThreadSwitch
 from orcha_agent.core.ledger import (
     CompactionEntry,
     CustomEntry,
@@ -972,6 +972,7 @@ class AppContext:
                 self.thread_id = prior_thread
                 self._pending_switch_old_thread = prior_switch_old_thread
             raise
+        await self._bus.emit(Compaction(self.session_id, summary_text))
         self.console.print("Conversation compacted.")
 
     def _capture_values(

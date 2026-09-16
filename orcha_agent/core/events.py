@@ -81,6 +81,27 @@ class ModelChunk(Event):
 
 
 @dataclass(slots=True)
+class ToolCallBefore(Event):
+    name: str
+    args: dict[str, Any]
+    id: str
+    block_message: str | None = None
+
+
+@dataclass(slots=True)
+class ToolCallAfter(Event):
+    name: str
+    id: str
+    result: Any
+
+
+@dataclass(slots=True)
+class Compaction(Event):
+    session_id: str
+    summary: str
+
+
+@dataclass(slots=True)
 class ToolCallStart(Event):
     name: str
     args: dict[str, Any]

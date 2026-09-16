@@ -341,6 +341,10 @@ class PluginAPI:
     ) -> None:
         self._bus.on(event_type, handler, plugin=self.name, priority=priority)
 
+    async def emit(self, event: Event) -> Handled | None:
+        """Emit a typed event through the application event bus."""
+        return await self._bus.emit(event)
+
     def system_prompt_fragment(
         self,
         text: str,
