@@ -70,7 +70,7 @@ def request(text):
             responses=["ok"],
             profile={"reasoning_output": True, "reasoning_effort_levels": ["high", "xhigh", "max"]},
         ),
-        messages=[HumanMessage(text)],
+        messages=[HumanMessage(text, additional_kwargs={"orcha_user_origin": True})],
         tools=[{"name": "read"}, {"name": "write"}, {"name": "task"}],
         system_message=SystemMessage("Base"),
         model_settings={"temperature": 0},
@@ -98,20 +98,13 @@ async def test_turn_notices_and_settings_do_not_mutate_original_or_next_turn():
 
 
 @pytest.mark.asyncio
-async def test_plan_filters_and_blocks_write_even_if_requested():
+@pytest.mark.parametrize("text", ["plan", "implement the plan", "plan: the change"])
+async def test_plan_is_ordinary_text_even_with_registered_plan_mode(text):
+    value = request(text)
     handler = AsyncMock()
-    await middleware().awrap_model_call(request("plan the change"), handler)
-    assert handler.call_args.args[0].tools == [{"name": "read"}]
-    call = SimpleNamespace(
-        state={"messages": [HumanMessage("plan")]}, tool_call={"name": "write", "id": "call-1"}
-    )
-    tool_handler = AsyncMock()
-    blocked = await middleware().awrap_tool_call(call, tool_handler)
-    assert blocked.status == "error"
-    tool_handler.assert_not_awaited()
-    call.tool_call["name"] = "read"
-    await middleware().awrap_tool_call(call, tool_handler)
-    tool_handler.assert_awaited_once()
+    await middleware().awrap_model_call(value, handler)
+    assert handler.call_args.args[0] is value
+    assert "plan" not in keywords(text)
 
 
 @pytest.mark.asyncio
@@ -228,6 +221,71 @@ async def test_real_older_anthropic_payload_uses_enabled_thinking(model_name, ex
     await plugin.awrap_model_call(value, handler)
     modified = handler.call_args.args[0]
     payload = model._get_request_payload(modified.messages, **modified.model_settings)
-    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 4095}
+    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 16000}
+    assert payload["max_tokens"] == 24192
+    assert payload["max_tokens"] - payload["thinking"]["budget_tokens"] == 8192
     assert payload["temperature"] == 1
     assert payload.get("output_config", {}).get("effort") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text", ["ultrathink orchestrate", "Summary: ultrathink", "Task: orchestrate"]
+)
+async def test_model_authored_human_messages_do_not_activate_keywords(text):
+    value = request("ultrathink").override(
+        messages=[
+            HumanMessage("ultrathink", additional_kwargs={"orcha_user_origin": True}),
+            AIMessage("Delegating now"),
+            HumanMessage(text),
+        ]
+    )
+    handler = AsyncMock()
+    await middleware().awrap_model_call(value, handler)
+    assert handler.call_args.args[0] is value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap,expected_budget", [(8192, 4096), (16384, 8192), (20000, 11808)])
+async def test_older_anthropic_respects_output_cap_with_visible_headroom(cap, expected_budget):
+    from langchain_anthropic import ChatAnthropic
+
+    model = ChatAnthropic(
+        model="claude-sonnet-4-5",
+        api_key="test",
+        max_tokens=4096,
+        profile={"reasoning_output": True, "max_output_tokens": cap},
+    )
+    value = request("ultrathink").override(model=model, model_settings={})
+    handler = AsyncMock()
+    await middleware().awrap_model_call(value, handler)
+    modified = handler.call_args.args[0]
+    payload = model._get_request_payload(modified.messages, **modified.model_settings)
+    assert payload["max_tokens"] == cap
+    assert payload["thinking"]["budget_tokens"] == expected_budget
+    assert payload["max_tokens"] - expected_budget >= min(8192, cap // 2)
+
+
+def test_user_input_marks_only_user_originated_messages():
+    from langchain_core.messages import convert_to_messages
+
+    from orcha_agent.extensibility.magic_keywords import turn_keywords
+    from orcha_agent.tui.turn import _user_input
+
+    user = convert_to_messages(_user_input("ultrathink")["messages"])
+    synthetic = convert_to_messages(_user_input("ultrathink", user_origin=False)["messages"])
+    assert turn_keywords(user) == {"ultrathink"}
+    assert turn_keywords(synthetic) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_plugin_expanded_prompt_is_not_user_authored(monkeypatch):
+    from orcha_agent.tui.context import AppContext
+
+    turn = AsyncMock()
+    monkeypatch.setattr("orcha_agent.tui.turn._run_cancellable_turn", turn)
+    ctx = SimpleNamespace(cfg=SimpleNamespace(model="anthropic:test"))
+    await AppContext.submit_prompt(ctx, "Instructions from a file: ultrathink orchestrate")
+    turn.assert_awaited_once_with(
+        ctx, "Instructions from a file: ultrathink orchestrate", user_origin=False
+    )

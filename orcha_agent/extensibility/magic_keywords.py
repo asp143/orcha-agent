@@ -6,17 +6,16 @@ import re
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-_KEYWORDS = ("ultrathink", "orchestrate", "plan")
+_KEYWORDS = ("ultrathink", "orchestrate")
 _BOUNDARY = re.compile(
-    r"(?<![\w./\\-])(?<!::)(ultrathink|orchestrate|plan)(?![\w/\\-])(?!\.[\w-])(?!\()"
+    r"(?<![\w./\\-])(?<!::)(ultrathink|orchestrate)(?![\w/\\-])(?!\.[\w-])(?!\()"
 )
 _TAG = re.compile(r"</?([A-Za-z][A-Za-z0-9-]*)\b(?:[^<>\"']|\"[^\"]*\"|'[^']*')*>")
 _NOTICES = {
     "ultrathink": "Use the highest supported reasoning effort for this turn. Carefully verify assumptions and conclusions.",
     "orchestrate": "Fan out independent work through the task tool when it is available; coordinate and integrate the results.",
-    "plan": "This turn is read-only planning. Inspect and propose a plan; do not modify files, run commands, or delegate writes.",
 }
 
 
@@ -79,36 +78,17 @@ def keywords(text: str) -> frozenset[str]:
 
 def turn_keywords(messages: list[Any]) -> frozenset[str]:
     latest = next((item for item in reversed(messages) if isinstance(item, HumanMessage)), None)
-    return keywords(latest.text) if latest is not None else frozenset()
-
-
-def tool_name(tool: Any) -> str:
-    return str(tool.get("name", "") if isinstance(tool, dict) else getattr(tool, "name", ""))
+    if latest is None or latest.additional_kwargs.get("orcha_user_origin") is not True:
+        return frozenset()
+    return keywords(latest.text)
 
 
 class MagicKeywordsMiddleware(AgentMiddleware):
     def __init__(self, ctx: Any = None) -> None:
         self.ctx = ctx
 
-    def plan_tools(self) -> set[str] | None:
-        registry = getattr(self.ctx, "registry", None)
-        registration = registry.modes.get("plan") if registry is not None else None
-        if registration is None:
-            return None
-        spec = getattr(registration, "spec", registration)
-        allowed = getattr(spec, "allowed_tools", None)
-        if allowed is None:
-            return None
-        names = set(allowed)
-        if "read_file" in names:
-            names.add("read")
-        return names
-
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         active = set(turn_keywords(request.messages))
-        allowed = self.plan_tools()
-        if allowed is None:
-            active.discard("plan")
         if not active:
             return await handler(request)
         blocks = (
@@ -125,8 +105,6 @@ class MagicKeywordsMiddleware(AgentMiddleware):
             }
         )
         overrides: dict[str, Any] = {"system_message": SystemMessage(content=blocks)}
-        if "plan" in active and allowed is not None:
-            overrides["tools"] = [tool for tool in request.tools if tool_name(tool) in allowed]
         if "ultrathink" in active:
             settings = dict(request.model_settings)
             cfg = getattr(self.ctx, "cfg", None)
@@ -173,15 +151,17 @@ class MagicKeywordsMiddleware(AgentMiddleware):
                     if "xhigh" in levels:
                         settings["thinking"] = {"type": "adaptive"}
                     elif profile.get("reasoning_output") is True:
-                        max_tokens = (
-                            settings.get("max_tokens")
-                            or getattr(request.model, "max_tokens", None)
-                            or 4096
-                        )
-                        if max_tokens > 1024:
+                        # Increase the request ceiling with the reasoning budget so
+                        # thinking does not consume almost all visible output.
+                        output_cap = profile.get("max_output_tokens", 24192)
+                        max_tokens = min(24192, output_cap)
+                        output_headroom = min(8192, max_tokens // 2)
+                        budget = min(16000, max_tokens - output_headroom)
+                        if budget >= 1024:
+                            settings["max_tokens"] = max_tokens
                             settings["thinking"] = {
                                 "type": "enabled",
-                                "budget_tokens": max_tokens - 1,
+                                "budget_tokens": budget,
                             }
                             settings["temperature"] = 1
                 elif prefix == "google":
@@ -201,17 +181,3 @@ class MagicKeywordsMiddleware(AgentMiddleware):
                         settings["thinking_budget"] = None
             overrides["model_settings"] = settings
         return await handler(request.override(**overrides))
-
-    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
-        allowed = self.plan_tools()
-        if (
-            allowed is not None
-            and "plan" in turn_keywords(request.state.get("messages", []))
-            and request.tool_call["name"] not in allowed
-        ):
-            return ToolMessage(
-                content="Blocked: this turn is in read-only plan mode.",
-                tool_call_id=request.tool_call["id"],
-                status="error",
-            )
-        return await handler(request)

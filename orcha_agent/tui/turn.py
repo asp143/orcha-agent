@@ -7,6 +7,7 @@ import json
 import logging
 import signal
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -27,8 +28,9 @@ from orcha_agent.core.plugin import Handled, Resolved
 from orcha_agent.extensibility.stream_rules import intercepted_stream
 
 from .queue import PromptQueue
-
 from .transcript import _matches
+
+USER_PROMPT_ORIGIN: ContextVar[bool] = ContextVar("user_prompt_origin", default=True)
 
 
 @runtime_checkable
@@ -470,11 +472,14 @@ def _close_steering(host: TurnHost, *, promote_pending: bool = False) -> None:
         queue.close_steering(promote_pending=promote_pending)
 
 
-def _user_input(text: str) -> dict[str, list[dict[str, str]]]:
-    return {"messages": [{"role": "user", "content": text}]}
+def _user_input(text: str, *, user_origin: bool = True) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": "user", "content": text}
+    if user_origin:
+        message["additional_kwargs"] = {"orcha_user_origin": True}
+    return {"messages": [message]}
 
 
-async def run_turn(host: TurnHost, text: str) -> None:
+async def run_turn(host: TurnHost, text: str, *, user_origin: bool = True) -> None:
     ensure_agent = getattr(host, "ensure_agent", None)
     if callable(ensure_agent):
         if not await ensure_agent():
@@ -490,7 +495,8 @@ async def run_turn(host: TurnHost, text: str) -> None:
             host.session.set_title(host.session_id, title)
     await host.bus.emit(TurnStart(thread_id=thread_id, text=text, source_id=source_id))
     _open_steering(host)
-    next_input: Any = _user_input(text)
+    user_origin = user_origin and USER_PROMPT_ORIGIN.get() and source_id == "main"
+    next_input: Any = _user_input(text, user_origin=user_origin)
     tool_calls = _ToolCallBuffer()
     model_labels = _ModelLabelBuffer()
     seen_results: set[str] = set()
@@ -547,13 +553,17 @@ async def run_turn(host: TurnHost, text: str) -> None:
                 continue
             if static_tool_boundary:
                 steering = _pop_steering(host)
-                next_input = Command(update=_user_input(steering)) if steering is not None else None
+                next_input = (
+                    Command(update=_user_input(steering, user_origin=source_id == "main"))
+                    if steering is not None
+                    else None
+                )
                 continue
             _close_steering(host)
             steering = _pop_steering(host)
             if steering is not None:
                 _open_steering(host)
-                next_input = _user_input(steering)
+                next_input = _user_input(steering, user_origin=source_id == "main")
                 continue
             break
     except asyncio.CancelledError:
@@ -615,8 +625,8 @@ async def _capture_turn(host: TurnHost, *, cancelled: bool) -> None:
         raise asyncio.CancelledError
 
 
-async def _run_cancellable_turn(ctx: TurnHost, text: str) -> None:
-    task = asyncio.create_task(run_turn(ctx, text))
+async def _run_cancellable_turn(ctx: TurnHost, text: str, *, user_origin: bool = True) -> None:
+    task = asyncio.create_task(run_turn(ctx, text, user_origin=user_origin))
     loop = asyncio.get_running_loop()
     signal_installed = False
     try:

@@ -94,7 +94,7 @@ from .transcript import Transcript
 from .statusline import agent_counts, render_statusline
 from .theme import Theme, ThemeWatcher, apply_colorblind, load_themes, select_theme, theme_from_background
 from .title import TerminalTitle
-from .turn import _run_cancellable_turn
+from .turn import USER_PROMPT_ORIGIN, _run_cancellable_turn
 from .overlays import HubOverlay, KeyBindingsOverlay, register_builtin_overlays
 from .overlays.base import Overlay
 from .overlays.paste import PasteOverlay
@@ -1814,12 +1814,17 @@ class ApplicationRuntime:
                 return
             pending_user = text
             current = await self._claim_agent_delivery()
+            current_is_user = current is None and user_prompt
             if current is None:
                 current = pending_user
                 pending_user = None
             while current is not None:
                 self.streaming = True
-                self._active_turn = asyncio.create_task(self._dispatch_submission(current))
+                origin_token = USER_PROMPT_ORIGIN.set(current_is_user)
+                try:
+                    self._active_turn = asyncio.create_task(self._dispatch_submission(current))
+                finally:
+                    USER_PROMPT_ORIGIN.reset(origin_token)
                 try:
                     await self._active_turn
                 except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1842,6 +1847,7 @@ class ApplicationRuntime:
                 elif current is None:
                     current = self.queue.pop(mode="follow_up")
                     next_is_user = current is not None
+                current_is_user = next_is_user
                 if next_is_user and self.advisor is not None:
                     self.advisor.before_user_prompt()
                 if current is not None:

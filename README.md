@@ -1033,9 +1033,13 @@ and resumed sessions do not automatically open it.
 Standalone lowercase `ultrathink` requests the highest reasoning effort for the
 current turn, capped by the actual model profile and supported reasoning controls.
 Non-reasoning models receive no extra reasoning parameters. `orchestrate` adds a hidden system reminder to fan out independent
-work with `task`. Standalone `plan` makes that turn read-only when the plan mode
-is registered: only its read tools are exposed, and write/delegation calls are
-blocked. These controls do not change saved model settings or the session mode.
+work with `task`. The ordinary word `plan` has no special effect; use `/mode plan`
+to explicitly select read-only planning. Keyword controls apply only to messages
+marked as direct user submissions, including user steering. Model summaries,
+subagent tasks, advisor follow-ups, agent deliveries, and expanded file/skill
+instructions cannot activate them. These controls do not change saved model
+settings or the session mode. Older Claude thinking budgets reserve output
+headroom by raising the per-turn output limit within the model's maximum.
 Keywords inside fenced or inline code, XML/HTML sections, identifiers, paths,
 filenames, and immediate function calls remain literal. The notices enter only
 the model request and do not appear as extra conversation messages.

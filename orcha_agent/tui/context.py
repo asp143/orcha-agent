@@ -765,7 +765,7 @@ class AppContext:
         if not text.strip():
             return
         if model is None or model == self.cfg.model:
-            await _run_cancellable_turn(self, text)
+            await _run_cancellable_turn(self, text, user_origin=False)
             return
         previous_cfg, previous_agent = self.cfg, self.agent
         previous_summarizer = self.summarizer
@@ -786,7 +786,7 @@ class AppContext:
             )
         self.cfg, self.agent, self.summarizer = candidate_cfg, candidate_agent, candidate_summarizer
         try:
-            await _run_cancellable_turn(self, text)
+            await _run_cancellable_turn(self, text, user_origin=False)
         finally:
             self.cfg, self.agent, self.summarizer = previous_cfg, previous_agent, previous_summarizer
             if previous_agent is not None:
