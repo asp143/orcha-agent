@@ -366,6 +366,12 @@ def load_plugins(
         registry_snapshot = _snapshot_registry(registry)
         handlers_snapshot = bus.handlers.copy()
         plugin_config = dict(cfg.plugin_config(spec.name))
+        if spec.name == "tools_native":
+            plugin_config.update(
+                native=cfg.tools.native and cfg.backend == "local_shell",
+                cwd=cfg.cwd,
+                edit_format=cfg.tools.edit_format,
+            )
         if spec.name.startswith("provider_"):
             prefix = spec.name.removeprefix("provider_")
             plugin_config = {

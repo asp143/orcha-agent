@@ -206,6 +206,24 @@ class MemoryStoreConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolsConfig:
+    native: bool = True
+    edit_format: str = "replace"
+
+
+def _tools_config(value: Any, parser: argparse.ArgumentParser) -> ToolsConfig:
+    if not isinstance(value, Mapping):
+        parser.error("[tools] must be a TOML table")
+    native = value.get("native", True)
+    if not isinstance(native, bool):
+        parser.error("[tools] native must be true or false")
+    edit_format = value.get("edit_format", "replace")
+    if edit_format not in ("replace", "hashline"):
+        parser.error('[tools] edit_format must be "replace" or "hashline"')
+    return ToolsConfig(native=native, edit_format=edit_format)
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
 
@@ -253,6 +271,7 @@ class Config:
     advisor: AdvisorConfig = field(default_factory=AdvisorConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     memory_store: MemoryStoreConfig = field(default_factory=MemoryStoreConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
 
     def plugin_config(self, name: str) -> Mapping[str, Any]:
         value = self.plugins.get(name, {})
@@ -745,6 +764,7 @@ def load_config(
         advisor=advisor_config,
         persistence=persistence_config,
         memory_store=memory_store_config,
+        tools=_tools_config(values.get("tools", {}), parser),
         pricing={
             str(model_name): {
                 str(key): float(value)
