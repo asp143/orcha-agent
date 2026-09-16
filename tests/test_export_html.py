@@ -101,3 +101,26 @@ async def test_html_default_path(transcript, tmp_path, monkeypatch):
     )
     await _export(ctx, "--html")
     assert Path(f"{session_id}.html").is_file()
+
+
+@pytest.mark.parametrize(
+    "tool,output,is_diff",
+    [
+        ("bash", "- ordinary bullet\n+ progress message", False),
+        ("read", "-10 degrees\n+10 degrees", False),
+        ("bash", "--- a/file\n+++ b/file\n-old\n+new", True),
+        ("bash", "@@ -1 +1 @@\n-old\n+new", True),
+        ("edit", "-old\n+new", True),
+        ("apply_patch", "-old\n+new", True),
+    ],
+)
+def test_tool_output_colours_only_diff_content(transcript, tool, output, is_diff):
+    store, session_id = transcript
+    entry = Ledger(store).append(
+        session_id,
+        MessageEntry(message=message_to_dict(ToolMessage(output, name=tool, tool_call_id="extra"))),
+    )
+    html = render_session_html(store, session_id)
+    card = html.split(f'id="{entry.id}"', 1)[1].split("</details>", 1)[0]
+    assert ('class="removed"' in card) is is_diff
+    assert ('class="added"' in card) is is_diff

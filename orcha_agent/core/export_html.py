@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from html import escape
 from pathlib import Path
@@ -38,10 +39,25 @@ def _text(content: Any) -> str:
     return json.dumps(content, ensure_ascii=False, default=str)
 
 
-def _tool_output(text: str) -> str:
+def _tool_output(text: str, tool_name: str = "") -> str:
+    source_lines = text.splitlines()
+    is_diff = (
+        tool_name in {"edit", "edit_file", "apply_patch"}
+        or any(re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", line) for line in source_lines)
+        or any(
+            before.startswith("--- ") and after.startswith("+++ ")
+            for before, after in zip(source_lines, source_lines[1:])
+        )
+    )
     lines = []
-    for line in text.splitlines():
-        kind = "added" if line.startswith("+") else "removed" if line.startswith("-") else "context"
+    for line in source_lines:
+        kind = (
+            "added"
+            if is_diff and line.startswith("+")
+            else "removed"
+            if is_diff and line.startswith("-")
+            else "context"
+        )
         lines.append(f'<span class="{kind}">{escape(line)}</span>')
     return '<pre class="tool-output">' + "\n".join(lines) + "</pre>"
 
@@ -73,7 +89,7 @@ def render_session_html(store: SessionStore, session_id: str, *, theme: Any = No
         if role == "tool":
             label = escape(str(data.get("name") or "Tool result"))
             cards.append(
-                f'<details class="tool" {metadata}><summary>{label}</summary>{_tool_output(content)}</details>'
+                f'<details class="tool" {metadata}><summary>{label}</summary>{_tool_output(content, str(data.get("name") or ""))}</details>'
             )
         else:
             cards.append(
