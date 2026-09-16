@@ -83,6 +83,10 @@ class HelpOverlay(ScrollableOverlay):
         card = KeyBindingsCard(getattr(ctx.ui, "effective_keys", {}))
         rows.extend(card.rows())
         plain_lines.extend(card.text.rstrip("\n").splitlines())
+        if getattr(getattr(getattr(ctx, "cfg", None), "tui", None), "vim", False):
+            vim_hint = "Vim insert: Esc leaves insert mode; Esc Esc aborts; Esc×3 opens tree."
+            rows.append([("class:muted", vim_hint)])
+            plain_lines.append(vim_hint)
         self.text = "\n".join(plain_lines)
         super().__init__("Help", rows, width=0.84, height=0.78)
         self.bindings.add("enter")(lambda _event: self.resolve(None))

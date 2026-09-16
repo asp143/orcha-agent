@@ -10,6 +10,7 @@ from typing import Any
 
 from orcha_agent.core.config import StatusLineConfig, TuiConfig
 from orcha_agent.tui.frame import Block
+from orcha_agent.tui.overlays.help import HelpOverlay
 from orcha_agent.tui.overlays.model import ModelOverlay
 from orcha_agent.tui.overlays.settings import SettingsOverlay
 from orcha_agent.tui.statusline import brand_segment, cache_hit_segment, token_rate_segment
@@ -64,6 +65,13 @@ def surface_fixtures() -> dict[str, list[str]]:
     for kind, data in (("thinking", {}), ("tool", {"name": "bash"})):
         ctx.ui.frame = SimpleNamespace(blocks=[Block(id=kind, kind=kind, data=data)])
         activity_rows.append(brand_segment(ctx).text)
+    help_overlay = HelpOverlay(
+        SimpleNamespace(
+            cfg=SimpleNamespace(tui=TuiConfig(vim=True)),
+            ui=SimpleNamespace(effective_keys={"newline": ("escape enter",)}),
+            registry=SimpleNamespace(commands={"help": SimpleNamespace(help="Show help")}),
+        )
+    )
     return {
         "Settings": [
             "Appearance | Status | Behaviour | Terminal",
@@ -73,6 +81,7 @@ def surface_fixtures() -> dict[str, list[str]]:
         ],
         "Models": models.render_text().splitlines(),
         "Status": [" | ".join(segment.text for segment in segments if segment), *activity_rows],
+        "Help": help_overlay.text.splitlines(),
     }
 
 
