@@ -377,7 +377,6 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
 async def test_provider_and_plugin_actions_are_headlessly_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    wait_for_render,
 ) -> None:
     registry = Registry()
     registry.providers["able"] = SimpleNamespace(
@@ -412,11 +411,22 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
     ctx.cfg.model = "first"
     ctx.cfg.models = {"first": "able:test", "second": "able:next"}
     switched: list[str] = []
+    model_switch_started = asyncio.Event()
+    release_model_switch = asyncio.Event()
+    model_switched = asyncio.Event()
+    rebuilt = asyncio.Event()
 
     async def switch_model(model: str) -> None:
+        model_switch_started.set()
+        await release_model_switch.wait()
         switched.append(model)
+        model_switched.set()
+
+    async def rebuild() -> None:
+        rebuilt.set()
 
     ctx.switch_model = switch_model
+    ctx.rebuild = rebuild
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0),
@@ -425,25 +435,45 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
             input=pipe,
             output=DummyOutput(),
         )
-        task = asyncio.create_task(runtime.run())
-        # Startup can yield before the first synchronous paint. Start the key
-        # action deadline only after that paint and input setup have completed.
-        await wait_for_render(
-            runtime, lambda: runtime.application.renderer._last_screen is not None
-        )
-        pipe.send_bytes(b"\x1b[Z")
-        pipe.send_bytes(b"\x10")
+        first_render = asyncio.Event()
+
+        def rendered(_application: object) -> None:
+            first_render.set()
+
+        # Subscribe before startup: prompt_toolkit attaches input before this
+        # event, whereas renderer._last_screen is transient during terminal writes.
+        runtime.application.after_render += rendered
         # Ctrl+X is also a prefix for built-in Emacs chords. Resolve it
         # explicitly with a harmless cursor movement instead of racing its timer.
         runtime.application.timeoutlen = None
-        pipe.send_bytes(b"\x18\x01")
-        await asyncio.wait_for(plugin_called.wait(), 0.2)
-        assert runtime.thinking_level == "low"
-        assert ctx.plugin_states["composer"]["thinking_level"] == "low"
-        assert switched == ["second"]
-        assert plugin_calls == ["custom"]
-        pipe.send_bytes(b"\x04")
-        await asyncio.wait_for(task, 1)
+        task = asyncio.create_task(runtime.run())
+        try:
+            await first_render.wait()
+            pipe.send_bytes(b"\x1b[Z")
+            await rebuilt.wait()
+            pipe.send_bytes(b"\x10")
+            await model_switch_started.wait()
+            pipe.send_bytes(b"\x18\x01")
+            # Each action runs in its own task. Await its concrete effect, not
+            # a render or a short deadline that includes unrelated paint work.
+            await plugin_called.wait()
+            # A plugin callback can finish while model switching is still doing
+            # async work; its event cannot stand in for provider completion.
+            assert switched == []
+            release_model_switch.set()
+            await model_switched.wait()
+            assert runtime.thinking_level == "low"
+            assert ctx.plugin_states["composer"]["thinking_level"] == "low"
+            assert switched == ["second"]
+            assert plugin_calls == ["custom"]
+            pipe.send_bytes(b"\x04")
+            await asyncio.wait_for(task, 1)
+        finally:
+            release_model_switch.set()
+            runtime.application.after_render -= rendered
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
