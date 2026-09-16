@@ -268,9 +268,9 @@ transparent = false
 # left and right are omitted by default; lists override the preset groups.
 ```
 
-`theme` is a theme name or `auto`; `symbols` is `nerd`, `unicode`, or `ascii`;
-`thinking` is `summary`, `off`, or `all`; and `composer` is `box`, `claude`,
-or `borderless`. `icons` is retained for compatibility: when `symbols` is
+`theme` is a theme name or `auto`; `symbols` is `nerd`, `unicode`, `ascii`,
+or `colorblind`; `thinking` is `summary`, `off`, or `all`; and `composer` is
+`box`, `claude`, `borderless`, `band`, or `rail`. `icons` is retained for compatibility: when `symbols` is
 omitted, `icons=false` selects `ascii` and `icons=true` selects `nerd`.
 Disable the welcome with `banner=false` or `ORCHA_NO_BANNER=1`.
 
@@ -326,12 +326,38 @@ or redirected output. Fixtures live in `orcha_agent/tui/gallery_fixtures/`.
 
 ### Themes and symbols
 
-Built-in themes are `dark`, `light`, `ansi`, `dracula`, `nord`, and
-`gruvbox`. `theme="auto"` chooses light or dark from `COLORFGBG`, defaulting
-to dark when the terminal background cannot be determined. User themes are
-JSON files in `~/.config/orcha-agent/themes/`. Project themes in
-`./.orcha-agent/themes/` load only for a trusted working directory and take
-precedence over user themes with the same filename.
+Built-in themes include `dark`, `light`, `ansi`, Catppuccin (latte, frappe,
+macchiato, mocha), Dracula, Nord, Gruvbox, Tokyo Night, Solarized, One,
+GitHub, Rosé Pine, Kanagawa and Everforest. Family variants use names such as
+`gruvbox-dark`, `github-light`, `tokyo-night-day`, and `catppuccin-mocha`.
+Earlier `dark-*` / `light-*` names remain accepted aliases. The original
+Dracula/Nord palettes remain `dracula` / `nord`; imported variants are
+`dracula-omp` / `nord-omp`. The duplicate `dark-catppuccin` palette now aliases
+`catppuccin-mocha` and appears only once in the picker.
+
+`theme="auto"` chooses light or dark from terminal background detection or
+`COLORFGBG`, defaulting to dark when unavailable. User themes are JSON files in
+`~/.config/orcha-agent/themes/`. Project themes in `./.orcha-agent/themes/` load
+only for a trusted working directory and take precedence over user themes
+with the same filename.
+
+`[tui]` keys override the same keys in `[ui]`. If both tables define
+`statusline`, the entire `[tui.statusline]` table takes precedence over
+`[ui.statusline]`. `/settings` preserves the section
+that supplies an existing value when changing it.
+
+```toml
+[tui]
+colorblind = false # true selects blue/orange state colors independently of symbols
+mouse = "scroll"  # default; "full" enables click focus and terminal mouse reporting
+```
+
+`mouse="scroll"` preserves native text selection by leaving button tracking off
+outside overlays. The terminal wheel scrolls native scrollback; forwarded SGR
+wheel reports also scroll the viewport. `mouse="full"` opts into application
+wheel tracking and composer click focus; `mouse="off"` ignores viewport wheel
+reports. Overlays retain their own mouse support. `symbols="colorblind"` changes
+only glyphs; use `colorblind=true` to change palette colors.
 
 A theme can define variables, any subset of color tokens, and symbol
 overrides:
@@ -457,10 +483,10 @@ turn, a compact HUD above the composer shows up to seven todo items, running
 subagents, and queued prompts. The terminal title tracks the session and adds
 a spinner while working or a waiting marker for approval.
 
-With `[ui] notify=true`, turn completion and approval requests notify only
-after more than five seconds without a keypress. The TUI prefers
-`notify-send` and falls back to terminal OSC 9 notifications; failures never
-interrupt the session.
+With `[ui] notify=true`, turn completion and approval requests notify when
+the terminal is unfocused. Without focus reporting, five seconds of keyboard
+inactivity is the fallback. The TUI prefers `notify-send`, then OSC 9 on
+supported terminals, otherwise a bell; failures never interrupt the session.
 
 ### Agent orchestration
 

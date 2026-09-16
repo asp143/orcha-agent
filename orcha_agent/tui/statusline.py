@@ -9,6 +9,7 @@ import threading
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -483,7 +484,19 @@ def brand_segment(ctx: Any) -> Segment:
     if isinstance(started, (int, float)):
         spinner = theme_spinner(theme, "spinner.status", frame, ("*",))
         elapsed = max(0, int(monotonic() - started))
-        return Segment(f"{spinner} orcha {elapsed}s", "accent")
+        activity = ""
+        frame = getattr(runtime, "frame", None)
+        for block in reversed(getattr(frame, "blocks", ())):
+            if getattr(block.state, "value", block.state) != "active":
+                continue
+            if block.kind == "tool":
+                activity = str(block.data.get("name", block.data.get("tool", "tool")))
+                break
+            if block.kind == "thinking":
+                activity = "thinking"
+                break
+        suffix = f" · {activity}" if activity else ""
+        return Segment(f"{spinner} orcha {elapsed}s{suffix}", "accent")
     return Segment("orcha", "accent")
 
 
@@ -510,11 +523,13 @@ def cache_hit_segment(ctx: Any) -> Segment | None:
     return Segment(f"cache {percent:.0f}%", "muted")
 
 
+@lru_cache(maxsize=1)
+def _hostname() -> str:
+    return socket.gethostname().split(".", 1)[0]
+
+
 def hostname_segment(ctx: Any) -> Segment:
-    state = _state(ctx)
-    if "_hostname" not in state:
-        state["_hostname"] = socket.gethostname().split(".", 1)[0]
-    return Segment(str(state["_hostname"]), "muted")
+    return Segment(_hostname(), "muted")
 
 
 def vim_segment(ctx: Any) -> Segment | None:

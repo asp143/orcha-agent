@@ -31,7 +31,8 @@ CATEGORIES = {
     "Terminal": (
         ("vim", (False, True)),
         ("hyperlinks", (True, False)),
-        ("mouse", (True, False)),
+        ("mouse", ("scroll", "full", "off")),
+        ("colorblind", (False, True)),
         ("synchronized_output", (True, False)),
         ("resize", ("preserve", "rebuild")),
     ),
@@ -62,6 +63,10 @@ def persist_setting(path: Path, section: str, key: str, value: str | bool) -> No
             None,
         )
         if found is None:
+            while end > start + 1 and (
+                not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")
+            ):
+                end -= 1
             lines.insert(end, assignment)
         else:
             lines[found] = assignment

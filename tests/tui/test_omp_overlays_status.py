@@ -79,13 +79,14 @@ async def test_notifications_obey_focus_with_bell_fallback() -> None:
         output=SimpleNamespace(write_raw=writes.append, flush=lambda: None),
         clock=lambda: 0.0,
         which=lambda _: None,
+        osc9_supported=False,
         run_terminal=lambda fn: fn(),
     )
     notifier.set_focused(True)
     assert not await notifier.notify("Done", "Completed")
     notifier.set_focused(False)
     assert await notifier.notify("Done", "Completed")
-    assert writes == ["\x1b]9;Completed\x07\x07"]
+    assert writes == ["\x07"]
 
 
 @pytest.mark.parametrize("surface", ["Settings", "Models", "Status"])

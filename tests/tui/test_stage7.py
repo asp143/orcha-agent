@@ -141,6 +141,7 @@ async def test_notification_obeys_idle_threshold_and_safe_fallback() -> None:
         output=output,
         clock=lambda: now[0],
         which=missing,
+        osc9_supported=True,
         spawn=lambda command: commands.append(command),
         run_terminal=lambda callback: callback(),
     )
@@ -149,7 +150,7 @@ async def test_notification_obeys_idle_threshold_and_safe_fallback() -> None:
     now[0] = 5.001
     assert await notifier.notify("Orcha", "Turn complete") is True
     assert commands == []
-    assert output.raw == ["\x1b]9;Turn complete\x07\x07"]
+    assert output.raw == ["\x1b]9;Turn complete\x1b\\"]
 
     notifier.record_keypress()
     now[0] = 9.0

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import shutil
 import subprocess
 import time
@@ -40,8 +41,14 @@ class DesktopNotifier:
         clock: Callable[[], float] = time.monotonic,
         which: Callable[[str], str | None] = shutil.which,
         spawn: Callable[[list[str]], Any] = _spawn,
+        osc9_supported: bool | None = None,
         run_terminal: Callable[[Callable[[], Any]], Any] = run_in_terminal,
     ) -> None:
+        self._osc9_supported = (
+            osc9_supported
+            if osc9_supported is not None
+            else (os.environ.get("TERM_PROGRAM", "").lower() in {"iterm.app", "wezterm", "ghostty"})
+        )
         self.enabled = enabled
         self.output = output
         self._clock = clock
@@ -90,7 +97,7 @@ class DesktopNotifier:
             return False
 
         def emit() -> None:
-            self.output.write_raw(f"\x1b]9;{payload}\x07\x07")
+            self.output.write_raw(f"\x1b]9;{payload}\x1b\\" if self._osc9_supported else "\x07")
             self.output.flush()
 
         try:

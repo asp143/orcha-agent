@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
+from time import monotonic
 from typing import Any
 
-from orcha_agent.core.config import StatusLineConfig
+from orcha_agent.core.config import StatusLineConfig, TuiConfig
+from orcha_agent.tui.frame import Block
 from orcha_agent.tui.overlays.model import ModelOverlay
 from orcha_agent.tui.overlays.settings import SettingsOverlay
 from orcha_agent.tui.statusline import brand_segment, cache_hit_segment, token_rate_segment
@@ -20,6 +22,7 @@ class _Config:
     theme: str = "dark"
     notify: bool = False
     model: str = "demo:small"
+    tui: TuiConfig = field(default_factory=TuiConfig)
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
 
 
@@ -52,13 +55,24 @@ def surface_fixtures() -> dict[str, list[str]]:
     settings = SettingsOverlay(ctx)
     models = ModelOverlay(ctx)
     segments = [brand_segment(ctx), token_rate_segment(ctx), cache_hit_segment(ctx)]
+    settings_rows = settings.render_text().splitlines()
+    settings.category = 3
+    settings._load()
+    terminal_rows = settings.render_text().splitlines()
+    activity_rows = []
+    ctx.plugin_states["statusbar"]["_turn_started"] = monotonic()
+    for kind, data in (("thinking", {}), ("tool", {"name": "bash"})):
+        ctx.ui.frame = SimpleNamespace(blocks=[Block(id=kind, kind=kind, data=data)])
+        activity_rows.append(brand_segment(ctx).text)
     return {
         "Settings": [
             "Appearance | Status | Behaviour | Terminal",
-            *settings.render_text().splitlines(),
+            *settings_rows,
+            "Terminal",
+            *terminal_rows,
         ],
         "Models": models.render_text().splitlines(),
-        "Status": [" | ".join(segment.text for segment in segments if segment)],
+        "Status": [" | ".join(segment.text for segment in segments if segment), *activity_rows],
     }
 
 
