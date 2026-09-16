@@ -994,3 +994,14 @@ current session retains its model. Accepted preferences are saved in
 Press `Esc` at any step to skip without saving partial preferences. A completed
 setup suppresses the automatic wizard on later launches. Noninteractive launches
 and resumed sessions do not automatically open it.
+
+## Magic keywords
+
+Standalone lowercase `ultrathink` requests the highest reasoning effort for the
+current turn; `orchestrate` adds a hidden system reminder to fan out independent
+work with `task`. Standalone `plan` makes that turn read-only when the plan mode
+is registered: only its read tools are exposed, and write/delegation calls are
+blocked. These controls do not change saved model settings or the session mode.
+Keywords inside fenced or inline code, XML/HTML sections, identifiers, paths,
+filenames, and immediate function calls remain literal. The notices enter only
+the model request and do not appear as extra conversation messages.

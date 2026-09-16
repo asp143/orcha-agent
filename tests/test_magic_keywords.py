@@ -1,0 +1,189 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from orcha_agent.core.plugin import ModeSpec
+from orcha_agent.extensibility.magic_keywords import MagicKeywordsMiddleware, keywords
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ultrathink",
+        "Please ultrathink!",
+        "'ultrathink'.",
+        "ultrathink, orchestrate",
+        "計画 ultrathink",
+        "`unclosed ultrathink",
+    ],
+)
+def test_prose_keyword(text):
+    assert "ultrathink" in keywords(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ultrathink",
+        "ultrathinking",
+        "ultrathink.ts",
+        "dir/ultrathink",
+        "foo::ultrathink",
+        "ultrathink()",
+        "ultrathink-test",
+        "éultrathink",
+        "`ultrathink`",
+        "``a ` ultrathink``",
+        "```python\nultrathink\n```",
+        "~~~\nultrathink\n~~~",
+        "<note>ultrathink</note>",
+        "<note><note>x</note>ultrathink</note>",
+        '<note value="ultrathink"/>',
+        "<!-- ultrathink -->",
+    ],
+)
+def test_embedded_keyword_is_literal(text):
+    assert "ultrathink" not in keywords(text)
+
+
+def middleware():
+    return MagicKeywordsMiddleware(
+        SimpleNamespace(
+            cfg=SimpleNamespace(model="anthropic:test", models={}),
+            registry=SimpleNamespace(
+                providers={
+                    "anthropic": SimpleNamespace(capabilities=SimpleNamespace(thinking=True))
+                },
+                modes={"plan": ModeSpec("Read only", {}, {"read_file", "glob"})},
+            ),
+        )
+    )
+
+
+def request(text):
+    return ModelRequest(
+        model=FakeListChatModel(responses=["ok"]),
+        messages=[HumanMessage(text)],
+        tools=[{"name": "read"}, {"name": "write"}, {"name": "task"}],
+        system_message=SystemMessage("Base"),
+        model_settings={"temperature": 0},
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_notices_and_settings_do_not_mutate_original_or_next_turn():
+    value = request("ultrathink and orchestrate")
+    handler = AsyncMock()
+    await middleware().awrap_model_call(value, handler)
+    revised = handler.call_args.args[0]
+    assert revised.model_settings == {
+        "temperature": 0,
+        "reasoning_effort": "max",
+        "thinking": {"type": "adaptive"},
+    }
+    assert "task tool" in revised.system_message.text
+    assert revised.messages == value.messages
+    assert value.system_message.text == "Base"
+    assert value.model_settings == {"temperature": 0}
+    plain = value.override(messages=[*value.messages, AIMessage("Done"), HumanMessage("Hello")])
+    await middleware().awrap_model_call(plain, handler)
+    assert handler.call_args.args[0] is plain
+
+
+@pytest.mark.asyncio
+async def test_plan_filters_and_blocks_write_even_if_requested():
+    handler = AsyncMock()
+    await middleware().awrap_model_call(request("plan the change"), handler)
+    assert handler.call_args.args[0].tools == [{"name": "read"}]
+    call = SimpleNamespace(
+        state={"messages": [HumanMessage("plan")]}, tool_call={"name": "write", "id": "call-1"}
+    )
+    tool_handler = AsyncMock()
+    blocked = await middleware().awrap_tool_call(call, tool_handler)
+    assert blocked.status == "error"
+    tool_handler.assert_not_awaited()
+    call.tool_call["name"] = "read"
+    await middleware().awrap_tool_call(call, tool_handler)
+    tool_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_plan_without_registered_mode_is_ordinary_text():
+    plugin = MagicKeywordsMiddleware(SimpleNamespace(registry=SimpleNamespace(modes={})))
+    value = request("plan")
+    handler = AsyncMock()
+    await plugin.awrap_model_call(value, handler)
+    assert handler.call_args.args[0] is value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix,thinking", [("unknown", True), ("anthropic", False)])
+async def test_unsupported_provider_receives_no_reasoning_kwargs(prefix, thinking):
+    plugin = middleware()
+    plugin.ctx.cfg.model = prefix + ":test"
+    plugin.ctx.registry.providers = {
+        prefix: SimpleNamespace(capabilities=SimpleNamespace(thinking=thinking))
+    }
+    handler = AsyncMock()
+    await plugin.awrap_model_call(request("ultrathink"), handler)
+    assert handler.call_args.args[0].model_settings == {"temperature": 0}
+
+
+@pytest.mark.asyncio
+async def test_ultrathink_enables_anthropic_thinking_when_display_off():
+    value = request("ultrathink")
+    value.model_settings["thinking"] = {"type": "disabled"}
+    handler = AsyncMock()
+    await middleware().awrap_model_call(value, handler)
+    assert handler.call_args.args[0].model_settings["thinking"] == {"type": "adaptive"}
+    assert value.model_settings["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("gemini-3.1-pro", {"thinking_level": "high", "thinking_budget": None}),
+        (
+            "gemini-2.5-pro",
+            {"thinking_level": None, "reasoning_effort": None, "thinking_budget": 32768},
+        ),
+        (
+            "gemini-2.5-flash",
+            {"thinking_level": None, "reasoning_effort": None, "thinking_budget": 24576},
+        ),
+        ("gemini-2.0-flash", {}),
+    ],
+)
+async def test_google_highest_supported_thinking(name, expected):
+    plugin = middleware()
+    plugin.ctx.cfg.model = "google:" + name
+    plugin.ctx.registry.providers["google"] = SimpleNamespace(
+        capabilities=SimpleNamespace(thinking=True)
+    )
+    handler = AsyncMock()
+    await plugin.awrap_model_call(request("ultrathink"), handler)
+    assert handler.call_args.args[0].model_settings == {"temperature": 0, **expected}
+
+
+@pytest.mark.asyncio
+async def test_temporary_model_adapter_overrides_main_provider():
+    class TemporaryGoogleModel(FakeListChatModel):
+        model: str = "gemini-3.1-pro"
+
+    TemporaryGoogleModel.__module__ = "langchain_google_genai.chat_models"
+    plugin = middleware()
+    plugin.ctx.registry.providers["google"] = SimpleNamespace(
+        capabilities=SimpleNamespace(thinking=True)
+    )
+    value = request("ultrathink").override(model=TemporaryGoogleModel(responses=["ok"]))
+    handler = AsyncMock()
+    await plugin.awrap_model_call(value, handler)
+    settings = handler.call_args.args[0].model_settings
+    assert settings["thinking_level"] == "high"
+    assert "thinking" not in settings
+    assert "reasoning_effort" not in settings
