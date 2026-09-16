@@ -503,7 +503,8 @@ class SessionStore:
         raise RuntimeError("Sync is only available with the Turso persistence backend")
 
     def close(self) -> None:
-        self._connection.close()
+        with self.saver.lock:
+            self._connection.close()
 
     def _write(self, sql: str, parameters: Sequence[Any]) -> None:
         with self.saver.lock:

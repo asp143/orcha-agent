@@ -35,6 +35,8 @@ from orcha_agent.tui.statusline import (
     record_turn_end,
     record_turn_start,
     reset_git_state,
+    reset_session_state,
+    refresh_session_snapshot,
     record_usage,
     reset_accounting,
     reset_usage_dedup,
@@ -74,6 +76,7 @@ def register(api: PluginAPI) -> None:
         return
 
     reset_git_state(api.state)
+    reset_session_state(api.state)
     reset_usage_dedup(api.state)
     for priority, (name, render) in enumerate(BUILTIN_SEGMENTS, start=1):
         api.add_status_segment(name, render, priority=priority * 10)
@@ -83,17 +86,22 @@ def register(api: PluginAPI) -> None:
 
     async def reset_usage(_event: ThreadSwitch) -> None:
         reset_accounting(api.state)
+        reset_session_state(api.state)
 
     async def reset_session(_event: SessionSwitch) -> None:
         reset_git_state(api.state)
+        reset_session_state(api.state)
 
     async def turn_started(_event: TurnStart) -> None:
         record_turn_start(api.state)
+        reset_session_state(api.state)
 
     async def turn_finished(_event: TurnEnd) -> None:
         record_turn_end(api.state)
+        reset_session_state(api.state)
 
     async def show(ctx: Any, _args: str) -> None:
+        await refresh_session_snapshot(ctx)
         for name, segment in visible_segments(ctx):
             ctx.console.print(f"{name}: {segment.text}")
 

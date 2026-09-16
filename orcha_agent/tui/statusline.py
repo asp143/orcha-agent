@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import threading
 from collections import deque
@@ -46,9 +47,7 @@ PRESETS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
 }
 
-SEPARATORS = frozenset(
-    {"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"}
-)
+SEPARATORS = frozenset({"powerline", "powerline-thin", "slash", "pipe", "block", "none", "ascii"})
 
 WINDOWS = {
     "codex:gpt-5.6-sol": 272_000,
@@ -64,6 +63,7 @@ _GIT_REFRESH_SECONDS = 2.0
 _GIT_TIMEOUT_SECONDS = 1.0
 _CONTEXT_BAR_CELLS = 20
 _GIT_LOCK = threading.Lock()
+_SESSION_LOCK = threading.Lock()
 _USAGE_TRACKERS: deque[tuple[dict[str, Any], deque[Any]]] = deque(maxlen=16)
 _GIT_VOLATILE = (
     "_git_at",
@@ -102,7 +102,9 @@ def wrap_segment(value: Segment | str | None) -> Segment | None:
         return value
     if isinstance(value, str):
         return Segment(value, "text")
-    raise TypeError(f"status segment returned {type(value).__name__}, expected Segment, str, or None")
+    raise TypeError(
+        f"status segment returned {type(value).__name__}, expected Segment, str, or None"
+    )
 
 
 def _state(ctx: Any) -> dict[str, Any]:
@@ -299,14 +301,96 @@ def git_segment(ctx: Any) -> Segment | None:
     return Segment(value, token, "icon.git")
 
 
-def session_segment(ctx: Any) -> Segment | None:
+def reset_session_state(state: dict[str, Any]) -> None:
+    """Invalidate persisted/superseded titles without touching the database."""
+    with _SESSION_LOCK:
+        state["_session_generation"] = int(state.get("_session_generation", 0)) + 1
+        for key in (
+            "_session_scope",
+            "_session_title",
+            "_session_ready",
+            "_session_refreshing",
+            "_session_retry_at",
+        ):
+            state.pop(key, None)
+
+
+def _refresh_session(
+    ctx: Any,
+    state: dict[str, Any],
+    session_id: str,
+    generation: int,
+) -> None:
     session = getattr(ctx, "session", None)
     get_session = getattr(session, "get", None)
-    info = get_session(ctx.session_id) if callable(get_session) else None
-    title = getattr(info, "title", None)
-    if not title:
-        return None
-    return Segment(str(title), "text")
+    try:
+        # SessionStore shares its connection with checkpoint writers.
+        lock = getattr(getattr(session, "saver", None), "lock", None)
+        if lock is None:
+            info = get_session(session_id) if callable(get_session) else None
+        else:
+            with lock:
+                info = get_session(session_id) if callable(get_session) else None
+        title = getattr(info, "title", None)
+    except Exception:
+        # Retry transient failures on a bounded timer, never on every paint.
+        with _SESSION_LOCK:
+            if (
+                state.get("_session_scope") == session_id
+                and state.get("_session_generation", 0) == generation
+            ):
+                state["_session_refreshing"] = False
+                state["_session_retry_at"] = monotonic() + _GIT_REFRESH_SECONDS
+        return
+    with _SESSION_LOCK:
+        if (
+            state.get("_session_scope") != session_id
+            or state.get("_session_generation", 0) != generation
+        ):
+            return
+        state["_session_title"] = str(title) if title else None
+        state["_session_ready"] = True
+        state["_session_refreshing"] = False
+    _notify_invalidation(ctx)
+
+
+async def refresh_session_snapshot(ctx: Any) -> None:
+    """Await a fresh snapshot for explicit status commands, outside rendering."""
+    state = _state(ctx)
+    session_id = str(ctx.session_id)
+    with _SESSION_LOCK:
+        generation = int(state.get("_session_generation", 0)) + 1
+        state["_session_generation"] = generation
+        state["_session_scope"] = session_id
+        state["_session_refreshing"] = True
+    await asyncio.to_thread(_refresh_session, ctx, state, session_id, generation)
+
+
+def session_segment(ctx: Any) -> Segment | None:
+    """Paint a snapshot; title reads run on a worker after event invalidation."""
+    state = _state(ctx)
+    session_id = str(ctx.session_id)
+    with _SESSION_LOCK:
+        if state.get("_session_scope") != session_id:
+            state["_session_scope"] = session_id
+            state["_session_generation"] = int(state.get("_session_generation", 0)) + 1
+            state["_session_ready"] = False
+            state["_session_refreshing"] = False
+            state.pop("_session_title", None)
+        if (
+            not state.get("_session_ready")
+            and not state.get("_session_refreshing")
+            and monotonic() >= state.get("_session_retry_at", 0)
+        ):
+            state["_session_refreshing"] = True
+            threading.Thread(
+                target=_refresh_session,
+                args=(ctx, state, session_id, int(state.get("_session_generation", 0))),
+                name="orcha-status-session",
+                daemon=True,
+            ).start()
+        title = state.get("_session_title")
+    return Segment(str(title), "text") if title else None
 
 
 def agent_counts(ctx: Any) -> tuple[int, int, int]:
@@ -318,30 +402,23 @@ def agent_counts(ctx: Any) -> tuple[int, int, int]:
         legacy = getattr(getattr(ctx, "ui", None), "subagents", ())
         rows = legacy if isinstance(legacy, list) else []
         running = sum(
-            isinstance(run, Mapping)
-            and str(run.get("status", "")).casefold() == "running"
+            isinstance(run, Mapping) and str(run.get("status", "")).casefold() == "running"
             for run in rows
         )
         idle = sum(
-            isinstance(run, Mapping)
-            and str(run.get("status", "")).casefold() == "idle"
+            isinstance(run, Mapping) and str(run.get("status", "")).casefold() == "idle"
             for run in rows
         )
         outstanding = sum(
             isinstance(run, Mapping)
-            and str(run.get("status", "")).casefold()
-            not in {"done", "failed", "aborted"}
+            and str(run.get("status", "")).casefold() not in {"done", "failed", "aborted"}
             for run in rows
         )
         return running, idle, outstanding
 
     running = idle = outstanding = 0
     for run in list_runs():
-        value = (
-            run.get("status", "")
-            if isinstance(run, Mapping)
-            else getattr(run, "status", "")
-        )
+        value = run.get("status", "") if isinstance(run, Mapping) else getattr(run, "status", "")
         status = str(value).casefold()
         running += status == "running"
         idle += status == "idle"
@@ -359,22 +436,17 @@ def subagents_segment(ctx: Any) -> Segment | None:
         rows = legacy if isinstance(legacy, list) else []
         if rows:
             queued = sum(
-                isinstance(run, Mapping)
-                and str(run.get("status", "")).casefold() == "queued"
+                isinstance(run, Mapping) and str(run.get("status", "")).casefold() == "queued"
                 for run in rows
             )
             if not queued:
-                return Segment(
-                    str(len(rows)), "statusLineSubagents", "icon.subagents"
-                )
+                return Segment(str(len(rows)), "statusLineSubagents", "icon.subagents")
             running, idle, _outstanding = agent_counts(ctx)
             text = f"{running} running · {idle} idle · {queued} queued"
             return Segment(text, "statusLineSubagents", "icon.subagents")
     queued = sum(
         str(
-            run.get("status", "")
-            if isinstance(run, Mapping)
-            else getattr(run, "status", "")
+            run.get("status", "") if isinstance(run, Mapping) else getattr(run, "status", "")
         ).casefold()
         == "queued"
         for run in rows
@@ -572,9 +644,7 @@ def _resolved_names(ctx: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if config.left is None and config.right is None:
         builtin_names = {name for name, _render in BUILTIN_SEGMENTS}
         custom = tuple(
-            entry.name
-            for entry in ctx.registry.status_segments
-            if entry.name not in builtin_names
+            entry.name for entry in ctx.registry.status_segments if entry.name not in builtin_names
         )
         left = (*left, *custom)
     return left, right
@@ -653,7 +723,9 @@ def _style(theme: Any, token: str, *, transparent: bool) -> str:
 def _symbols(theme: Any, ascii_mode: bool) -> Mapping[str, Any]:
     if ascii_mode:
         return resolve_symbols("ascii")
-    symbols = theme.get("symbols") if isinstance(theme, Mapping) else getattr(theme, "symbols", None)
+    symbols = (
+        theme.get("symbols") if isinstance(theme, Mapping) else getattr(theme, "symbols", None)
+    )
     return symbols if isinstance(symbols, Mapping) else resolve_symbols("unicode")
 
 
@@ -685,7 +757,12 @@ def _segment_fragments(
 ) -> list[tuple[str, str]]:
     icon = symbols.get(segment.icon_key, "") if segment.icon_key else ""
     label = f"{icon} {segment.text}" if icon else segment.text
-    return [(_style(theme, segment.token, transparent=transparent), f" {_safe_text(label, ascii_mode)} ")]
+    return [
+        (
+            _style(theme, segment.token, transparent=transparent),
+            f" {_safe_text(label, ascii_mode)} ",
+        )
+    ]
 
 
 def _separator_fragments(
