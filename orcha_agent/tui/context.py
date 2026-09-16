@@ -762,6 +762,7 @@ class AppContext:
         )
         prior_leaf = self.ledger.leaf(self.session_id)
         prior_persisted_thread = self._persisted_current_thread()
+        cursor_snapshot = self.session.snapshot_capture_cursor(self.thread_id) if foreign else None
         audit: ModelChangeEntry | None = None
         self.session.set_model(self.session_id, spec)
         try:
@@ -770,18 +771,49 @@ class AppContext:
                 ModelChangeEntry(model=spec if isinstance(spec, str) else list(spec)),
             )
             if foreign:
-                _compat("strip_foreign_blocks", strip_foreign_blocks)(self.agent or candidate_agent,
-                self.thread_config,
-                foreign,)
+                graph = self.agent or candidate_agent
+                _compat("strip_foreign_blocks", strip_foreign_blocks)(
+                    graph, self.thread_config, foreign
+                )
+                values = getattr(graph.get_state(self.thread_config), "values", {})
+                if isinstance(values, Mapping):
+                    self._capture_values(
+                        self.session_id, self.thread_id, values, only_if_new=True
+                    )
+                    messages = values.get("messages", ())
+                    self.session.activate_thread(
+                        self.session_id,
+                        self.thread_id,
+                        seeded_from=self.ledger.leaf(self.session_id),
+                        captured=len(messages),
+                        captured_message_ids=tuple(
+                            message.id for message in messages if isinstance(message.id, str)
+                        ),
+                        captured_messages=messages,
+                        preserve_capture_state=True,
+                    )
         except BaseException:
             self.session.set_model(self.session_id, old_model)
             if audit is not None:
+                # Capture may have committed replacements after the model audit.
+                # Remove that failed switch's suffix newest-first before audit.
+                path = self.ledger.path(self.session_id)
+                audit_at = next(index for index, entry in enumerate(path) if entry.id == audit.id)
+                for entry in reversed(path[audit_at + 1:]):
+                    self.ledger.set_position(
+                        self.session_id,
+                        leaf_id=entry.parent_id,
+                        thread_id=prior_persisted_thread,
+                        discard_entry_id=entry.id,
+                    )
                 self.ledger.set_position(
                     self.session_id,
                     leaf_id=prior_leaf,
                     thread_id=prior_persisted_thread,
                     discard_entry_id=audit.id,
                 )
+            if cursor_snapshot is not None:
+                self.session.restore_capture_cursor(self.thread_id, cursor_snapshot)
             raise
         self.cfg = candidate_cfg
         self.summarizer = candidate_summarizer
@@ -973,4 +1005,3 @@ class AppContext:
                 "Previous turn was interrupted; "
                 f"{len(pending)} pending tool call(s) dropped."
             )
-

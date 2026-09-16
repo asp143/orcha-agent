@@ -4138,6 +4138,48 @@ def test_application_runtime_accepts_real_app_context(tmp_path: Path) -> None:
     assert ctx.ui is runtime.ui
 
 
+def test_recover_checkpoint_after_restart_updates_cursor_without_history_rewrite(tmp_path: Path) -> None:
+    database = tmp_path / "recovery.db"
+    messages = [HumanMessage(content=str(i), id=str(i)) for i in range(20)]
+    with SessionStore(database) as store:
+        ctx = _real_context(tmp_path, store, _HistoryGraph(messages))
+        ctx.capture_turn()
+        session_id, thread_id = ctx.session_id, ctx.thread_id
+        messages[5] = HumanMessage(content="mid-turn edit", id="5")
+        messages.append(HumanMessage(content="mid-turn new", id="new"))
+        _put_checkpoint(store, thread_id, messages=messages)
+    with SessionStore(database) as store:
+        ctx = _real_context(tmp_path, store, None, session_id=session_id)
+        before = store._connection.total_changes
+        assert ctx.recover_checkpoint(session_id, thread_id)
+        assert store._connection.total_changes - before <= 7
+        assert build_context(Ledger(store).path(session_id)).messages == messages
+        assert not ctx.recover_checkpoint(session_id, thread_id)
+
+
+@pytest.mark.asyncio
+async def test_model_switch_reseeds_stripped_message_digests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from orcha_agent.core.capture_cursor import message_digest
+
+    messages = [AIMessage(content=[{"type": "thinking", "thinking": "private"}, {"type": "text", "text": "visible"}], id="same")]
+    with SessionStore(tmp_path / "model.db") as store:
+        graph = _HistoryGraph(messages)
+        ctx = _real_context(tmp_path, store, graph)
+        ctx._registry.providers["old"] = SimpleNamespace(foreign_block_types=frozenset({"thinking"}))
+        ctx.capture_turn()
+        async def build(*_args: Any, **_kwargs: Any) -> Any:
+            return graph
+        monkeypatch.setattr(app_module, "build_agent", build)
+        await ctx.switch_model("new:model")
+        assert build_context(ctx.ledger.path(ctx.session_id)).messages == graph.messages
+        row = store._connection.execute("SELECT digest FROM capture_messages WHERE thread_id = ?", (ctx.thread_id,)).fetchone()
+        assert row["digest"] == message_digest(graph.messages[0])
+        assert len([entry for entry in ctx.ledger.path(ctx.session_id) if isinstance(entry, MessageEntry)]) == 1
+        before = store._connection.total_changes
+        ctx.capture_turn()
+        assert store._connection.total_changes == before
+
+
 @pytest.mark.asyncio
 async def test_reseed_copies_messages_before_reducer_assigns_missing_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4172,3 +4214,28 @@ async def test_reseed_copies_messages_before_reducer_assigns_missing_ids(
         await ctx._seed_ready_thread("reseed")
         assert snapshot.messages[0].id is None
         assert graph.messages[0].id is not None
+
+
+@pytest.mark.asyncio
+async def test_model_switch_activation_failure_restores_capture_cursor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = AIMessage(content=[{"type": "thinking", "thinking": "private"}, {"type": "text", "text": "visible"}], id="same")
+    with SessionStore(tmp_path / "rollback.db") as store:
+        graph = _HistoryGraph([original])
+        ctx = _real_context(tmp_path, store, graph)
+        ctx._registry.providers["old"] = SimpleNamespace(foreign_block_types=frozenset({"thinking"}))
+        ctx.capture_turn()
+        before = store.snapshot_capture_cursor(ctx.thread_id)
+        prior_leaf = ctx.ledger.leaf(ctx.session_id)
+        async def build(*_args: Any, **_kwargs: Any) -> Any:
+            return graph
+        def fail(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("activate failed")
+        monkeypatch.setattr(app_module, "build_agent", build)
+        monkeypatch.setattr(store, "activate_thread", fail)
+        with pytest.raises(RuntimeError, match="activate failed"):
+            await ctx.switch_model("new:model")
+        assert ctx.ledger.leaf(ctx.session_id) == prior_leaf
+        assert build_context(ctx.ledger.path(ctx.session_id)).messages == [original]
+        assert store.snapshot_capture_cursor(ctx.thread_id) == before
+        ctx.capture_turn()
+        assert build_context(ctx.ledger.path(ctx.session_id)).messages == graph.messages

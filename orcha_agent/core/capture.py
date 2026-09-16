@@ -18,7 +18,6 @@ from .ledger import (
     MessageEntry,
     ModeChangeEntry,
     ModelChangeEntry,
-    ResetBoundaryEntry,
     build_context,
 )
 from .session import SessionStore
@@ -56,6 +55,8 @@ def capture_graph_values(
     to detect in-place edits, but write only changed cursor rows and live state.
     A non-append checkpoint gets a reset snapshot so duplicates and ordering are
     preserved exactly rather than silently deduplicated by message ID.
+    Both values of only_if_new skip unchanged state; False does not force a
+    turn_state write.
     """
     cache = store._capture_message_cache.get(thread_id)
     if cache is None:
@@ -98,7 +99,20 @@ def capture_graph_values(
         for current, old in zip(fingerprints, previous, strict=False)
     )
     entries: list[Entry] = []
-    reset = bool(previous) and not unchanged_prefix
+    ids = [fingerprint[0] for fingerprint in fingerprints]
+    same_order = (
+        len(fingerprints) >= len(previous)
+        and all(isinstance(message_id, str) for message_id in ids)
+        and len(set(ids)) == len(ids)
+        and ids[: len(previous)] == [fingerprint[0] for fingerprint in previous]
+    )
+    summary_changed = any(
+        current != old
+        and isinstance(messages[index], HumanMessage)
+        and messages[index].additional_kwargs.get("lc_source") == "summarization"
+        for index, (current, old) in enumerate(zip(fingerprints, previous, strict=False))
+    )
+    reset = bool(previous) and not unchanged_prefix and (not same_order or summary_changed)
     summary_index = (
         next(
             (
@@ -112,24 +126,100 @@ def capture_graph_values(
         if reset
         else None
     )
+    changed = []
     if summary_index is not None:
-        summary = messages[summary_index].content
-        entries.append(CompactionEntry(summary=str(summary).removeprefix(_SUMMARIZATION_PREFIX)))
+        path = Ledger(store).path(session_id)
+        context = build_context(path)
         candidates = messages[summary_index + 1 :]
+        # Reuse only an ordered suffix of the live persisted messages. Arbitrary
+        # reorder/drop still needs a snapshot, never ID-based deduplication.
+        retained_ids = [message.id for message in candidates]
+        live_ids = [message.id for message in context.messages]
+        retained_count = 0
+        if (
+            retained_ids
+            and len(set(retained_ids)) == len(retained_ids)
+            and all(isinstance(message_id, str) for message_id in retained_ids)
+            and len(set(live_ids)) == len(live_ids)
+        ):
+            try:
+                start = live_ids.index(retained_ids[0])
+            except ValueError:
+                pass
+            else:
+                suffix = live_ids[start:]
+                if retained_ids[: len(suffix)] == suffix:
+                    retained_count = len(suffix)
+        marker = None
+        if retained_count:
+            first_id = retained_ids[0]
+            first_at = next(
+                (
+                    index
+                    for index in range(len(path) - 1, -1, -1)
+                    if isinstance(entry := path[index], MessageEntry)
+                    and entry.message["data"].get("id") == first_id
+                ),
+                None,
+            )
+            if first_at is not None:
+                marker = path[first_at - 1].id if first_at else ""
+            else:
+                retained_count = 0
+        summary = messages[summary_index].content
+        entries.append(
+            CompactionEntry(
+                summary=str(summary).removeprefix(_SUMMARIZATION_PREFIX),
+                first_kept_id=marker,
+            )
+        )
+        if retained_count:
+            changed = [
+                message
+                for message, old in zip(
+                    candidates[:retained_count], context.messages[-retained_count:], strict=True
+                )
+                if message_digest(message) != message_digest(old)
+            ]
+        candidates = candidates[retained_count:]
     elif reset:
         context = build_context(Ledger(store).path(session_id))
-        entries.append(ResetBoundaryEntry())
+        entries.append(CustomEntry(custom_type="checkpoint_reset", data={}))
+        if any(
+            isinstance(message, HumanMessage)
+            and isinstance(message.content, str)
+            and message.content.startswith(_SUMMARIZATION_PREFIX)
+            for message in messages
+        ):
+            entries.append(
+                CustomEntry(
+                    custom_type="unrecognized_summary",
+                    data={"reason": "summary prefix without lc_source=summarization"},
+                )
+            )
         if context.model is not None:
             entries.append(ModelChangeEntry(model=context.model))
         if context.mode is not None:
             entries.append(ModeChangeEntry(mode=context.mode))
         candidates = messages
     else:
+        changed = [
+            messages[index]
+            for index, (current, old) in enumerate(zip(fingerprints, previous, strict=False))
+            if old[1] and current != old
+        ]
         candidates = messages[len(previous) :]
+    if changed:
+        entries.append(
+            CustomEntry(
+                custom_type="message_replaced",
+                data={"messages": [message_to_dict(message) for message in changed]},
+            )
+        )
     entries.extend(MessageEntry(message=message_to_dict(message)) for message in candidates)
     state = {"todos": values.get("todos", []), "files": values.get("files", {})}
     digest = cache.live_state_digest(state)
-    if reset or state_row is None or state_row["digest"] != digest:
+    if state_row is None or state_row["digest"] != digest:
         entries.append(CustomEntry(custom_type="turn_state", data=state))
     # The only_if_new API still means no entries for an identical checkpoint.
     # Stable-state ordinary turn completion is also a no-op.

@@ -884,6 +884,48 @@ class SessionStore:
                 raise
         return info
 
+    def snapshot_capture_cursor(self, thread_id: str) -> tuple[Any, list[Any], Any]:
+        """Save the cursor for rollback of a model-switch history replacement."""
+        with self.saver.lock:
+            thread = self._connection.execute(
+                "SELECT seeded_from, captured, captured_message_ids FROM threads WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+            messages = self._connection.execute(
+                "SELECT position, message_id, digest FROM capture_messages WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+            state = self._connection.execute(
+                "SELECT digest FROM capture_state WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+        return thread, messages, state
+
+    def restore_capture_cursor(self, thread_id: str, snapshot: tuple[Any, list[Any], Any]) -> None:
+        """Restore a failed model switch's exact cursor alongside its ledger leaf."""
+        thread, messages, state = snapshot
+        with self.saver.lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._connection.execute("DELETE FROM capture_messages WHERE thread_id = ?", (thread_id,))
+                self._connection.executemany(
+                    "INSERT INTO capture_messages(thread_id, position, message_id, digest) VALUES (?, ?, ?, ?)",
+                    [(thread_id, row["position"], row["message_id"], row["digest"]) for row in messages],
+                )
+                self._connection.execute("DELETE FROM capture_state WHERE thread_id = ?", (thread_id,))
+                if state is not None:
+                    self._connection.execute("INSERT INTO capture_state(thread_id, digest) VALUES (?, ?)", (thread_id, state["digest"]))
+                if thread is not None:
+                    self._connection.execute(
+                        "UPDATE threads SET seeded_from = ?, captured = ?, captured_message_ids = ? WHERE thread_id = ?",
+                        (thread["seeded_from"], thread["captured"], thread["captured_message_ids"], thread_id),
+                    )
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+            finally:
+                self._capture_message_cache.pop(thread_id, None)
+
     def activate_thread(
         self,
         session_id: str,
@@ -893,6 +935,7 @@ class SessionStore:
         captured: int = 0,
         captured_message_ids: Sequence[str] = (),
         captured_messages: Sequence[BaseMessage] | None = None,
+        preserve_capture_state: bool = False,
     ) -> ThreadInfo:
         message_ids = tuple(captured_message_ids)
         info = ThreadInfo(
@@ -953,9 +996,10 @@ class SessionStore:
                 self._connection.execute(
                     "DELETE FROM capture_messages WHERE thread_id = ?", (thread_id,)
                 )
-                self._connection.execute(
-                    "DELETE FROM capture_state WHERE thread_id = ?", (thread_id,)
-                )
+                if not preserve_capture_state:
+                    self._connection.execute(
+                        "DELETE FROM capture_state WHERE thread_id = ?", (thread_id,)
+                    )
                 self._connection.executemany(
                     "INSERT INTO capture_messages(thread_id, position, message_id, digest) "
                     "VALUES (?, ?, ?, ?)",

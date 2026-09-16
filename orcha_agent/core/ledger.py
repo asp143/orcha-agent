@@ -60,6 +60,12 @@ class ModeChangeEntry(Entry):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompactionEntry(Entry):
+    """Summary plus retained suffix boundary.
+
+    first_kept_id names the preceding entry; None discards the old messages,
+    while an empty string denotes the virtual root and retains the full path.
+    """
+
     summary: str
     first_kept_id: str | None = None
     tokens_before: int | None = None
@@ -812,10 +818,19 @@ class Ledger:
 
 def _after_last_reset(path: list[Entry]) -> list[Entry]:
     reset_at = -1
+    state: CustomEntry | None = None
+    retained_state: CustomEntry | None = None
     for index, entry in enumerate(path):
         if isinstance(entry, ResetBoundaryEntry):
             reset_at = index
-    return path[reset_at + 1 :]
+            state = retained_state = None
+        elif isinstance(entry, CustomEntry):
+            if entry.custom_type == "turn_state":
+                state = entry
+            elif entry.custom_type == "checkpoint_reset":
+                reset_at = index
+                retained_state = state
+    return ([retained_state] if retained_state is not None else []) + path[reset_at + 1:]
 
 
 def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
@@ -825,6 +840,8 @@ def _apply_last_compaction(path: list[Entry]) -> tuple[list[Entry], str | None]:
             continue
         if entry.first_kept_id is None:
             return path[compact_at + 1 :], entry.summary
+        if entry.first_kept_id == "":
+            return path, entry.summary
         marker_at = next(
             (
                 index
@@ -909,11 +926,17 @@ def build_context(
     messages: list[BaseMessage] = []
     if summary is not None:
         messages.append(HumanMessage(content=f"[Conversation summary]\n{summary}"))
-    messages.extend(
-        _message_from_entry(entry)
-        for entry in message_entries
-        if isinstance(entry, MessageEntry)
-    )
+    positions: dict[str, int] = {}
+    for entry in message_entries:
+        if isinstance(entry, MessageEntry):
+            message = _message_from_entry(entry)
+            if isinstance(message.id, str):
+                positions[message.id] = len(messages)
+            messages.append(message)
+        elif isinstance(entry, CustomEntry) and entry.custom_type == "message_replaced":
+            for message in messages_from_dict(entry.data["messages"]):
+                if message.id in positions:
+                    messages[positions[message.id]] = message
     if strip:
         messages = filter_foreign_blocks(messages, strip)
     messages, dangling = _remove_dangling_tools(messages)
