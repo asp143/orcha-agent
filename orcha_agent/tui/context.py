@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
@@ -202,6 +203,27 @@ class AppContext:
     _registry: Registry = field(init=False, repr=False)
     _bus: Any = field(init=False, repr=False)
     _always_allowed_tools: set[str] = field(default_factory=set, init=False, repr=False)
+    _command_discovery_tasks: list[asyncio.Task[None]] = field(
+        default_factory=list, init=False, repr=False
+    )
+
+    def add_command_discovery_task(self, task: asyncio.Task[None]) -> None:
+        """Track extension registration without delaying the initial paint."""
+        self._command_discovery_tasks.append(task)
+
+    async def wait_command_discovery(self) -> None:
+        """Wait at command dispatch; cancelling input must not cancel discovery."""
+        tasks = tuple(self._command_discovery_tasks)
+        if tasks:
+            results = await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks), return_exceptions=True
+            )
+            self._command_discovery_tasks[:] = [
+                task for task in self._command_discovery_tasks if task not in tasks
+            ]
+            for result in results:
+                if isinstance(result, Exception):
+                    self.console.warning(f"Command discovery failed: {result}")
 
     def __post_init__(self) -> None:
         if isinstance(self.registry, Registry):
@@ -729,6 +751,22 @@ class AppContext:
         )
         self._warn_interrupted_resume()
 
+    async def submit_prompt(self, text: str, *, model: str | None = None) -> None:
+        """Submit plugin-expanded text as a user turn, bypassing command dispatch."""
+        from .turn import _run_cancellable_turn
+
+        if not text.strip():
+            return
+        previous = self.cfg.model
+        changed = model is not None and model != previous
+        if changed:
+            await self.switch_model(model)
+        try:
+            await _run_cancellable_turn(self, text)
+        finally:
+            if changed:
+                await self.switch_model(previous)
+
     async def switch_model(self, spec: str | list[str]) -> None:
         old_model = self.cfg.model
         old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
@@ -962,4 +1000,3 @@ class AppContext:
                 "Previous turn was interrupted; "
                 f"{len(pending)} pending tool call(s) dropped."
             )
-

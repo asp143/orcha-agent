@@ -179,6 +179,9 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
 
     if not text.startswith("/"):
         return False
+    wait_discovery = getattr(ctx, "wait_command_discovery", None)
+    if callable(wait_discovery):
+        await wait_discovery()
     command_text = text[1:]
     name, separator, args = command_text.partition(" ")
     if name == "keys" and not separator:
@@ -1785,11 +1788,13 @@ async def _run_runtime(ctx: AppContext, runtime: Any, bus: EventBus) -> int:
         if ctx.agents is not None:
             await ctx.agents.shutdown()
             shutdown_completed = True
-        await bus.emit(AppExit())
         return 0
     finally:
-        if ctx.agents is not None and not shutdown_completed:
-            await ctx.agents.shutdown()
+        try:
+            if ctx.agents is not None and not shutdown_completed:
+                await ctx.agents.shutdown()
+        finally:
+            await bus.emit(AppExit())
 
 
 async def _run_app(cfg: Config) -> int:

@@ -325,7 +325,17 @@ async def build_agent(
         "system_prompt": prompt or DEFAULT_SYSTEM_PROMPT,
         "checkpointer": session.saver,
     }
-    await bus.emit(AgentBuildBefore(kwargs))
+    effective_scope = tool_scope
+    if mode.allowed_tools is not None:
+        effective_scope = set(mode.allowed_tools)
+        if tool_scope is not None:
+            effective_scope &= tool_scope
+    await bus.emit(AgentBuildBefore(
+        kwargs,
+        tool_scope=effective_scope,
+        always_allowed=frozenset(allowed),
+        mode_interrupt_on=dict(mode.interrupt_on),
+    ))
     graph = _create_graph(
         kwargs, exclude_general_purpose=exclude_general_purpose
     )
