@@ -296,7 +296,12 @@ class HubOverlay(Overlay):
                     filter=Condition(lambda: self.mode == "message"),
                 ),
                 ConditionalContainer(
-                    Window(self.footer_control, wrap_lines=True, dont_extend_height=True),
+                    Window(
+                        self.footer_control,
+                        height=lambda: self._footer_rows(),
+                        wrap_lines=True,
+                        dont_extend_height=True,
+                    ),
                     filter=Condition(lambda: self.mode == "roster"),
                 ),
             ]
@@ -404,10 +409,13 @@ class HubOverlay(Overlay):
         target = max(4, int(columns * self.width_percent))
         return min(available, target)
 
+    def _footer_rows(self) -> int:
+        return 1 + sum(part[1].count("\n") for part in self._footer_fragments())
+
     def _needed_height(self, available: int) -> int:
         roster_rows = max(1, len(self.filtered_runs))
         inspector_rows = max(1, len(self.render_inspector_text().splitlines()))
-        return min(available, 6 + max(roster_rows, inspector_rows))
+        return min(available, 6 + max(roster_rows, inspector_rows) + self._footer_rows() - 1)
 
     @property
     def filtered_runs(self) -> tuple[Any, ...]:
@@ -735,7 +743,8 @@ class HubOverlay(Overlay):
                 ("x", "cancel"),
                 ("r", "revive"),
                 ("y", "copy"),
-            )
+            ),
+            width=self.inner_width,
         )
 
     def render_text(self) -> str:

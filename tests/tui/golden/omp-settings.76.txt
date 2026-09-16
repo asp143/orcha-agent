@@ -3,14 +3,9 @@
 │  › composer           box                                                │
 │    theme              dark                                               │
 │ Choose the input border style.                                           │
-│ ↑↓ move · Pgup/pgdn page · Enter change · Esc close · Tab category       │
+│ ↑↓ move · PgUp/PgDn page · Enter change · Esc close · Tab category       │
 │ Terminal                                                                 │
-│  › vim                off                                                │
-│    hyperlinks         on                                                 │
-│    mouse              scroll                                             │
-│    colorblind         off                                                │
-│    synchronized output on                                                │
-│    resize             preserve                                           │
-│ Use Vim insert and normal modes.                                         │
-│ ↑↓ move · Pgup/pgdn page · Enter change · Esc close · Tab category       │
+│  › resize             preserve                                           │
+│ Choose how the transcript responds to resizing.                          │
+│ ↑↓ move · PgUp/PgDn page · Enter change · Esc close · Tab category       │
 ╰──────────────────────────────────────────────────────────────────────────╯

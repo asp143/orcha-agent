@@ -110,6 +110,6 @@ def test_brand_reports_current_activity(monkeypatch, kind, data, activity) -> No
 
 
 def test_settings_expose_explicit_colorblind_and_mouse_modes() -> None:
-    options = dict(CATEGORIES["Terminal"])
+    options = dict(CATEGORIES["Behaviour"])
     assert options["colorblind"] == (False, True)
     assert options["mouse"] == ("scroll", "full", "off")

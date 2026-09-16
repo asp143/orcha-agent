@@ -11,7 +11,7 @@ from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Dimension
 from prompt_toolkit.layout.containers import Float, HSplit, VSplit, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.controls import FormattedTextControl, UIContent
 
 from orcha_agent.tui.keys import format_key_bindings
 
@@ -110,7 +110,7 @@ class ScrollableContent:
             else (
                 ("↑↓", "move"),
                 ("PgUp/PgDn", "page"),
-                (format_key_bindings(("enter",)), action),
+                *(((format_key_bindings(("enter",)), action),) if action != "close" else ()),
                 (format_key_bindings(("escape",)), "close"),
             )
         )
@@ -284,6 +284,29 @@ class Overlay(Float):
         return self.wait().__await__()
 
 
+class _ScrollableControl(FormattedTextControl):
+    """Extend the selected logical row background through the full content width."""
+
+    def create_content(self, width: int, height: int | None) -> UIContent:
+        content = super().create_content(width, height)
+        original_line = content.get_line
+
+        def line(index: int) -> StyleAndTextTuples:
+            row = list(original_line(index))
+            if index == content.cursor_position.y:
+                used = sum(len(part[1]) for part in row)
+                row.append(("class:overlay.selection", " " * max(0, width - used)))
+            return row
+
+        return UIContent(
+            get_line=line,
+            line_count=content.line_count,
+            cursor_position=content.cursor_position,
+            menu_position=content.menu_position,
+            show_cursor=content.show_cursor,
+        )
+
+
 class ScrollableOverlay(ScrollableContent, Overlay):
     """Scrollable static content using the same navigation grammar as pickers."""
 
@@ -298,7 +321,7 @@ class ScrollableOverlay(ScrollableContent, Overlay):
     ) -> None:
         self.rows = tuple(tuple(row) for row in rows)
         self._init_scrolling(page_size)
-        self.content_control = FormattedTextControl(self._content_fragments, focusable=True)
+        self.content_control = _ScrollableControl(self._content_fragments, focusable=True)
         self.content_window = Window(
             self.content_control,
             always_hide_cursor=True,
@@ -334,7 +357,10 @@ class ScrollableOverlay(ScrollableContent, Overlay):
         for offset, row in enumerate(self.rows):
             if offset == self.index:
                 fragments.append(("[SetCursorPosition]", ""))
-            fragments.extend(row)
+            fragments.extend(
+                ("class:overlay.selection", part[1]) if offset == self.index else part
+                for part in row
+            )
             if not row or not row[-1][1].endswith("\n"):
                 fragments.append(("", "\n"))
         return fragments

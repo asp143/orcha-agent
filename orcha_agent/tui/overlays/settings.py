@@ -40,15 +40,11 @@ CATEGORIES = {
         ("colorblind", (False, True)),
         ("synchronized_output", (True, False)),
     ),
-    "Terminal": (
-        ("vim", (False, True)),
-        ("hyperlinks", (True, False)),
-        ("mouse", ("scroll", "full", "off")),
-        ("colorblind", (False, True)),
-        ("synchronized_output", (True, False)),
-        ("resize", ("preserve", "rebuild")),
-    ),
+    "Terminal": (("resize", ("preserve", "rebuild")),),
 }
+
+
+_TUI_SETTINGS = {"vim", "hyperlinks", "mouse", "colorblind", "synchronized_output", "resize"}
 
 
 def persist_setting(path: Path, section: str, key: str, value: str | bool) -> None:
@@ -137,7 +133,8 @@ class SettingsOverlay(SelectList[str]):
                 ("Enter", "change"),
                 ("Esc", "close"),
                 ("Tab", "category"),
-            )
+            ),
+            width=self.inner_width,
         )
 
         @self.bindings.add("tab")
@@ -205,7 +202,7 @@ class SettingsOverlay(SelectList[str]):
         config = (
             self.ctx.cfg.statusline if self.categories[self.category] == "Status" else self.ctx.cfg
         )
-        if key in dict(CATEGORIES["Terminal"]):
+        if key in _TUI_SETTINGS:
             config = self.ctx.cfg.tui
         return getattr(config, key, True if key == "auto_compact" else "ask")
 
@@ -225,7 +222,7 @@ class SettingsOverlay(SelectList[str]):
         index = options.index(current) if current in options else -1
         selected = options[(index + 1) % len(options)]
         status = self.categories[self.category] == "Status"
-        terminal = key in dict(CATEGORIES["Terminal"])
+        terminal = key in _TUI_SETTINGS
         path = getattr(self.ctx.cfg, "user_config_path", None) or user_config_dir() / "config.toml"
         try:
             persist_setting(

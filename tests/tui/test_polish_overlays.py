@@ -44,8 +44,8 @@ def test_picker_selected_row_has_full_background_and_accent(tmp_path: Path) -> N
 
 def test_ported_theme_aliases_resolve_canonical_ids(tmp_path: Path) -> None:
     themes = load_themes(home=tmp_path)
-    assert select_theme(themes, "dracula-omp").id == "dracula-dark"
-    assert select_theme(themes, "nord-omp").id == "nord-dark"
+    assert select_theme(themes, "dracula-omp").id == "dracula-purple"
+    assert select_theme(themes, "nord-omp").id == "nord-muted"
 
 
 def test_help_groups_commands_and_preserves_long_descriptions() -> None:

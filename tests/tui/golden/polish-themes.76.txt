@@ -2,12 +2,12 @@
 │  › ansi                                                                  │
 │    catppuccin-frappe                                                     │
 │    catppuccin-latte                                                      │
-│    catppuccin-latte-classic                                              │
+│    catppuccin-latte-mauve                                                │
 │    catppuccin-macchiato                                                  │
 │    catppuccin-mocha                                                      │
 │    dark (current)                                                        │
 │    dracula                                                               │
-│    dracula-dark                                                          │
+│    dracula-purple                                                        │
 │    everforest                                                            │
 │    forest-dark                                                           │
 │    forest-light                                                          │
@@ -20,15 +20,15 @@
 │    light                                                                 │
 │    monokai-dark                                                          │
 │    nord                                                                  │
-│    nord-dark                                                             │
+│    nord-muted                                                            │
 │    ocean-dark                                                            │
 │    one-dark                                                              │
 │    one-light                                                             │
 │    paper-light                                                           │
 │    rose-pine                                                             │
-│    rose-pine-classic                                                     │
 │    rose-pine-dawn                                                        │
 │    rose-pine-moon                                                        │
+│    rose-pine-raised                                                      │
 │    solarized-dark                                                        │
 │    solarized-light                                                       │
 │    tokyo-night                                                           │

@@ -107,8 +107,18 @@ class SelectList(ScrollableContent, Overlay, Generic[T]):
         if show_filter:
             body_parts.extend(
                 [
-                    Window(self.filter_control, height=1, style="class:overlay.filter"),
-                    Window(char="─", height=1, style="class:overlay.divider"),
+                    Window(
+                        self.filter_control,
+                        height=lambda: 1 if self.filter.text else 0,
+                        dont_extend_height=True,
+                        style="class:overlay.filter",
+                    ),
+                    Window(
+                        char="─",
+                        height=lambda: 1 if self.filter.text else 0,
+                        dont_extend_height=True,
+                        style="class:overlay.divider",
+                    ),
                 ]
             )
         if prefix is not None:

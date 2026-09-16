@@ -173,9 +173,12 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
         from prompt_toolkit.shortcuts import print_formatted_text
         from .gallery_fixtures.composer import polish_examples
         from .gallery_fixtures.runtime import runtime_examples
-        from .gallery_fixtures.overlay_palette import selection_fixture
+        from .gallery_fixtures.overlay_palette import overlay_frame_fixture, selection_fixture
 
         console.print(selection_fixture(theme))
+        for surface in ("help", "hub", "models", "tree", "settings"):
+            console.print(f"  · {surface} overlay", style="dim")
+            console.print(overlay_frame_fixture(theme, width, surface))
 
         for label, fragments in polish_examples(theme, width):
             console.print(f"  · {label}", style="dim")

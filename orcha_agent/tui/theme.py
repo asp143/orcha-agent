@@ -116,12 +116,16 @@ _BUILTIN_NAMES = (
     "paper-light",
 )
 _PORTED_NAMES = {
-    "dracula-omp": "dracula-dark",
-    "nord-omp": "nord-dark",
-    "catppuccin-latte-legacy": "catppuccin-latte-classic",
-    "rose-pine-legacy": "rose-pine-classic",
+    "dracula-omp": "dracula-purple",
+    "nord-omp": "nord-muted",
+    "catppuccin-latte-legacy": "catppuccin-latte-mauve",
+    "rose-pine-legacy": "rose-pine-raised",
 }
 _THEME_ALIASES = {
+    "dracula-dark": "dracula-purple",
+    "nord-dark": "nord-muted",
+    "catppuccin-latte-classic": "catppuccin-latte-mauve",
+    "rose-pine-classic": "rose-pine-raised",
     "dark-catppuccin": "catppuccin-mocha",
     "light-catppuccin": "catppuccin-latte-legacy",
     "dark-dracula": "dracula-omp",

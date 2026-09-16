@@ -8,5 +8,5 @@
 │    colorblind         off                                                │
 │    synchronized output on                                                │
 │ Choose when tools require approval.                                      │
-│ ↑↓ move · Pgup/pgdn page · Enter change · Esc close · Tab category       │
+│ ↑↓ move · PgUp/PgDn page · Enter change · Esc close · Tab category       │
 ╰──────────────────────────────────────────────────────────────────────────╯
