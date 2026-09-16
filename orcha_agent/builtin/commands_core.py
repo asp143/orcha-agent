@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from rich.table import Table
+from rich.text import Text
 
 from orcha_agent.core.plugin import PluginAPI, PluginSpec
 
@@ -30,7 +31,7 @@ async def _help(ctx: Any, args: str) -> None:
     table.add_column("Command", style="cyan", no_wrap=True)
     table.add_column("Help")
     for name, command in sorted(ctx.registry.commands.items()):
-        table.add_row(f"/{name}", command.help)
+        table.add_row(Text(f"/{name}"), Text(command.help))
     ctx.console.print(table)
 
 

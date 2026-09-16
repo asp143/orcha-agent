@@ -6,7 +6,7 @@ import asyncio
 import os
 import re
 import signal
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .frontmatter import parse_frontmatter
@@ -25,6 +25,7 @@ class FileCommand:
     argument_hint: str = ""
     model: str | None = None
     trusted: bool = False
+    ignored_model: bool = False
 
 
 def discover_commands(
@@ -34,7 +35,7 @@ def discover_commands(
     trust_cwd: bool = False,
     import_claude: bool = True,
 ) -> dict[str, FileCommand]:
-    """Native precedes imported; project precedes user within each format."""
+    """Trusted user commands take precedence over all untrusted project aliases."""
     home = home or Path.home()
     roots = [
         (cwd / ".orcha-agent/commands", False, trust_cwd),
@@ -44,7 +45,11 @@ def discover_commands(
         roots.extend(
             [(cwd / ".claude/commands", True, trust_cwd), (home / ".claude/commands", True, True)]
         )
+    if not trust_cwd:
+        roots.sort(key=lambda entry: not entry[2])
     result: dict[str, FileCommand] = {}
+    short_aliases: list[tuple[str, str]] = []
+    trusted_names: dict[str, set[str]] = {}
     for root, recursive, trusted in roots:
         for path in sorted(root.glob("**/*.md" if recursive else "*.md")):
             try:
@@ -71,10 +76,13 @@ def discover_commands(
                 )
             hint = metadata.get("argument-hint", "")
             model = metadata.get("model")
-            aliases = [path.stem]
-            if recursive and len(relative.parts) > 1:
-                aliases.append(":".join(relative.with_suffix("").parts))
-            for name in aliases:
+            nested = recursive and len(relative.parts) > 1
+            canonical = ":".join(relative.with_suffix("").parts) if nested else path.stem
+            if trusted:
+                trusted_names.setdefault(path.stem, set()).add(canonical)
+                if nested:
+                    short_aliases.append((path.stem, canonical))
+            for name in [canonical]:
                 if not re.fullmatch(r"[\w:-]+", name):
                     continue
                 result.setdefault(
@@ -85,10 +93,18 @@ def discover_commands(
                         body,
                         description,
                         hint if isinstance(hint, str) else "",
-                        model if isinstance(model, str) and model.strip() else None,
+                        model if trusted and isinstance(model, str) and model.strip() else None,
                         trusted,
+                        bool(not trusted and isinstance(model, str) and model.strip()),
                     ),
                 )
+    for stem, canonical in short_aliases:
+        command = result.get(canonical)
+        if command is None or not command.trusted or len(trusted_names[stem]) != 1:
+            continue
+        existing = result.get(stem)
+        if existing is None or not existing.trusted:
+            result[stem] = replace(command, name=stem)
     return result
 
 

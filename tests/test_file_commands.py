@@ -63,13 +63,13 @@ def test_discovery_precedence_aliases_metadata_and_import_toggle(tmp_path):
     write(cwd / ".claude/commands", "team/review.md", "Imported")
     write(home / ".claude/commands", "personal/foo.md", "Personal")
     write(cwd / ".orcha-agent/commands", "nested/hidden.md", "Hidden")
-    found = discover_commands(cwd, home=home)
+    found = discover_commands(cwd, home=home, trust_cwd=True)
     assert set(found) == {"review", "team:review", "foo", "personal:foo"}
     assert found["review"].body == "Native $1"
     assert found["review"].description == "Review code"
     assert found["review"].argument_hint == "<path>"
     assert found["review"].model == "openai:test"
-    assert not found["review"].trusted
+    assert found["review"].trusted
     assert found["foo"].trusted
     assert set(discover_commands(cwd, home=home, import_claude=False)) == {"review"}
     assert discover_commands(cwd, home=home, trust_cwd=True)["review"].trusted
@@ -141,7 +141,7 @@ async def test_plugin_registration_submission_model_and_collision(tmp_path, monk
     file_commands.register(api)
     completer = ComposerCompleter(registry, tmp_path)
     ctx = SimpleNamespace(
-        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=False),
+        cfg=SimpleNamespace(cwd=tmp_path, trust_cwd=True),
         submit_prompt=AsyncMock(),
         console=SimpleNamespace(error=Mock(), warning=Mock()),
         _command_discovery_tasks=[],

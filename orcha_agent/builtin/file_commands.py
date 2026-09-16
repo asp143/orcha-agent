@@ -22,7 +22,7 @@ def register(api: PluginAPI) -> None:
             except (OSError, ValueError, TimeoutError) as exc:
                 ctx.console.error(str(exc) or "Command interpolation timed out")
                 return
-            await ctx.submit_prompt(text, model=command.model)
+            await ctx.submit_prompt(text, model=command.model if command.trusted else None)
 
         return run
 
@@ -33,7 +33,11 @@ def register(api: PluginAPI) -> None:
             trust_cwd=ctx.cfg.trust_cwd,
             import_claude=api.config.get("import_claude", True) is not False,
         )
+        warned_paths = set()
         for name, command in commands.items():
+            if command.ignored_model and command.path not in warned_paths:
+                ctx.console.warning(f"Ignoring model override in untrusted command: {command.path}")
+                warned_paths.add(command.path)
             help_text = command.description
             if command.argument_hint:
                 help_text += f" ({command.argument_hint})"
