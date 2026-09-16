@@ -315,7 +315,7 @@ async def build_agent(
         else resolver.resolve(cfg.subagent_model or cfg.model, "subagent")
     )
     roles["summarizer"] = resolver.resolve(
-        cfg.summarizer_model or cfg.model, "summarizer"
+        cfg.summarizer_model or cfg.model_roles.get("summarizer") or cfg.model, "summarizer"
     )
     backend = registry.backends[cfg.backend].factory(cfg)
     mode = registry.modes[cfg.mode]

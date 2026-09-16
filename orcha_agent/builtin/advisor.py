@@ -42,13 +42,10 @@ def _configured_model(cfg: Any) -> str | list[str]:
     configured = cfg.advisor.model
     if not configured.startswith("@"):
         return configured
-    role = configured[1:]
-    selected = getattr(cfg, "model_roles", {}).get(role)
-    if selected is not None:
-        return selected
-    if role == "advisor":
-        return cfg.model
-    raise ValueError(f"Unknown advisor model role: {configured}")
+    from orcha_agent.core.models import expand_model_spec
+
+    expanded = expand_model_spec(configured, cfg)
+    return expanded[0] if len(expanded) == 1 else expanded
 
 
 def _watchdog_path(

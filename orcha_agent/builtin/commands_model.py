@@ -13,6 +13,39 @@ from orcha_agent.core.plugin import PluginAPI, PluginSpec
 PLUGIN = PluginSpec(name="commands_model", version="1.0.0")
 
 
+async def _models(ctx: Any, args: str) -> None:
+    """Browse or filter metadata without constructing providers or reading secrets."""
+    from rich.table import Table
+    from orcha_agent.core.catalog import get_catalog
+
+    if args.strip() == "browse":
+        await ctx.ui.show("model", browse=True)
+        return
+    tokens = args.lower().split()
+    table = Table("Model", "Context", "Max output", "Input / output $/M", "Capabilities")
+    for spec, info in sorted(get_catalog(ctx.cfg).items()):
+        caps = " ".join(
+            name
+            for name, enabled in [
+                ("thinking", info.thinking),
+                ("vision", info.vision),
+                ("tools", info.tool_calls),
+            ]
+            if enabled
+        )
+        if not all(token in f"{spec} {caps}".lower() for token in tokens):
+            continue
+        price = {**info.cost, **getattr(ctx.cfg, "pricing", {}).get(spec, {})}
+        table.add_row(
+            spec,
+            f"{info.context_window:,}",
+            f"{info.max_tokens:,}",
+            f"{price.get('input', 0):g} / {price.get('output', 0):g}",
+            caps,
+        )
+    ctx.console.print(table)
+
+
 async def _model(ctx: Any, args: str) -> None:
     if not args.strip():
         ui = getattr(ctx, "ui", None)
@@ -26,15 +59,9 @@ async def _model(ctx: Any, args: str) -> None:
         current = cfg.model if isinstance(cfg.model, str) else ",".join(cfg.model)
         subagent_value = cfg.subagent_model or cfg.model
         summarizer_value = cfg.summarizer_model or cfg.model
-        subagent = (
-            subagent_value
-            if isinstance(subagent_value, str)
-            else ",".join(subagent_value)
-        )
+        subagent = subagent_value if isinstance(subagent_value, str) else ",".join(subagent_value)
         summarizer = (
-            summarizer_value
-            if isinstance(summarizer_value, str)
-            else ",".join(summarizer_value)
+            summarizer_value if isinstance(summarizer_value, str) else ",".join(summarizer_value)
         )
         ctx.console.print(f"Current model: {current}")
         ctx.console.print(
@@ -45,6 +72,12 @@ async def _model(ctx: Any, args: str) -> None:
             f"Summarizer model: {summarizer} "
             f"({'inherited' if cfg.summarizer_model is None else 'explicit'})"
         )
+        from orcha_agent.core.models import MODEL_ROLES
+
+        for role in MODEL_ROLES:
+            ctx.console.print(
+                f"@{role}: {getattr(cfg, 'model_roles', {}).get(role, getattr(cfg, 'models', {}).get(role, 'main (inherited)'))}"
+            )
         ctx.console.print("Usage: /model <provider:model>[,<provider:model>...]")
         return
     try:
@@ -94,4 +127,7 @@ def register(api: PluginAPI) -> None:
     api.on(AppStart, remember_app)
     api.on(ModelSwitch, remember_model)
     api.add_command("model", _model, help="Switch models: /model <provider:model>")
+    api.add_command(
+        "models", _models, help="List/filter catalog: /models [provider|thinking|vision|browse]"
+    )
     api.add_command("mode", _mode, help="Switch operating modes: /mode <name>")

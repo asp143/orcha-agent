@@ -82,8 +82,10 @@ def _model_specs(
 def _primary_provider_prefix(
     spec: str | list[str],
     aliases: Mapping[str, str | list[str]],
+    config: Config | None = None,
 ) -> str | None:
-    specs = _model_specs(spec, aliases)
+    from orcha_agent.core.models import expand_model_spec
+    specs = expand_model_spec(spec, config) if config is not None else _model_specs(spec, aliases)
     if not specs:
         return None
     prefix, separator, _ = specs[0].partition(":")
@@ -92,7 +94,8 @@ def _primary_provider_prefix(
 
 def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
     foreign: set[str] = set()
-    for spec in _model_specs(cfg.model, cfg.models):
+    from orcha_agent.core.models import expand_model_spec
+    for spec in expand_model_spec(cfg.model, cfg):
         prefix, separator, _ = spec.partition(":")
         if not separator:
             continue
@@ -104,7 +107,8 @@ def _foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
 
 def _reseed_foreign_block_types(registry: Registry, cfg: Config) -> set[str]:
     target_providers: set[str] = set()
-    for spec in _model_specs(cfg.model, cfg.models):
+    from orcha_agent.core.models import expand_model_spec
+    for spec in expand_model_spec(cfg.model, cfg):
         prefix, separator, _ = spec.partition(":")
         if separator:
             target_providers.add(prefix)
@@ -301,7 +305,8 @@ class AppContext:
         if _primary_provider_prefix(
             source_model,
             self.cfg.models,
-        ) == _primary_provider_prefix(target_model, self.cfg.models):
+            self.cfg,
+        ) == _primary_provider_prefix(target_model, self.cfg.models, self.cfg):
             return
         source_cfg = replace(self.cfg, model=source_model)
         foreign = _foreign_block_types(self.registry, source_cfg)
@@ -801,7 +806,10 @@ class AppContext:
         old_model = self.cfg.model
         old_label = old_model if isinstance(old_model, str) else ",".join(old_model)
         new_label = spec if isinstance(spec, str) else ",".join(spec)
-        candidate_cfg = replace(self.cfg, model=spec)
+        candidate_cfg = replace(
+            self.cfg, model=spec,
+            model_role_default=self.cfg.model if not isinstance(self.cfg.model, str) or not self.cfg.model.startswith("@") else self.cfg.model_role_default,
+        )
         candidate_agent = await _compat("build_agent", build_agent)(
             self.registry,
             candidate_cfg,
@@ -815,7 +823,8 @@ class AppContext:
         provider_changed = _primary_provider_prefix(
             self.cfg.model,
             self.cfg.models,
-        ) != _primary_provider_prefix(spec, self.cfg.models)
+            self.cfg,
+        ) != _primary_provider_prefix(spec, candidate_cfg.models, candidate_cfg)
         foreign = (
             _foreign_block_types(self.registry, self.cfg)
             if provider_changed

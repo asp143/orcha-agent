@@ -634,6 +634,9 @@ async def test_bare_model_reports_effective_role_models_and_usage() -> None:
         "Current model: anthropic:claude-opus-5",
         "Subagent model: anthropic:claude-opus-5 (inherited)",
         "Summarizer model: codex:gpt-5.6-sol (explicit)",
+        *[f"@{role}: main (inherited)" for role in (
+            "main", "subagent", "summarizer", "smol", "slow", "plan", "vision", "task", "commit", "advisor"
+        )],
         "Usage: /model <provider:model>[,<provider:model>...]",
     ]
 

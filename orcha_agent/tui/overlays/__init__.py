@@ -23,7 +23,7 @@ def register_builtin_overlays(registry: Any) -> None:
 
     factories = {
         "settings": lambda ctx, **_payload: SettingsOverlay(ctx),
-        "model": lambda ctx, **_payload: ModelOverlay(ctx),
+        "model": lambda ctx, **payload: ModelOverlay(ctx, browse=payload.get("browse", False)),
         "session": lambda ctx, **_payload: SessionOverlay(ctx),
         "hub": lambda ctx, **_payload: HubOverlay(ctx),
         "tree": lambda ctx, **_payload: TreeOverlay(ctx),

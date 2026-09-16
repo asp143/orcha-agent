@@ -10,12 +10,69 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
-from .config import Config
+from .config import Config, DEFAULT_MODEL
 from .registry import ProviderRegistration, Registry
 
 ModelSpec: TypeAlias = str | list[str]
 ResolvedModel: TypeAlias = BaseChatModel
 _REGISTERED_HARNESS_PROFILES: set[tuple[str, int]] = set()
+
+
+MODEL_ROLES = (
+    "main",
+    "subagent",
+    "summarizer",
+    "smol",
+    "slow",
+    "plan",
+    "vision",
+    "task",
+    "commit",
+    "advisor",
+)
+EFFORTS = {"off", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+
+def expand_model_spec(spec: ModelSpec, config: Config, seen: tuple[str, ...] = ()) -> list[str]:
+    """Expand roles and aliases without constructing providers or resolving secrets."""
+    if isinstance(spec, list):
+        return [value for entry in spec for value in expand_model_spec(entry, config, seen)]
+    if not isinstance(spec, str) or not spec:
+        raise ValueError("Model specification must be a non-empty string or fallback list")
+    if spec in seen:
+        raise ValueError("Model alias cycle: " + " -> ".join((*seen, spec)))
+    if spec.startswith("@"):
+        role, separator, effort = spec[1:].partition(":")
+        if separator and effort not in EFFORTS:
+            raise ValueError(f"Unknown reasoning effort: {effort}")
+        if role not in MODEL_ROLES and role not in getattr(config, "model_roles", {}):
+            raise ValueError(f"Unknown model role: {role}")
+        target = getattr(config, "model_roles", {}).get(role) or getattr(config, "models", {}).get(
+            role
+        )
+        if target is None:
+            target = (
+                config.subagent_model
+                if role in {"task", "subagent"}
+                else config.summarizer_model
+                if role == "summarizer"
+                else None
+            ) or (
+                config.model
+                if not (isinstance(config.model, str) and config.model.startswith("@"))
+                else getattr(config, "model_role_default", None) or DEFAULT_MODEL
+            )
+        values = expand_model_spec(target, config, (*seen, spec))
+        if not separator:
+            return values
+        return [
+            value
+            if value.partition(":")[0] in {"ollama", "langchain"}
+            else f"{value.rpartition(':')[0] if value.count(':') > 1 and value.rpartition(':')[2] in EFFORTS else value}:{effort}"
+            for value in values
+        ]
+    target = getattr(config, "models", {}).get(spec)
+    return expand_model_spec(target, config, (*seen, spec)) if target is not None else [spec]
 
 
 class ModelResolver:
@@ -80,11 +137,16 @@ class ModelResolver:
         return {
             "main": self.resolve(self._config.model, "main"),
             "subagent": self.resolve(
-                self._config.subagent_model or self._config.model,
+                self._config.subagent_model
+                or self._config.model_roles.get("subagent")
+                or self._config.model_roles.get("task")
+                or self._config.model,
                 "subagent",
             ),
             "summarizer": self.resolve(
-                self._config.summarizer_model or self._config.model,
+                self._config.summarizer_model
+                or self._config.model_roles.get("summarizer")
+                or self._config.model,
                 "summarizer",
             ),
         }
@@ -96,23 +158,7 @@ class ModelResolver:
         role: str,
         aliases: tuple[str, ...] = (),
     ) -> list[str]:
-        if isinstance(spec, list):
-            expanded: list[str] = []
-            for entry in spec:
-                expanded.extend(self._expand_aliases(entry, role=role, aliases=aliases))
-            return expanded
-        if not isinstance(spec, str) or not spec:
-            raise ValueError(
-                f"Model specification for role {role!r} must be a non-empty string or fallback list"
-            )
-
-        target = self._config.models.get(spec)
-        if target is None:
-            return [spec]
-        if spec in aliases:
-            cycle = " -> ".join((*aliases, spec))
-            raise ValueError(f"Model alias cycle for role {role!r}: {cycle}")
-        return self._expand_aliases(target, role=role, aliases=(*aliases, spec))
+        return expand_model_spec(spec, self._config, aliases)
 
     def _resolve_one(self, spec: str, role: str) -> BaseChatModel:
         prefix, separator, model_name = spec.partition(":")
@@ -122,6 +168,13 @@ class ModelResolver:
                 "expected '<provider>:<model>'"
             )
 
+        effort = None
+        if (
+            prefix not in {"ollama", "langchain"}
+            and ":" in model_name
+            and model_name.rpartition(":")[2] in EFFORTS
+        ):
+            model_name, _, effort = model_name.rpartition(":")
         registration = self._registry.providers.get(prefix)
         if registration is None:
             registered = ", ".join(sorted(self._registry.providers)) or "(none)"
@@ -135,25 +188,42 @@ class ModelResolver:
             raise RuntimeError(
                 f"Model provider {prefix!r} is unavailable for role {role!r}. {hint}"
             )
-        if registration.env_keys and not any(os.environ.get(key) for key in registration.env_keys):
+        from .catalog import provider_api_key
+
+        api_key = provider_api_key(prefix, self._config)
+        if (
+            registration.env_keys
+            and not api_key
+            and not any(os.environ.get(key) for key in registration.env_keys)
+        ):
             accepted = ", ".join(registration.env_keys)
             raise RuntimeError(f"Model provider {prefix!r} requires one of: {accepted}")
 
         provider_config = dict(self._config.providers.get(prefix, {}))
+        if api_key:
+            provider_config["api_key"] = api_key
+        if effort and registration.capabilities.thinking:
+            provider_config["reasoning_effort"] = "none" if effort == "off" else effort
         if not registration.capabilities.thinking:
             provider_config.pop("thinking", None)
 
         try:
             model = registration.factory(model_name, provider_config)
         except Exception as exc:
+            detail = str(exc).replace(api_key, "[redacted]") if api_key else str(exc)
             raise RuntimeError(
                 f"Could not construct model {spec!r} for role {role!r} "
-                f"with provider {prefix!r}: {exc}"
-            ) from exc
+                f"with provider {prefix!r}: {detail}"
+            ) from None
         if not isinstance(model, BaseChatModel):
             raise RuntimeError(
                 f"Provider {prefix!r} returned {type(model).__name__}, expected BaseChatModel"
             )
+        model.metadata = {
+            **(model.metadata or {}),
+            "orcha_model": f"{prefix}:{model_name}",
+            "orcha_role": role,
+        }
         return model
 
     @staticmethod

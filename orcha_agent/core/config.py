@@ -305,6 +305,7 @@ class Config:
     tui: TuiConfig = field(default_factory=TuiConfig)
     statusline: StatusLineConfig = field(default_factory=StatusLineConfig)
     model_roles: dict[str, str | list[str]] = field(default_factory=dict)
+    model_role_default: str | list[str] | None = None
     agents: AgentsConfig = field(default_factory=AgentsConfig)
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -321,6 +322,15 @@ class Config:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="orcha", description="Pluggable terminal coding agent")
     parser.add_argument("--model", metavar="PREFIX:MODEL")
+    role_flags = parser.add_mutually_exclusive_group()
+    for role in ("smol", "slow", "plan"):
+        role_flags.add_argument(
+            f"--{role}",
+            dest="model_role",
+            action="store_const",
+            const=role,
+            help=f"use the @{role} model role",
+        )
     parser.add_argument("--mode")
     parser.add_argument(
         "--yolo",
@@ -666,8 +676,13 @@ def load_config(
         if env_name in environ:
             memory_store_values[key] = environ[env_name]
 
+    default_role_model = core.get("model", DEFAULT_MODEL)
     if args.model is not None:
         core["model"] = args.model
+    if args.model_role:
+        if args.model is not None:
+            parser.error("--model conflicts with model role flags")
+        core["model"] = "@" + args.model_role
     if args.yolo:
         if args.mode not in (None, "yolo"):
             parser.error("--yolo conflicts with --mode " + args.mode)
@@ -750,6 +765,10 @@ def load_config(
     raw_roles = models.get("roles", {})
     if not isinstance(raw_roles, Mapping):
         parser.error("[models.roles] must be a TOML table")
+    extra_roles = values.get("model_roles", {})
+    if not isinstance(extra_roles, Mapping):
+        parser.error("[model_roles] must be a TOML table")
+    raw_roles = {**raw_roles, **extra_roles}
     model_aliases = {key: value for key, value in models.items() if key != "roles"}
     model_roles = {
         str(role): normalize_model_spec(spec)
@@ -824,6 +843,7 @@ def load_config(
         tui=tui_config,
         statusline=statusline,
         model_roles=model_roles,
+        model_role_default=normalize_model_spec(default_role_model) if not (isinstance(default_role_model, str) and default_role_model.startswith("@")) else DEFAULT_MODEL,
         agents=agent_config,
         advisor=advisor_config,
         persistence=persistence_config,
@@ -849,7 +869,7 @@ def load_config(
         providers={key: dict(value) for key, value in providers.items() if isinstance(value, Mapping)},
         plugins=dict(plugins),
         trust_cwd=trust_cwd,
-        model_overridden=args.model is not None,
+        model_overridden=args.model is not None or args.model_role is not None,
         trusted_dirs=trusted_dirs,
         trust_all_cwd=args.trust_cwd,
         user_config_path=user_path,

@@ -1662,9 +1662,11 @@ async def test_model_switch_retargets_unset_role_models_to_selected_provider(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("selected_model", ["old:replacement", "@smol:high"])
 async def test_same_provider_model_switch_keeps_provider_private_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    selected_model: str,
 ) -> None:
     private_history = AIMessage(
         content=[
@@ -1695,23 +1697,27 @@ async def test_same_provider_model_switch_keeps_provider_private_history(
         lambda *args: cleanup_calls.append(args),
     )
 
-    await ctx.switch_model("old:replacement")
+    ctx.cfg = replace(ctx.cfg, model_roles={"smol": "old:replacement"})
+    await ctx.switch_model(selected_model)
 
     assert cleanup_calls == []
     assert old_graph.messages == [private_history]
-    assert ctx.cfg.model == "old:replacement"
+    assert ctx.cfg.model == selected_model
     assert ctx.agent is replacement_graph
     assert ctx.summarizer == "replacement summarizer"
     switches = [event for event in ctx.bus.events if isinstance(event, ModelSwitch)]
     assert [(event.old, event.new) for event in switches] == [
-        ("old:model", "old:replacement")
+        ("old:model", selected_model)
     ]
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_model,selected_model", [("old:model", "new:model"), ("@slow", "@smol:high")])
 async def test_cross_provider_model_switch_cleans_history_before_atomic_swap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    source_model: str,
+    selected_model: str,
 ) -> None:
     private_history = AIMessage(
         content=[
@@ -1722,6 +1728,7 @@ async def test_cross_provider_model_switch_cleans_history_before_atomic_swap(
     old_graph = _HistoryGraph([private_history])
     replacement_graph = object()
     ctx = _context(tmp_path, agent=old_graph)
+    ctx.cfg = replace(ctx.cfg, model=source_model, model_roles={"slow": "old:model", "smol": "new:model"})
     ctx._registry.providers["old"] = SimpleNamespace(
         foreign_block_types=frozenset({"thinking"})
     )
@@ -1747,21 +1754,21 @@ async def test_cross_provider_model_switch_cleans_history_before_atomic_swap(
     )
     monkeypatch.setattr(app_module, "strip_foreign_blocks", record_cleanup)
 
-    await ctx.switch_model("new:model")
+    await ctx.switch_model(selected_model)
 
-    assert cleanup_order == [(old_graph, "old:model")]
+    assert cleanup_order == [(old_graph, source_model)]
     assert old_graph.messages == [
         private_history.model_copy(
             update={"content": [{"type": "text", "text": "visible"}]}
         )
     ]
-    assert ctx.cfg.model == "new:model"
+    assert ctx.cfg.model == selected_model
     assert ctx.cfg.model_overridden is False
     assert ctx.agent is replacement_graph
     assert ctx.summarizer == "replacement summarizer"
     switches = [event for event in ctx.bus.events if isinstance(event, ModelSwitch)]
     assert [(event.old, event.new) for event in switches] == [
-        ("old:model", "new:model")
+        (source_model, selected_model)
     ]
 
 
@@ -3619,9 +3626,11 @@ def _put_checkpoint(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("selected_model", ["target:cli", "@smol:high"])
 async def test_cross_provider_missing_checkpoint_reseed_strips_only_source_blocks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    selected_model: str,
 ) -> None:
     source_private = {"type": "source_private", "value": "remove"}
     target_native = {"type": "target_native", "value": "preserve"}
@@ -3639,7 +3648,7 @@ async def test_cross_provider_missing_checkpoint_reseed_strips_only_source_block
             target.thread_id,
             MessageEntry(message=message_to_dict(stored_message)),
         )
-        ctx.cfg = replace(ctx.cfg, model="target:cli", model_overridden=True)
+        ctx.cfg = replace(ctx.cfg, model=selected_model, model_roles={"smol": "target:cli"}, model_overridden=True)
         ctx._registry.providers["source"] = SimpleNamespace(
             foreign_block_types=frozenset({"source_private"})
         )
