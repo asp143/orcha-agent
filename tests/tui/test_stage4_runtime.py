@@ -52,7 +52,9 @@ def _ctx(tmp_path: Path, registry: Registry | None = None) -> SimpleNamespace:
 def test_composer_builds_all_shapes_and_dynamic_mode_styles(tmp_path: Path) -> None:
     theme = load_themes(home=tmp_path)["dark"]
     for shape, chrome in (("box", 1), ("claude", 2), ("borderless", 0)):
-        composer = Composer(shape=shape, theme=theme, model=lambda: "model", thinking=lambda: "high")
+        composer = Composer(
+            shape=shape, theme=theme, model=lambda: "model", thinking=lambda: "high"
+        )
         assert composer.shape == shape
         assert composer.chrome_lines == chrome
         assert composer.height_for_width(80) == 1 + chrome
@@ -69,10 +71,12 @@ async def test_headless_submit_newline_continuation_dot_and_bash(tmp_path: Path)
     events: list[object] = []
     submitted_event = asyncio.Event()
     ctx = _ctx(tmp_path)
+
     async def capture(event: object) -> None:
         events.append(event)
 
     ctx._bus.on(object, capture, plugin="test")
+
     async def submit(text: str) -> None:
         submitted.append(text)
         submitted_event.set()
@@ -110,7 +114,9 @@ async def test_headless_submit_newline_continuation_dot_and_bash(tmp_path: Path)
 
     assert submitted == ["first\nsecond", "keep going"]
     assert any(isinstance(event, ToolCallStart) and event.name == "execute" for event in events)
-    assert any(isinstance(event, ToolCallEnd) and event.result["stdout"] == "ok" for event in events)
+    assert any(
+        isinstance(event, ToolCallEnd) and event.result["stdout"] == "ok" for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -328,6 +334,7 @@ async def test_external_editor_draft_restore_completion_and_actions(tmp_path: Pa
 
     assert ctx.plugin_states["composer"]["draft"] == "alpha.py"
 
+
 @pytest.mark.asyncio
 async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
     submitted: list[str] = []
@@ -366,7 +373,6 @@ async def test_empty_submit_aborts_stream_and_dispatches_queue_head() -> None:
     assert submitted == ["active", "next"]
 
 
-
 @pytest.mark.asyncio
 async def test_provider_and_plugin_actions_are_headlessly_bound(
     tmp_path: Path,
@@ -391,6 +397,7 @@ async def test_provider_and_plugin_actions_are_headlessly_bound(
 
     registry._add_keybinding("plugin", "custom", plugin_handler, "c-x")
     ctx = _ctx(tmp_path, registry)
+
     class Resolver:
         def __init__(self, _registry: object, _cfg: object) -> None:
             pass
@@ -494,10 +501,9 @@ def test_completion_surface_sits_immediately_above_composer(tmp_path: Path) -> N
         composer_index = children.index(runtime.composer.container)
         assert children[composer_index - 1] is runtime.composer.completion_container
         assert root.floats == []
-        selected = runtime.application.style.get_attrs_for_style_str(
-            "class:completion.arrow"
-        )
+        selected = runtime.application.style.get_attrs_for_style_str("class:completion.arrow")
         assert selected.color is not None
+
 
 @pytest.mark.parametrize("shape", ["box", "claude", "borderless"])
 def test_composer_container_has_exact_dynamic_content_height(
@@ -561,10 +567,7 @@ async def test_ctrl_d_persisted_steer_restores_and_runs_as_follow_up(
         await asyncio.wait_for(first_task, 1)
 
     assert first_submitted == ["active"]
-    persisted = {
-        name: dict(state)
-        for name, state in first_ctx.plugin_states.items()
-    }
+    persisted = {name: dict(state) for name, state in first_ctx.plugin_states.items()}
     assert persisted["composer"]["queue"] == [
         {"text": "queued steer", "mode": "steer"},
     ]
@@ -644,10 +647,7 @@ def test_reconstructed_runtime_restores_and_clears_persisted_queue(
         )
         first._exit(event)
 
-    persisted = {
-        name: dict(state)
-        for name, state in first_ctx.plugin_states.items()
-    }
+    persisted = {name: dict(state) for name, state in first_ctx.plugin_states.items()}
     assert persisted["composer"]["queue"] == [
         {"text": "queued one", "mode": "steer"},
         {"text": "queued two", "mode": "follow_up"},
@@ -789,9 +789,7 @@ def test_queue_recovery_merges_older_prompts_before_active_draft(tmp_path: Path)
         runtime.queue.extend(["queued one", "queued two"])
         runtime.streaming = True
         runtime._escape_ladder(event)
-        assert runtime.buffer.text == (
-            "-> queued one\n-> queued two\n\nqueued two\n\nactive draft"
-        )
+        assert runtime.buffer.text == ("-> queued one\n-> queued two\n\nqueued two\n\nactive draft")
     finally:
         runtime.application.input.close()
 
@@ -824,8 +822,7 @@ async def test_streaming_submission_modes_and_slash_command_dispatch() -> None:
         runtime.buffer.text = "also after"
         runtime.buffer.cursor_position = len(runtime.buffer.text)
         runtime._newline_or_followup(event)
-        assert runtime.buffer.text == "also after\n"
-        runtime._queue_draft(event)
+        assert runtime.buffer.text == ""
 
         runtime.buffer.text = "/keys"
         runtime._accept(runtime.buffer)
@@ -934,10 +931,7 @@ async def test_streaming_enter_injects_at_tool_boundary_while_queue_keys_follow_
         pipe.send_text("alt follow-up")
         pipe.send_bytes(b"\x1b\r")
         await asyncio.sleep(0.05)
-        assert runtime.buffer.text == "alt follow-up\n"
-        assert len(runtime.queue.entries) == 2
-        pipe.send_bytes(b"\x11")
-        await asyncio.sleep(0.03)
+        assert runtime.buffer.text == ""
         assert [(item.text, item.mode) for item in runtime.queue.entries] == [
             ("steer now", "steer"),
             ("ctrl follow-up", "follow_up"),
@@ -1260,8 +1254,6 @@ def test_queue_hud_dims_modes_hint_and_clips_old_rows(tmp_path: Path) -> None:
         runtime.application.input.close()
 
 
-
-
 @pytest.mark.asyncio
 async def test_next_send_dismisses_pinned_provider_error() -> None:
     runtime = ApplicationRuntime(
@@ -1313,7 +1305,6 @@ async def test_shell_error_and_cancellation_always_settle_tool_card(tmp_path: Pa
     finally:
         await runtime.scheduler.aclose()
         runtime.application.input.close()
-
 
 
 @pytest.mark.asyncio

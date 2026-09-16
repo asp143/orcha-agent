@@ -178,7 +178,24 @@ def run_gallery(cfg: object, *, file: TextIO = sys.stdout) -> int:
         composer.insert_paste(PASTE_EXAMPLE)
         console.print("  · collapsed paste", style="dim")
         for line in composer.render_lines([composer.buffer.text], width):
-            console.print(line, markup=False, highlight=False)
+            rendered = Text(line)
+            start = line.find(composer.buffer.text)
+            if start >= 0:
+                rendered.stylize("dim", start, start + len(composer.buffer.text))
+            console.print(rendered)
+        console.print("  · paste peek (Ctrl+X Ctrl+P)", style="dim")
+        console.print(
+            Text(
+                "\n".join(
+                    Overlay.render_lines(
+                        "Pasted text",
+                        PASTE_EXAMPLE.split("\n"),
+                        width=min(76, width),
+                        height=8,
+                    )
+                )
+            )
+        )
         console.print("  · slash argument hint", style="dim")
         command, hint = ghost_example()
         console.print(command, end="", markup=False)

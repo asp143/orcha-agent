@@ -25,6 +25,7 @@ DEFAULT_BINDINGS: dict[str, tuple[str, ...]] = {
     "clear_screen": ("c-l",),
     "clear_draft": ("c-x c-k",),
     "recall_draft": ("c-x c-r",),
+    "peek_paste": ("c-x c-p",),
     "interrupt": ("c-c",),
     "exit": ("c-d",),
     "tree": ("escape escape",),

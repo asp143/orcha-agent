@@ -260,3 +260,134 @@ async def test_live_composer_shape_changes_repaint_and_preserve_editing() -> Non
             if not task.done():
                 app.exit()
             await task
+
+
+@pytest.mark.parametrize("edit", ["backspace", "delete", "insert", "selection"])
+def test_paste_chip_edits_are_atomic(edit: str) -> None:
+    from prompt_toolkit.document import Document
+
+    composer = Composer()
+    composer.buffer.insert_text("prefix ")
+    composer.insert_paste("one\ntwo\nthree\nfour\nfive")
+    chip = composer.buffer.text[7:]
+    composer.buffer.insert_text(" suffix")
+    original = composer.buffer.text
+    composer.buffer.save_to_undo_stack()
+    if edit == "backspace":
+        composer.buffer.cursor_position = 7 + len(chip)
+        composer.buffer.delete_before_cursor()
+    elif edit == "delete":
+        composer.buffer.cursor_position = 7
+        composer.buffer.delete()
+    elif edit == "insert":
+        composer.buffer.cursor_position = 10
+        composer.buffer.insert_text("X")
+    else:
+        composer.buffer.document = Document(
+            composer.buffer.text[:10] + composer.buffer.text[15:], 10
+        )
+    assert composer.buffer.text == "prefix " + ("X" if edit == "insert" else "") + " suffix"
+    assert "Pasted" not in composer.expanded_text(composer.buffer.text)
+    assert composer.paste_preview() is None
+    composer.buffer.undo()
+    assert composer.buffer.text == original
+    assert (
+        composer.expanded_text(composer.buffer.text) == "prefix one\ntwo\nthree\nfour\nfive suffix"
+    )
+
+
+def test_paste_processor_dims_only_chip_and_preserves_positions() -> None:
+    from prompt_toolkit.layout.processors import TransformationInput
+    from orcha_agent.tui.composer import PasteChipProcessor
+
+    composer = Composer()
+    composer.buffer.insert_text("before ")
+    composer.insert_paste("1\n2\n3\n4\n5")
+    composer.buffer.insert_text(" after")
+    ti = TransformationInput(
+        composer.control,
+        composer.buffer.document,
+        0,
+        lambda x: x,
+        [("", composer.buffer.text)],
+        80,
+        3,
+    )
+    result = PasteChipProcessor(composer).apply_transformation(ti)
+    dim = "".join(text for style, text in result.fragments if "dim" in style)
+    assert dim == "[Pasted 5 lines #1]"
+    assert "".join(text for _, text in result.fragments) == composer.buffer.text
+    assert result.source_to_display(9) == 9
+
+
+@pytest.mark.asyncio
+async def test_pipe_peek_paste_key() -> None:
+    composer = Composer()
+    captured: list[str] = []
+    composer.on_paste_peek = captured.append
+    payload = "1\n2\n3\n4\n5"
+    composer.insert_paste(payload)
+    with create_pipe_input() as pipe:
+        app = Application(layout=Layout(composer.container), input=pipe, output=DummyOutput())
+        task = asyncio.create_task(app.run_async())
+        try:
+            await asyncio.sleep(0.02)
+            pipe.send_bytes(b"\x18\x10")
+            await asyncio.sleep(0.04)
+            assert captured == [payload]
+            assert composer.expanded_text(composer.buffer.text) == payload
+        finally:
+            app.exit()
+            await task
+
+
+@pytest.mark.asyncio
+async def test_vim_navigation_escape_preserves_completion_abort_and_tree(tmp_path: object) -> None:
+    from prompt_toolkit.completion import Completion
+    from prompt_toolkit.key_binding.vi_state import InputMode
+    from orcha_agent.tui.runtime import ApplicationRuntime
+
+    ctx = SimpleNamespace(
+        cfg=SimpleNamespace(
+            tui=SimpleNamespace(vim=True), cwd=str(tmp_path), model="test", models={}, providers={}
+        ),
+        plugin_states={},
+        persist_plugin_states=lambda: None,
+    )
+    with create_pipe_input() as pipe:
+        runtime = ApplicationRuntime(
+            lambda _: asyncio.sleep(0),
+            ctx=ctx,
+            input=pipe,
+            output=DummyOutput(),
+            status=lambda: "test",
+        )
+        app = runtime.application
+        task = asyncio.create_task(runtime.run())
+        app.ttimeoutlen = app.timeoutlen = 0.01
+        aborted: list[bool] = []
+        trees: list[bool] = []
+        runtime._abort_turn = lambda: aborted.append(True)
+        runtime._tree_handler = lambda _: trees.append(True)
+        try:
+            await asyncio.sleep(0.02)
+            app.vi_state.input_mode = InputMode.NAVIGATION
+            runtime.buffer._set_completions([Completion("candidate")])
+            pipe.send_bytes(b"\x1b")
+            await asyncio.sleep(0.04)
+            assert runtime.buffer.complete_state is None
+            assert not aborted and not trees
+            runtime.streaming = True
+            pipe.send_bytes(b"\x1b")
+            await asyncio.sleep(0.04)
+            assert aborted == [True]
+            runtime.streaming = False
+            runtime.buffer.reset()
+            pipe.send_bytes(b"\x1b")
+            await asyncio.sleep(0.04)
+            pipe.send_bytes(b"\x1b")
+            await asyncio.sleep(0.04)
+            assert trees == [True]
+        finally:
+            app.exit()
+            await task

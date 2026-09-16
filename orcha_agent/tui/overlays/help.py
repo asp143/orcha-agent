@@ -14,6 +14,8 @@ from .hints import key_hint
 
 
 def _action_description(action: str) -> str:
+    if action == "newline":
+        return "newline; queue follow-up while streaming"
     return action.replace("_", " ").replace(".", " ")
 
 

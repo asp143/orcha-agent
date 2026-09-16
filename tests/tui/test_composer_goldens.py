@@ -194,3 +194,57 @@ def test_composer_ghost_argument_golden(update_goldens: bool) -> None:
     if update_goldens:
         golden.write_text(actual)
     assert golden.read_text() == actual
+
+
+def test_paste_peek_overlay_golden(update_goldens: bool) -> None:
+    from orcha_agent.tui.overlays.paste import PasteOverlay
+
+    overlay = PasteOverlay(PASTE_EXAMPLE)
+    rows = ["".join(text for _, text in row) for row in overlay.rows]
+    actual = "\n".join(overlay.render_lines("Pasted text", rows, width=76, height=8)) + "\n"
+    golden = GOLDEN_DIR / "composer-paste-peek.80.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_paste_chip_style_golden(update_goldens: bool) -> None:
+    from prompt_toolkit.layout.processors import TransformationInput
+    from orcha_agent.tui.composer import PasteChipProcessor
+
+    composer = Composer()
+    composer.buffer.insert_text("Explain ")
+    composer.insert_paste(PASTE_EXAMPLE)
+    ti = TransformationInput(
+        composer.control,
+        composer.buffer.document,
+        0,
+        lambda x: x,
+        [("", composer.buffer.text)],
+        80,
+        3,
+    )
+    fragments = PasteChipProcessor(composer).apply_transformation(ti).fragments
+    # Group styles so the golden makes the chip's exact styled extent reviewable.
+    from itertools import groupby
+
+    actual = (
+        "\n".join(
+            f"{style or 'default'}: {''.join(fragment[1] for fragment in group)}"
+            for style, group in groupby(fragments, key=lambda fragment: fragment[0])
+        )
+        + "\n"
+    )
+    golden = GOLDEN_DIR / "composer-paste-style.txt"
+    if update_goldens:
+        golden.write_text(actual)
+    assert golden.read_text() == actual
+
+
+def test_help_documents_context_sensitive_alt_enter_and_peek() -> None:
+    from orcha_agent.tui.keys import DEFAULT_BINDINGS
+    from orcha_agent.tui.overlays.help import KeyBindingsCard
+
+    text = KeyBindingsCard(DEFAULT_BINDINGS).text
+    assert "newline; queue follow-up while streaming" in text
+    assert "peek paste" in text

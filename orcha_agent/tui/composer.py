@@ -9,6 +9,7 @@ from typing import Any
 
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
 from prompt_toolkit.completion import Completer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
@@ -20,7 +21,14 @@ from prompt_toolkit.layout.containers import AnyContainer, DynamicContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import Margin, ScrollbarMargin
-from prompt_toolkit.layout.processors import AfterInput, BeforeInput, ConditionalProcessor
+from prompt_toolkit.layout.processors import (
+    AfterInput,
+    BeforeInput,
+    ConditionalProcessor,
+    Processor,
+    Transformation,
+    TransformationInput,
+)
 from prompt_toolkit.utils import get_cwidth
 
 _SHAPES = frozenset({"box", "claude", "borderless", "band", "rail"})
@@ -122,6 +130,27 @@ def _matched_label(label: str, query: str) -> StyleAndTextTuples:
     ]
 
 
+class PasteChipProcessor(Processor):
+    """Distinguish stored paste payloads without changing cursor coordinates."""
+
+    def __init__(self, composer: "Composer") -> None:
+        self.composer = composer
+
+    def apply_transformation(self, ti: TransformationInput) -> Transformation:
+        from prompt_toolkit.layout.utils import explode_text_fragments
+
+        fragments = explode_text_fragments(ti.fragments)
+        text = "".join(fragment[1] for fragment in fragments)
+        for chip in self.composer._pastes:
+            start = 0
+            while (start := text.find(chip, start)) >= 0:
+                for index in range(start, start + len(chip)):
+                    style, value, *handler = fragments[index]
+                    fragments[index] = (style + " class:composer.placeholder dim", value, *handler)
+                start += len(chip)
+        return Transformation(fragments)
+
+
 class _BoxMargin(Margin):
     """Render omp's side chrome, merging the final row into the bottom edge."""
 
@@ -191,6 +220,9 @@ class Composer:
         self._pastes: dict[str, str] = {}
         self._paste_serial = 0
         self._cleared_draft = ""
+        self._previous_text = ""
+        self._repairing_chip = False
+        self.on_paste_peek: Callable[[str], None] | None = None
         self.shape = shape
         self.theme = theme
         self._model = model
@@ -202,11 +234,13 @@ class Composer:
             multiline=True,
             accept_handler=accept_handler,
         )
+        self.buffer.on_text_changed += self._protect_paste_chips
         self.key_bindings = self._input_bindings()
         self.control = BufferControl(
             buffer=self.buffer,
             key_bindings=self.key_bindings,
             input_processors=[
+                PasteChipProcessor(self),
                 ConditionalProcessor(
                     BeforeInput(self.placeholder_fragments),
                     filter=Condition(lambda: not self.buffer.text),
@@ -257,6 +291,52 @@ class Composer:
         app = get_app_or_none()
         if app is not None:
             app.invalidate()
+
+    def _protect_paste_chips(self, buffer: Buffer) -> None:
+        """An edit touching any part of a chip replaces that complete chip.
+
+        Observe document changes, rather than specific keys, so selection deletion,
+        Vim operators, undo and mouse-positioned insertion share the same rule.
+        """
+        before, after = self._previous_text, buffer.text
+        self._previous_text = after
+        if self._repairing_chip or not self._pastes or before == after:
+            return
+        start = 0
+        while start < min(len(before), len(after)) and before[start] == after[start]:
+            start += 1
+        old_end, new_end = len(before), len(after)
+        while old_end > start and new_end > start and before[old_end - 1] == after[new_end - 1]:
+            old_end -= 1
+            new_end -= 1
+        left, right = start, old_end
+        for chip in self._pastes:
+            offset = 0
+            while (offset := before.find(chip, offset)) >= 0:
+                end = offset + len(chip)
+                if (start < end and old_end > offset) or (offset < start < end):
+                    left, right = min(left, offset), max(right, end)
+                offset = end
+        if (left, right) != (start, old_end):
+            replacement = after[start:new_end]
+            repaired = before[:left] + replacement + before[right:]
+            self._repairing_chip = True
+            try:
+                buffer.document = Document(repaired, left + len(replacement))
+            finally:
+                self._repairing_chip = False
+
+    def paste_preview(self) -> str | None:
+        """Peek at the chip under the cursor, or the last remaining chip."""
+        text, cursor = self.buffer.text, self.buffer.cursor_position
+        found: list[tuple[int, str]] = []
+        for chip, payload in self._pastes.items():
+            offset = text.find(chip)
+            if offset >= 0:
+                if offset <= cursor <= offset + len(chip):
+                    return payload
+                found.append((offset, payload))
+        return max(found)[1] if found else None
 
     def insert_paste(self, text: str) -> None:
         text = repair_paste(text)
@@ -314,7 +394,17 @@ class Composer:
             del event
             self.recall_draft()
 
-        for action, handler in (("clear_draft", clear), ("recall_draft", recall)):
+        def peek(event: Any) -> None:
+            del event
+            payload = self.paste_preview()
+            if payload is not None and self.on_paste_peek is not None:
+                self.on_paste_peek(payload)
+
+        for action, handler in (
+            ("clear_draft", clear),
+            ("recall_draft", recall),
+            ("peek_paste", peek),
+        ):
             for keys in effective.get(action, ()):
                 bindings.add(*keys.split())(handler)
         return bindings
