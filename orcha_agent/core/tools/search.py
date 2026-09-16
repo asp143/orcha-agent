@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import fnmatch
 from functools import lru_cache
 import json
 import os
 from pathlib import Path
 import re
+import resource
 import shutil
+import stat
 import subprocess
 import time
 from collections.abc import Iterator
 
+import regex
+
 from langchain_core.tools import BaseTool, ToolException, tool
 
-from .common import notice as output_notice, split_text_lines
+from .common import PathPolicy, notice as output_notice, split_text_lines
 
 MAX_FILE_BYTES = 4 * 1024 * 1024
 INTERNAL_MATCH_CAP = 2000
 GLOB_TIMEOUT = 5.0
+REGEX_TIMEOUT = 0.25
 
 
 def _matches(name: str, pattern: str) -> bool:
@@ -51,15 +58,21 @@ def _trim_ignore_rule(line: str) -> str:
     return line
 
 
-def _rules(directory: Path) -> list[tuple[Path, str]]:
+def _rules(directory: Path, policy: PathPolicy) -> list[tuple[Path, str]]:
+    if not policy.permits(directory / ".gitignore"):
+        return []
     try:
-        lines = split_text_lines((directory / ".gitignore").read_bytes().decode("utf-8"))
+        ignore = directory / ".gitignore"
+        if not stat.S_ISREG(policy.stat(ignore).st_mode):
+            return []
+        with policy.open_read(ignore) as handle:
+            lines = split_text_lines(handle.read(MAX_FILE_BYTES).decode("utf-8"))
         return [
             (directory, trimmed)
             for line in lines
             if (trimmed := _trim_ignore_rule(line)) and not trimmed.startswith("#")
         ]
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         return []
 
 
@@ -95,24 +108,27 @@ def _ignored(path: Path, is_dir: bool, rules: list[tuple[Path, str]]) -> bool:
     return ignored
 
 
-def _files(root: Path, hidden: bool, deadline: float) -> Iterator[Path]:
+def _files(root: Path, hidden: bool, deadline: float, policy: PathPolicy) -> Iterator[Path]:
     """Walk incrementally so a timed-out glob can retain discoveries."""
     inherited: list[tuple[Path, str]] = []
     for parent in reversed(root.parents):
-        inherited.extend(_rules(parent))
+        if policy.permits(parent):
+            inherited.extend(_rules(parent, policy))
 
     def walk(directory: Path, rules: list[tuple[Path, str]]) -> Iterator[Path]:
         if time.monotonic() >= deadline:
             return
-        rules = rules + _rules(directory)
+        rules = rules + _rules(directory, policy)
         try:
-            with os.scandir(directory) as entries:
+            with policy.directory_fd(directory) as descriptor, os.scandir(descriptor) as entries:
                 for entry in entries:
                     if time.monotonic() >= deadline:
                         return
                     if entry.name == ".git" or (not hidden and entry.name.startswith(".")):
                         continue
-                    child = Path(entry.path)
+                    child = directory / entry.name
+                    if not policy.permits(child):
+                        continue
                     try:
                         is_dir = entry.is_dir(follow_symlinks=False)
                         if _ignored(child, is_dir, rules):
@@ -129,11 +145,6 @@ def _files(root: Path, hidden: bool, deadline: float) -> Iterator[Path]:
     yield from walk(root, inherited)
 
 
-def _resolve(cwd: Path, path: str | None) -> Path:
-    target = Path(path or ".").expanduser()
-    return (target if target.is_absolute() else cwd / target).resolve()
-
-
 def _label(file: Path, root: Path) -> str:
     if root.is_file():
         return file.name
@@ -145,35 +156,11 @@ def _match_lines(
 ) -> list[int]:
     """Bound matching lines, including expansion of a single multiline match."""
     cap = INTERNAL_MATCH_CAP + skip
-    rg = shutil.which("rg")
-    if rg:
-        args = [rg, "--json", "--color", "never", "--text", "--multiline", "--max-count", str(cap)]
-        if not case:
-            args.append("--ignore-case")
-        args.extend(["--regexp", pattern, "-"])
-        try:
-            result = subprocess.run(args, input=text, capture_output=True, text=True, timeout=10)
-            if result.returncode in (0, 1):
-                lines: set[int] = set()
-                for raw in result.stdout.splitlines():
-                    event = json.loads(raw)
-                    if event.get("type") != "match":
-                        continue
-                    data = event["data"]
-                    start = data["line_number"]
-                    content = data["lines"].get("text", "")
-                    end = start + max(1, len(split_text_lines(content)))
-                    for number in range(start, end):
-                        lines.add(number)
-                        if len(lines) >= cap:
-                            return sorted(lines)[skip:]
-                return sorted(lines)[skip:]
-        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
-            pass
     # Build line offsets once rather than recounting the prefix for every match.
     newlines = [index for index, char in enumerate(text) if char == "\n"]
     matches: set[int] = set()
-    for match in expression.finditer(text):
+    bounded = regex.compile(pattern, regex.MULTILINE | (0 if case else regex.IGNORECASE))
+    for match in bounded.finditer(text, timeout=REGEX_TIMEOUT, concurrent=True):
         start = bisect_right(newlines, match.start() - 1) + 1
         end = bisect_right(newlines, max(match.start(), match.end() - 1) - 1) + 1
         for number in range(start, end + 1):
@@ -183,9 +170,90 @@ def _match_lines(
     return sorted(matches)[skip:]
 
 
-def create_search_tools(cwd: Path) -> list[BaseTool]:
+def _rg_matches(
+    rg: str, pattern: str, files: list[Path], case: bool, skip: int, policy: PathPolicy
+) -> tuple[dict[Path, list[int]], set[Path]]:
+    """Search the policy-filtered file set with one rg process, never falling back on errors."""
+    args = [
+        rg,
+        "--json",
+        "--color",
+        "never",
+        "--multiline",
+        "--pcre2",
+        "--max-count",
+        str(INTERNAL_MATCH_CAP + skip),
+        "--max-filesize",
+        str(MAX_FILE_BYTES),
+    ]
+    if not case:
+        args.append("--ignore-case")
+    args.extend(["--regexp", pattern, "--"])
+    targets: dict[str, Path] = {}
+    try:
+        # Hand rg pinned regular-file descriptors, not names it could follow after
+        # validation. This also protects parent directories against rename races.
+        with ExitStack() as opened:
+            descriptors: list[int] = []
+            fd_root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
+            soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+            try:
+                in_use = len(os.listdir("/proc/self/fd"))
+            except OSError:
+                in_use = 64
+            # Reserve descriptors for safe parent traversal, subprocess pipes and
+            # unrelated session activity; scan the remainder after closing these.
+            budget = min(256, max(0, soft_limit - in_use - 32)) if soft_limit >= 0 else 256
+            for file in files:
+                if len(descriptors) >= budget:
+                    break
+                source = opened.enter_context(policy.open_read(file))
+                if os.fstat(source.fileno()).st_size > MAX_FILE_BYTES:
+                    source.close()
+                    continue
+                fd = source.fileno()
+                descriptors.append(fd)
+                targets[f"{fd_root}/{fd}"] = file
+            args.extend(targets or ["-"])
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                pass_fds=tuple(descriptors),
+                input="" if not targets else None,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolException(
+            "Error: pattern timed out after 10 s; narrow path or simplify pattern."
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise ToolException(f"Error: rg could not run: {exc}") from exc
+    if result.returncode not in (0, 1):
+        raise ToolException(f"Error: rg rejected the search: {result.stderr.strip()}")
+    found: dict[Path, list[int]] = {}
+    for raw in result.stdout.splitlines():
+        event = json.loads(raw)
+        if event.get("type") != "match":
+            continue
+        data = event["data"]
+        name = data["path"].get("text")
+        if name is None:
+            import base64
+
+            name = os.fsdecode(base64.b64decode(data["path"]["bytes"]))
+        file = targets[name]
+        start = data["line_number"]
+        count = max(1, len(split_text_lines(data["lines"].get("text", ""))))
+        numbers = found.setdefault(file, [])
+        numbers.extend(range(start, start + min(count, INTERNAL_MATCH_CAP + skip - len(numbers))))
+    return found, set(files) - set(targets.values())
+
+
+def create_search_tools(cwd: Path, *, policy: PathPolicy | None = None) -> list[BaseTool]:
     """Create tools bound to the agent workspace, independent of shell cwd."""
     cwd = cwd.resolve()
+    active_policy = policy or PathPolicy(cwd)
 
     @tool
     def grep(
@@ -201,7 +269,7 @@ def create_search_tools(cwd: Path) -> list[BaseTool]:
 
         path is a file or directory (default workspace). glob filters filenames.
         Literal or escaped newline patterns search across lines. Results are grouped
-        by file. limit controls files/page (default/max 20); skip paginates matching files.
+        by file. case=true is case-sensitive; case=false ignores case. limit controls files/page (default/max 20); skip paginates matching files.
         For a single file, limit controls matching lines (default/max 200) and skip
         skips matching lines, so skip=200 continues after the first full page.
         Narrow path to one file for up to 200 matching lines instead of 20/file.
@@ -216,20 +284,36 @@ def create_search_tools(cwd: Path) -> list[BaseTool]:
             expression = re.compile(pattern, re.MULTILINE | (0 if case else re.IGNORECASE))
         except re.error as exc:
             raise ToolException(f"Error: invalid regex: {exc}") from exc
-        root = _resolve(cwd, path)
+        try:
+            root = active_policy.resolve(path or ".")
+        except (OSError, ValueError) as exc:
+            raise ToolException(f"Error: {exc}") from exc
         if not root.exists():
             raise ToolException(f"Error: path does not exist: {root}")
         single = root.is_file()
         page_size = min(limit or (200 if single else 20), 200 if single else 20)
         per_file = page_size if single else 20
         deadline = time.monotonic() + 30
-        candidates = [root] if single else sorted(_files(root, False, deadline))
+        candidates = [root] if single else sorted(_files(root, False, deadline, active_policy))
         found: list[tuple[Path, list[str], list[int]]] = []
         notices: list[str] = []
         if time.monotonic() >= deadline:
             notices.append(
                 "File discovery timed out after 30 s; unvisited paths omitted. Narrow path."
             )
+        candidates = [file for file in candidates if not glob or _matches(_label(file, root), glob)]
+        rg = shutil.which("rg")
+        rg_matches: dict[Path, list[int]] = {}
+        fallback_files: set[Path] = set()
+        if rg:
+            rg_matches, fallback_files = _rg_matches(
+                rg, pattern, candidates, case, skip if single else 0, active_policy
+            )
+            if fallback_files:
+                notices.append(
+                    f"Scanning {len(fallback_files)} files with timed Python regex fallback "
+                    "because of descriptor or file-size bounds; no files omitted by this fallback."
+                )
         match_count = 0
         for file in candidates:
             if time.monotonic() >= deadline:
@@ -240,9 +324,9 @@ def create_search_tools(cwd: Path) -> list[BaseTool]:
             if glob and not _matches(_label(file, root), glob):
                 continue
             try:
-                with file.open("rb") as handle:
+                with active_policy.open_read(file) as handle:
                     data = handle.read(MAX_FILE_BYTES + 1)
-            except OSError:
+            except (OSError, ValueError):
                 continue
             if b"\x00" in data:
                 continue
@@ -253,11 +337,23 @@ def create_search_tools(cwd: Path) -> list[BaseTool]:
                 )
             text = data[:MAX_FILE_BYTES].decode("utf-8", errors="replace")
             lines = split_text_lines(text)
-            numbers = [
-                number
-                for number in _match_lines(pattern, expression, text, case, skip if single else 0)
-                if number <= len(lines)
-            ]
+            try:
+                if rg and file not in fallback_files and len(data) <= MAX_FILE_BYTES:
+                    numbers = rg_matches.get(file, [])[skip if single else 0 :]
+                else:
+                    # regex releases the GIL and enforces its own deadline, unlike re.
+                    # The worker is always joined after timeout; no abandoned threads.
+                    with ThreadPoolExecutor(max_workers=1) as worker:
+                        numbers = worker.submit(
+                            _match_lines, pattern, expression, text, case, skip if single else 0
+                        ).result()
+                numbers = [number for number in numbers if number <= len(lines)]
+            except TimeoutError:
+                notices.append(
+                    f"{_label(file, root)}: pattern timed out after {REGEX_TIMEOUT:g} s; "
+                    "file matches omitted. Simplify pattern or narrow path."
+                )
+                continue
             if not numbers:
                 continue
             remaining = INTERNAL_MATCH_CAP - match_count
@@ -311,25 +407,33 @@ def create_search_tools(cwd: Path) -> list[BaseTool]:
     ) -> str:
         """Find files by glob, newest first and grouped by directory; use instead of find.
 
-        Examples: **/*.py, src/**/*.ts, *.md. path defaults to the workspace.
+        Examples: **/*.py, src/**/*.ts, *.md. Slash-free patterns match basenames
+        recursively. path defaults to the workspace.
         Gitignore rules are respected; include_hidden enables dotfiles. Results are
         capped at limit (default 200). Narrow pattern/path to retrieve omitted files.
         A five-second search budget returns partial discoveries with a notice.
         """
         if limit < 1:
             raise ToolException("Error: limit must be positive.")
-        root = _resolve(cwd, path)
+        try:
+            root = active_policy.resolve(path or ".")
+        except (OSError, ValueError) as exc:
+            raise ToolException(f"Error: {exc}") from exc
         if not root.exists():
             raise ToolException(f"Error: path does not exist: {root}")
         deadline = time.monotonic() + GLOB_TIMEOUT
         matches: list[tuple[float, Path]] = []
-        candidates = iter([root]) if root.is_file() else _files(root, include_hidden, deadline)
+        candidates = (
+            iter([root])
+            if root.is_file()
+            else _files(root, include_hidden, deadline, active_policy)
+        )
         for file in candidates:
             if time.monotonic() >= deadline:
                 break
             if _matches(_label(file, root), pattern):
                 try:
-                    matches.append((file.stat().st_mtime, file))
+                    matches.append((active_policy.stat(file).st_mtime, file))
                 except OSError:
                     continue
         timed_out = time.monotonic() >= deadline

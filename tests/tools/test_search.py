@@ -201,3 +201,169 @@ def test_gitignore_escaped_space_followed_by_ignored_spaces(tmp_path):
     result = invoke(tmp_path, "grep", pattern="needle")
     assert "space :" not in result
     assert "space   :" in result and "#keep:" in result
+
+
+def test_rg_runs_once_for_many_files(tmp_path, monkeypatch):
+    if not search.shutil.which("rg"):
+        pytest.skip("rg unavailable")
+    for index in range(30):
+        (tmp_path / f"{index:02}.txt").write_text("hit\n")
+    run = search.subprocess.run
+    calls = []
+
+    def record(*args, **kwargs):
+        calls.append(args[0])
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(search.subprocess, "run", record)
+    assert "skip=20" in invoke(tmp_path, "grep", pattern="hit")
+    assert len(calls) == 1
+    assert "--json" in calls[0]
+
+
+def test_rg_error_is_not_retried_in_python(tmp_path, monkeypatch):
+    import subprocess
+
+    (tmp_path / "file").write_text("hit")
+    monkeypatch.setattr(search.shutil, "which", lambda _: "/fake/rg")
+    monkeypatch.setattr(
+        search.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, 2, "", "unsupported pattern"),
+    )
+    monkeypatch.setattr(search, "_match_lines", lambda *a: pytest.fail("must not fall back"))
+    result = invoke(tmp_path, "grep", pattern="hit")
+    assert "Error:" in result and "unsupported pattern" in result
+
+
+def test_python_regex_has_real_per_file_timeout(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(search.shutil, "which", lambda _: None)
+    monkeypatch.setattr(search, "REGEX_TIMEOUT", 0.02)
+    (tmp_path / "evil").write_text("a" * 100000 + "!")
+    started = time.monotonic()
+    result = invoke(tmp_path, "grep", pattern="(a+)+$")
+    assert time.monotonic() - started < 2
+    assert "pattern timed out" in result and "Simplify pattern" in result
+
+
+@pytest.mark.parametrize("name", ["grep", "glob"])
+def test_search_rejects_escape_and_denied_target(tmp_path, name):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "visible").write_text("hit")
+    (tmp_path / "escape").symlink_to(outside, target_is_directory=True)
+    for path in [str(outside), "../", "escape", ".env.fixture", "Credentials/file", "private.pem"]:
+        result = invoke(tmp_path, name, path=path, pattern="hit" if name == "grep" else "*")
+        assert "Error:" in result
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_search_skips_denied_candidates_and_ignore_symlink(tmp_path, monkeypatch, native):
+    if not native:
+        monkeypatch.setattr(search.shutil, "which", lambda _: None)
+    (tmp_path / "visible").write_text("hit")
+    # No denied file contents are ever read or populated by this test.
+    (tmp_path / "private.key").touch()
+    outside = tmp_path.parent / f"{tmp_path.name}-ignore"
+    outside.write_text("visible\n")
+    (tmp_path / ".gitignore").symlink_to(outside)
+    assert "visible:" in invoke(tmp_path, "grep", pattern="hit")
+    result = invoke(tmp_path, "glob", pattern="*", include_hidden=True)
+    assert "private.key" not in result and ".gitignore" not in result
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_paging_matches_in_both_engines(tmp_path, monkeypatch, native):
+    if not native:
+        monkeypatch.setattr(search.shutil, "which", lambda _: None)
+    for index in range(23):
+        (tmp_path / f"{index:02}.txt").write_text("hit\n" * 24)
+    first = invoke(tmp_path, "grep", pattern="hit")
+    second = invoke(tmp_path, "grep", pattern="hit", skip=20)
+    assert "19.txt:" in first and "20.txt:" not in first and "4 omitted" in first
+    assert "20.txt:" in second and "22.txt:" in second and "19.txt:" not in second
+
+
+def test_rg_uses_pinned_descriptors_when_path_replaced(tmp_path, monkeypatch):
+    if not search.shutil.which("rg"):
+        pytest.skip("rg unavailable")
+    file = tmp_path / "file.txt"
+    file.write_text("public hit\n")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.write_text("external hit\n")
+    run = search.subprocess.run
+    outputs = []
+
+    def replace_then_run(*args, **kwargs):
+        file.unlink()
+        file.symlink_to(outside)
+        assert kwargs["pass_fds"]
+        result = run(*args, **kwargs)
+        outputs.append(result.stdout)
+        return result
+
+    monkeypatch.setattr(search.subprocess, "run", replace_then_run)
+    result = invoke(tmp_path, "grep", pattern="hit")
+    assert "external" not in result
+    assert "public hit" in outputs[0] and "external hit" not in outputs[0]
+
+
+def test_search_configured_allowed_root_and_deny(tmp_path):
+    from orcha_agent.core.tools.common import PathPolicy
+
+    outside = tmp_path.parent / f"{tmp_path.name}-allowed"
+    outside.mkdir()
+    (outside / "kept.txt").write_text("hit")
+    (outside / "blocked.txt").touch()
+    tools = search.create_search_tools(
+        tmp_path, policy=PathPolicy(tmp_path, allowed_roots=[outside], deny=["blocked.txt"])
+    )
+    grep = next(tool for tool in tools if tool.name == "grep")
+    glob = next(tool for tool in tools if tool.name == "glob")
+    assert "kept.txt:" in grep.invoke({"path": str(outside), "pattern": "hit"})
+    result = glob.invoke({"path": str(outside), "pattern": "*"})
+    assert "kept.txt" in result and "blocked.txt" not in result
+
+
+def test_rg_large_tree_respects_low_descriptor_limit(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    if not search.shutil.which("rg"):
+        pytest.skip("rg unavailable")
+    for index in range(150):
+        (tmp_path / f"{index:03}.txt").write_text("hit\n")
+    script = """
+import json
+from pathlib import Path
+import resource
+import sys
+from orcha_agent.core.tools import search
+_, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard))
+original = search.subprocess.run
+calls = []
+def recorded(*args, **kwargs):
+    calls.append(args[0])
+    return original(*args, **kwargs)
+search.subprocess.run = recorded
+grep = search.create_search_tools(Path(sys.argv[1]))[0]
+result = grep.invoke({"pattern": "hit", "skip": 140})
+print(json.dumps({"result": result, "calls": len(calls)}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    payload = json.loads(completed.stdout)
+    assert payload["calls"] == 1
+    assert "Error:" not in payload["result"]
+    assert "140.txt:" in payload["result"] and "149.txt:" in payload["result"]
+    assert "timed Python regex fallback" in payload["result"]
+    assert "no files omitted by this fallback" in payload["result"]
