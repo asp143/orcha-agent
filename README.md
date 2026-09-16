@@ -162,18 +162,25 @@ retain their deepagents tools. Configure them in the project or user config:
 [tools]
 native = true
 edit_format = "replace"  # "replace" or "hashline"
+read_summary = false    # opt in to outlines for eligible bare Python reads
+max_read_bytes = 67108864  # 64 MB maximum source-file size
+allowed_roots = []      # additional directories native file tools may access
+shell_env_passthrough = []  # explicitly inherit these parent environment names
+# Setting deny replaces the defaults; include every pattern you want to retain.
+# deny = [".env*", "Credentials/", "*.pem", "*.key", "*.p12", "*.pfx",
+#         ".ssh/id_*", "secrets.*", "credentials.json", "serviceAccountKey.json"]
 ```
 
 Set `native = false` to use the original deepagents filesystem tools
 (`read_file`, `write_file`, `edit_file`, `execute`, `grep`, `glob`, and `ls`).
 The native set replaces those names rather than exposing duplicate tools;
-`delete` remains available from deepagents. Tools retain the selected mode's
+`delete` remains available from the contained local backend. Tools retain the selected mode's
 approval rules: `ask` approves edits, writes, deletion, and shell execution;
 `edit` approves shell execution; `yolo` auto-approves; `plan` allows only reads.
 
 | Tool | Arguments and behavior |
 | --- | --- |
-| `read` | `path`: numbered text, a directory listing, or an image note. Defaults to 200 lines / 20 KB; large Python files may show a declaration outline. |
+| `read` | `path`: numbered text, a directory listing, or an image note. Defaults to the first 200 lines / 20 KB; `:summary` requests an eligible Python declaration outline. |
 | `edit` | `path`, `old_string`, `new_string`, optional `replace_all=false`; or transactional `edits=[{"old":"before","new":"after"}]`. Read the file first. Exact matching falls back to conservative typography, whitespace, and indentation matching; ambiguous candidates require more context. Writes atomically, preserves mode/EOL, and returns a unified diff. |
 | `write` | `path`, `content`: create or overwrite a UTF-8 file, creating parent directories; returns size and diff information. |
 | `bash` | `command`, optional `timeout`, `cwd`, `env`, `background`: execute builds, tests, git, and other commands in a persistent bash session. |
@@ -191,16 +198,30 @@ read(path="src/app.py:40+20")           # 20 lines starting at line 40
 read(path="logs/build.log:-25")         # the last 25 lines
 read(path="src/app.py:5-16,960-973")     # multiple ranges
 read(path="src/app.py:raw")             # text without line-number gutters
+read(path="src/app.py:summary")         # eligible Python declaration outline
 ```
 
-Repeated reads of an unchanged range in the same user turn return a short
-notice. Oversized reads elide middle lines using a 60-line head and 25-line
+Repeated reads of an unchanged range in the same user turn retain the content.
+Starting with the third identical read, a reminder says re-reading will not change
+the output. Oversized reads elide middle lines using a 60-line head and 25-line
 tail, subject to the byte budget. Follow the returned selector to retrieve
 omitted lines; `:raw` removes gutters but retains output limits.
-The third identical read adds a reminder that re-reading will not change the
-output. Python files with 500–20,000 lines and at most 2 MB use an AST declaration
-outline when no selector is supplied; body ranges in the outline can be read
-explicitly. Other languages keep paginated reads.
+Bare reads show the first page by default. Use `:summary`, or enable
+`read_summary`, for an AST declaration outline of Python files with 500–20,000
+lines and at most 2 MB. The outline identifies body ranges to read explicitly;
+other languages and files outside those thresholds keep paginated reads.
+Nonregular files are rejected, and images are identified by their contents.
+Files above `max_read_bytes` are refused; raise that setting explicitly or use a
+bounded shell command when inspecting larger files.
+
+Native file tools restrict paths to the workspace and configured `allowed_roots`,
+including checks for symlink escapes. The workspace's `.orcha/artifacts` directory
+holds recoverable tool output. Relative allowed roots are resolved from the
+workspace. The default deny patterns shown above block sensitive filenames and
+`Credentials/` directories, including inside allowed roots. An explicit `deny`
+list replaces those defaults; `deny = []` removes filename exclusions. Approval
+prompts show resolved target paths. These file-tool restrictions are not an OS
+sandbox: an approved `bash` command can access resources outside those roots.
 
 With `edit_format = "hashline"`, `read` supplies a `[path#TAG]` snapshot header
 and numbered anchors. Pass `edit(patch="...")` using that exact header:
@@ -217,18 +238,29 @@ PUT >$:
 `CUT N.=M` remove lines. `MV new/path` moves a file and `REM` removes it.
 Anchors in a section refer to the original read snapshot. Stale anchors can
 be remapped only when the original text remains uniquely identifiable;
-modified or ambiguous anchors require a fresh read.
+modified anchors require a fresh read. A tag observed for different file digests
+is rejected for the rest of that session, including after snapshot eviction;
+start a new session or use replace mode to recover from that ambiguity.
 
 Search respects gitignore rules and excludes hidden entries by default.
 `grep` uses ripgrep when available and a Python fallback otherwise, including
-multiline regexes when the pattern contains a newline. Results cap at 20 files
-per page, 20 matches per file in multi-file searches or 200 in a single file,
-and 2,000 internal matches; at most the first 4 MB of each file is scanned,
-with a notice when the rest is omitted.
-Use the returned `skip` cursor for the next page: it counts matching files in a
-directory search and matching lines for a single file. Search one file to inspect
-more matches. `glob` returns partial results after five seconds; narrow the
-path/pattern or raise `limit` when a result notice indicates omitted files.
+multiline regexes when the pattern contains a newline. `case=true` means
+case-sensitive matching; `case=false` ignores case. In directory searches,
+`limit` counts matching files (default and maximum 20), `skip` counts matching
+files to omit, and each file shows at most 20 matching lines. When `path` names
+one file, `limit` counts matching lines (default and maximum 200), and `skip`
+counts matching lines to omit. Context lines do not count toward those limits.
+The internal cap is 2,000 matching lines; at most the first 4 MB of each file is
+scanned, with a notice when the rest is omitted. Follow the returned `skip`
+cursor for another page, or search one file to inspect more matches. Invalid
+ripgrep patterns return an error; fallback regex timeouts identify omitted files.
+Large searches keep file descriptors bounded: files beyond the pinned rg batch
+use the same timed fallback, with a notice.
+
+Slash-free glob patterns match basenames recursively: `glob(pattern="*.py",
+path="src")` includes Python files in nested directories. Patterns containing
+slashes match relative paths. `glob` returns partial results after five seconds;
+narrow the path/pattern or raise `limit` when a notice indicates omitted files.
 
 ```text
 grep(pattern="class .*Service", path="src", glob="*.py", skip=0)
@@ -240,8 +272,11 @@ bash_jobs(action="read", job_id="ID_FROM_BASH", offset=0, limit=200)
 bash_jobs(action="kill", job_id="ID_FROM_BASH")
 ```
 
-Bash cwd and exported variables survive calls within the same live session;
-separate session threads are isolated. Background jobs inherit a snapshot and
+Bash cwd and exported variables survive calls with the same graph `thread_id`.
+Subagents inheriting that thread share the shell; calls with distinct thread IDs
+are isolated. Calls sharing a shell run serially. Per-call `env` applies only to
+that command, including any exports inside that temporary subshell. To persist
+a variable, use `bash(command="export BUILD_MODE=debug")` without an `env` argument. Background jobs inherit a snapshot and
 do not change the foreground shell. The default timeout is 300 seconds;
 nonzero values clamp to 1–3600, and `0` disables it. Timeout, cancellation,
 and job termination kill the process group. After a timeout the next call
@@ -249,12 +284,25 @@ starts a shell with the last completed cwd/environment; shell functions and
 other unexported state are lost. Restarting orcha starts fresh shells and jobs.
 There is no PTY or interactive stdin interface; command stdin is closed.
 Simple `cat`, `head`, `tail`, `grep`, `find`, and `ls` commands receive hints to
-use native tools, while composed pipelines and mutating commands remain bash.
+use native tools, and `rg --files` suggests `glob`. Flags with no native equivalent,
+such as `tail -f` or `head -c`, pass through, as do composed and mutating commands.
+
+New shells inherit only `PATH`, `HOME`, `LANG`, `LC_*`, `TERM`, `COLORTERM`, `USER`,
+`LOGNAME`, `SHELL`, `TMPDIR`, `TZ`, and `XDG_*` from the parent. Names containing
+`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, or `AUTH` are also excluded
+unless named explicitly in `shell_env_passthrough`. Provider keys therefore do
+not reach the shell by default. Approval prompts include the effective working
+directory, changes from the initial environment, and temporary command variables;
+sensitive names and explicit passthrough values are redacted.
 
 Bash output is limited to 200 lines / 20 KB per response. The model receives
 ANSI-free text; the renderer also receives a bounded raw output artifact.
-Full command output remains under `.orcha/artifacts/large_tool_results/` in
-the starting workspace, with a recovery path and counts in truncation notices.
+Raw command output is kept in a private temporary directory (mode `0700`). Only
+clipped output is promoted to `.orcha/artifacts/large_tool_results/` in the starting
+workspace, with mode `0600`, a recovery path, and counts in truncation notices.
+Creating `.orcha/` also creates its own `.gitignore` containing `*`. Artifact
+retention is capped at 200 files and seven days; closing the shell session removes
+its temporary and promoted outputs.
 For a single oversized line, follow the notice's Python byte-range command to
 retrieve the omitted bytes. Background output can also be paged through
 `bash_jobs`. Deepagents overflow handling remains active for oversized tool
