@@ -925,6 +925,21 @@ def _join(
     for index, (_name, segment) in enumerate(items):
         if index:
             fragments.extend(divider)
+        if _name == "brand" and "orcha" in segment.text:
+            before, brand, elapsed = segment.text.partition("orcha")
+            fragments.extend(
+                [
+                    (
+                        _style(theme, segment.token, transparent=transparent),
+                        f" {_safe_text(before + brand, ascii_mode)}",
+                    ),
+                    (
+                        _style(theme, "muted", transparent=transparent),
+                        f"{_safe_text(elapsed, ascii_mode)} ",
+                    ),
+                ]
+            )
+            continue
         fragments.extend(
             _segment_fragments(
                 segment,
@@ -1091,7 +1106,7 @@ def render_statusline(
             if name == "brand":
                 brand = value.text.partition(" · ")[0]
                 if brand == "orcha":
-                    brand = "  orcha"
+                    brand = "  orcha   ready"
                 brand = (
                     _truncate_text(brand, 15, ascii_mode=ascii_mode)
                     if get_cwidth(brand) > 15

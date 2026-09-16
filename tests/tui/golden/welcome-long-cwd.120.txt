@@ -1,0 +1,16 @@
+╭────────────────────────────────────────── orcha v0.1.0 ──────────────────────────────────────────╮
+│                                           │ ──── Recent sessions                                 │
+│               Welcome back!               │ • gallery polish (now)                               │
+│                                           │ • renderer parity (2h ago)                           │
+│  ██████╗ ██████╗  ██████╗██╗  ██╗ █████╗  │                                                      │
+│ ██╔═══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗ │                                                      │
+│ ██║   ██║██████╔╝██║     ███████║███████║ │ ──── Tips                                            │
+│ ██║   ██║██╔══██╗██║     ██╔══██║██╔══██║ │ / commands · @ files                                 │
+│ ╚██████╔╝██║  ██║╚██████╗██║  ██║██║  ██║ │ ! shell · Alt+A agents                               │
+│                                           │ ✓ Trusted folder                                     │
+│               claude-opus-5               │ 11 plugins loaded                                    │
+│                    ask                    │ anthropic provider ready                             │
+│  /home/developer/workspaces/orcha-agent…  │                                                      │
+│                                           │ Tip: Use --plain when redirecting output.            │
+│                                           │                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

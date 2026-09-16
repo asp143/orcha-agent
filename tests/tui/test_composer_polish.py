@@ -59,6 +59,13 @@ def test_composer_polish_gallery_golden(width, update_goldens):
     running = "".join(text for _, text in examples["Status running"])
     assert idle.index("$0.04") == running.index("$0.04")
     assert idle.index("GPT-5.6 Sol") == running.index("GPT-5.6 Sol")
+    assert "orcha          " not in idle
+    assert "ready" in idle
+    assert "3s" in running
+    assert idle.index("orcha") == running.index("orcha")
+    assert any(
+        "class:muted" in style and "ready" in text for style, text in examples["Status idle"]
+    )
     assert len(idle) == len(running) == width
     if width == 80:
         assert "━" not in idle and "─" not in idle

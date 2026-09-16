@@ -227,3 +227,23 @@ def test_pressure_drops_rightmost_whole_segments(tmp_path: Path, transparent: bo
     assert "MODEL" in text and "MODE" in text and "PATH" in text
     assert "SESSION" not in text and "50.0%" not in text
     assert len(text) == 25
+
+
+@pytest.mark.parametrize("width", (80, 120))
+def test_real_brand_idle_and_running_keep_segments_stable(
+    tmp_path: Path, monkeypatch, width: int
+) -> None:
+    from orcha_agent.tui.statusline import brand_segment
+
+    ctx = _ctx(tmp_path)
+    ctx.plugin_states = {"statusbar": {}}
+    ctx.registry._add_status_segment("test", "brand", brand_segment)
+    monkeypatch.setattr("orcha_agent.tui.statusline.monotonic", lambda: 1000)
+    idle = _plain(render_statusline(ctx, _Theme(), width=width))
+    assert "ready" in idle and "orcha          " not in idle
+    for started in (999, 990, 1):
+        ctx.plugin_states["statusbar"]["_turn_started"] = started
+        running = _plain(render_statusline(ctx, _Theme(), width=width))
+        for label in ("orcha", "MODEL", "$1.25", "MODE"):
+            assert idle.index(label) == running.index(label)
+        assert len(idle) == len(running) == width

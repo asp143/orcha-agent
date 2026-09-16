@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import re
 from typing import Any
 
 from rich import box
@@ -109,6 +110,22 @@ def _tip_lines(value: Any, width: int) -> list[str]:
     return [*rendered, *([""] * (_TIP_ROWS - len(rendered)))]
 
 
+def _cwd(value: Any, width: int, *, ascii_only: bool = False) -> Text:
+    """Keep a centered path inset, shortening only at whole path segments or words."""
+    rendered = Text(str(value), style="dim")
+    available = max(1, width - 2)
+    if rendered.cell_len > available:
+        prefix = rendered.copy()
+        prefix.truncate(max(0, available - 1), overflow="crop")
+        boundaries = [match.start() for match in re.finditer(r"[/\\\s]+", prefix.plain)]
+        boundary = next((position for position in reversed(boundaries) if position > 0), None)
+        if boundary is not None:
+            prefix = prefix[:boundary]
+        prefix.append("~" if ascii_only else "…")
+        rendered = prefix
+    return _fit(rendered, width, center=True)
+
+
 def _display_bindings(value: object) -> str:
     if isinstance(value, str):
         bindings = (value,)
@@ -209,7 +226,7 @@ def _left(block: Block, width: int) -> Text:
         Text(str(block.data.get("git", "")), style="dim"),
         Text(str(block.data.get("model", "")), style="dim"),
         Text(str(block.data.get("mode", "")), style="dim"),
-        Text(str(block.data.get("cwd", "")), style="dim"),
+        _cwd(block.data.get("cwd", ""), width, ascii_only=bool(block.data.get("ascii"))),
         Text(),
         Text(),
     ]
@@ -257,7 +274,7 @@ def render(
         content.append("\n" + _line("Model", block.data.get("model", ""), inner))
         content.append("\n" + _line("Mode", block.data.get("mode", ""), inner))
         content.append("\n")
-        content.append(_fit(_line("Cwd", block.data.get("cwd", ""), inner), inner, center=True))
+        content.append(_cwd(block.data.get("cwd", ""), inner, ascii_only=ascii_only))
         content.append("\n")
         content.append(_right(block, inner, ascii_only=ascii_only, theme=theme))
     return Panel(

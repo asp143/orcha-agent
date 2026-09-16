@@ -164,7 +164,7 @@ _WELCOME = {
     ],
     "model": "claude-opus-5",
     "mode": "ask",
-    "cwd": "~/src/orcha-agent",
+    "cwd": "/home/developer/workspaces/orcha-agent/fix-tui-polish-omp",
     "sessions": ["• gallery polish (now)", "• renderer parity (2h ago)"],
     "hints": ["✓ Trusted folder", "11 plugins loaded", "anthropic provider ready"],
 }
