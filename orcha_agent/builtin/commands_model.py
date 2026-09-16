@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pathlib import Path
+from rich.text import Text
 
 from orcha_agent.core.config import normalize_model_spec, save_core_value
 from orcha_agent.core.events import AppStart, ModelSwitch
@@ -37,7 +38,7 @@ async def _models(ctx: Any, args: str) -> None:
             continue
         price = {**info.cost, **getattr(ctx.cfg, "pricing", {}).get(spec, {})}
         table.add_row(
-            spec,
+            Text(spec),
             f"{info.context_window:,}",
             f"{info.max_tokens:,}",
             f"{price.get('input', 0):g} / {price.get('output', 0):g}",
@@ -63,20 +64,26 @@ async def _model(ctx: Any, args: str) -> None:
         summarizer = (
             summarizer_value if isinstance(summarizer_value, str) else ",".join(summarizer_value)
         )
-        ctx.console.print(f"Current model: {current}")
+        ctx.console.print(Text(f"Current model: {current}"))
         ctx.console.print(
-            f"Subagent model: {subagent} "
-            f"({'inherited' if cfg.subagent_model is None else 'explicit'})"
+            Text(
+                f"Subagent model: {subagent} "
+                f"({'inherited' if cfg.subagent_model is None else 'explicit'})"
+            )
         )
         ctx.console.print(
-            f"Summarizer model: {summarizer} "
-            f"({'inherited' if cfg.summarizer_model is None else 'explicit'})"
+            Text(
+                f"Summarizer model: {summarizer} "
+                f"({'inherited' if cfg.summarizer_model is None else 'explicit'})"
+            )
         )
         from orcha_agent.core.models import MODEL_ROLES
 
         for role in MODEL_ROLES:
             ctx.console.print(
-                f"@{role}: {getattr(cfg, 'model_roles', {}).get(role, getattr(cfg, 'models', {}).get(role, 'main (inherited)'))}"
+                Text(
+                    f"@{role}: {getattr(cfg, 'model_roles', {}).get(role, getattr(cfg, 'models', {}).get(role, 'main (inherited)'))}"
+                )
             )
         ctx.console.print("Usage: /model <provider:model>[,<provider:model>...]")
         return
@@ -90,7 +97,13 @@ async def _model(ctx: Any, args: str) -> None:
         ctx.console.error("Usage: /model <provider:model>[,<provider:model>...]")
         return
     try:
+        from orcha_agent.core.models import role_fallback_notices
+
+        cfg = getattr(ctx, "cfg", None)
+        notices = role_fallback_notices(spec, cfg) if cfg is not None else []
         await ctx.switch_model(spec)
+        for notice in notices:
+            ctx.console.print(Text(notice))
     except Exception as exc:
         reporter = getattr(ctx, "report_provider_error", None)
         if reporter is not None:

@@ -12,6 +12,7 @@ from uuid import UUID
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
 from rich.table import Table
+from rich.text import Text
 
 from .events import Event
 from .usage import usage_cost
@@ -110,7 +111,7 @@ def usage_table(rows: list[dict[str, Any]], period: str) -> Table:
         table.add_column(name, justify="left" if name == "Model" else "right")
     for row in rows:
         table.add_row(
-            str(row["model"]),
+            Text(str(row["model"])),
             *(
                 str(row[key])
                 for key in (

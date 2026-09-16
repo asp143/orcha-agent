@@ -104,7 +104,12 @@ def main() -> None:
     if cfg.command == "sync":
         raise SystemExit(_run_sync(cfg))
     from .tui.app import run_app
+    from .core.models import role_fallback_notices
+    from .tui.console import ConsoleOutput
+    from rich.text import Text
 
+    for notice in role_fallback_notices(cfg.model, cfg):
+        ConsoleOutput().print(Text(notice))
     raise SystemExit(asyncio.run(run_app(cfg)))
 
 

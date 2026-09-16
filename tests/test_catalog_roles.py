@@ -56,8 +56,9 @@ def test_keys_are_lazy_and_project_trusted(tmp_path, monkeypatch):
     cfg = replace(cfg, trust_cwd=True)
     get_catalog(cfg)
     assert not marker.exists()
-    assert provider_api_key("fake", cfg) == "secret"
-    assert marker.exists()
+    with pytest.raises(ValueError, match="commands are user-only"):
+        provider_api_key("fake", cfg)
+    assert not marker.exists()
     (configdir / "models.yml").write_text("fake:\n  api_key: TEST_CATALOG_KEY\n")
     monkeypatch.setenv("TEST_CATALOG_KEY", "env-secret")
     assert provider_api_key("fake", cfg) == "env-secret"

@@ -75,6 +75,42 @@ def expand_model_spec(spec: ModelSpec, config: Config, seen: tuple[str, ...] = (
     return expand_model_spec(target, config, (*seen, spec)) if target is not None else [spec]
 
 
+def role_fallback_notices(spec: ModelSpec, config: Config) -> list[str]:
+    """Explain an implicit role fallback once at the user action boundary."""
+    notices: dict[str, None] = {}
+    visited: set[str] = set()
+
+    def visit(value: ModelSpec) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if value in visited:
+            return
+        visited.add(value)
+        if value.startswith("@"):
+            role = value[1:].partition(":")[0]
+            configured = getattr(config, "model_roles", {}).get(role) or getattr(
+                config, "models", {}
+            ).get(role)
+            if configured is None:
+                if role in {"task", "subagent"}:
+                    configured = config.subagent_model
+                elif role == "summarizer":
+                    configured = config.summarizer_model
+            if configured is not None:
+                visit(configured)
+            elif role in MODEL_ROLES and role != "main":
+                notices[f"role {role} is not configured, using main"] = None
+        else:
+            alias = getattr(config, "models", {}).get(value)
+            if alias is not None:
+                visit(alias)
+
+    visit(spec)
+    return list(notices)
+
+
 class ModelResolver:
     """Resolve configured model specs through the provider registry."""
 
@@ -190,7 +226,8 @@ class ModelResolver:
             )
         from .catalog import provider_api_key
 
-        api_key = provider_api_key(prefix, self._config)
+        environment_ready = any(os.environ.get(key) for key in registration.env_keys)
+        api_key = None if environment_ready else provider_api_key(prefix, self._config)
         if (
             registration.env_keys
             and not api_key

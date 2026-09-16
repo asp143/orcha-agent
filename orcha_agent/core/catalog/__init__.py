@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from threading import Lock
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -46,9 +47,9 @@ def _paths(config: Any = None) -> tuple[Path, ...]:
 
 
 @lru_cache(maxsize=16)
-def _overrides(stamps: tuple[tuple[str, int, int], ...]) -> dict[str, Any]:
+def _overrides(stamps: tuple[tuple[str, int, int, bool], ...]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for name, _, _size in stamps:
+    for name, mtime, size, commands_allowed in stamps:
         data = yaml.load(Path(name).read_text(), Loader=_Loader) or {}
         if not isinstance(data, dict):
             raise ValueError("models.yml must contain a mapping")
@@ -57,6 +58,10 @@ def _overrides(stamps: tuple[tuple[str, int, int], ...]) -> dict[str, Any]:
                 raise ValueError(f"Model provider {provider} must contain a mapping")
             previous = result.setdefault(provider, {})
             for key, value in values.items():
+                if key == "_api_key_source":
+                    continue
+                if key == "api_key":
+                    previous["_api_key_source"] = (name, mtime, size, commands_allowed)
                 if key in {"models", "model_overrides"} and isinstance(value, dict):
                     merged = dict(previous.get(key, {}))
                     for model_id, patch in value.items():
@@ -77,12 +82,17 @@ def provider_overrides(config: Any = None) -> dict[str, Any]:
     if config is None:
         return {}
     stamps = []
-    for path in _paths(config):
+    for index, path in enumerate(_paths(config)):
         try:
             stat = path.stat()
         except FileNotFoundError:
             continue
-        stamps.append((str(path), stat.st_mtime_ns, stat.st_size))
+        resolved = path.resolve()
+        project = Path(config.cwd).resolve()
+        # A user-path symlink must not promote project-controlled helpers.
+        project_link = resolved != path.absolute() and resolved.is_relative_to(project)
+        commands_allowed = index == 0 and not project_link
+        stamps.append((str(resolved), stat.st_mtime_ns, stat.st_size, commands_allowed))
     return _overrides(tuple(stamps))
 
 
@@ -154,19 +164,44 @@ def get_model(spec: str, config: Any = None) -> ModelInfo | None:
     return model
 
 
+_KEY_CACHE: dict[tuple[str, str, int, int, str], str] = {}
+_KEY_LOCK = Lock()
+
+
 def provider_api_key(provider: str, config: Any = None) -> str | None:
-    """Resolve credentials only when constructing a provider, never while browsing."""
-    value = provider_overrides(config).get(provider, {}).get("api_key")
+    """Resolve lazy credentials; executable helpers are restricted to user files."""
+    options = provider_overrides(config).get(provider, {})
+    value = options.get("api_key")
     if not value:
         return None
     if not isinstance(value, str):
         raise ValueError("api_key must be an environment name or !command")
-    if value.startswith("!"):
+    if not value.startswith("!"):
+        return os.environ.get(value)
+    source = options.get("_api_key_source")
+    if not source or not source[3]:
+        raise ValueError(
+            "Project model api_key must name an environment variable; commands are user-only"
+        )
+    name, mtime, size, _allowed = source
+    key = (provider, name, mtime, size, value)
+    with _KEY_LOCK:
+        if key in _KEY_CACHE:
+            return _KEY_CACHE[key]
         try:
             result = subprocess.run(
-                value[1:], shell=True, capture_output=True, text=True, timeout=10, check=True
+                value[1:],
+                shell=True,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
             )
-        except (subprocess.SubprocessError, OSError) as exc:
-            raise RuntimeError("Model API key command failed") from exc
-        return result.stdout.strip()
-    return os.environ.get(value)
+        except (subprocess.SubprocessError, OSError):
+            raise RuntimeError("Model API key command failed") from None
+        secret = result.stdout.strip()
+        if not secret:
+            raise RuntimeError("Model API key command returned no value")
+        _KEY_CACHE[key] = secret
+        return secret

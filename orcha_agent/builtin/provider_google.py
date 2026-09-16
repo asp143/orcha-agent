@@ -22,7 +22,7 @@ def _factory(model_name: str, config: Mapping[str, Any]) -> Any:
     options = dict(config)
     effort = options.pop("reasoning_effort", None)
     if effort is not None:
-        options["thinking_budget"] = {
+        budgets = {
             "off": 0,
             "none": 0,
             "minimal": 128,
@@ -31,7 +31,10 @@ def _factory(model_name: str, config: Mapping[str, Any]) -> Any:
             "high": 24576,
             "xhigh": 32768,
             "max": 32768,
-        }[effort]
+        }
+        if not isinstance(effort, str) or effort not in budgets:
+            raise ValueError("Invalid reasoning_effort; expected one of: " + ", ".join(budgets))
+        options["thinking_budget"] = budgets[effort]
     options["model"] = model_name
     return ChatGoogleGenerativeAI(**options)
 
