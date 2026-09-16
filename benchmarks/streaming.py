@@ -55,8 +55,10 @@ async def _stream_once(payload: str, chunk_bytes: int) -> tuple[float, int]:
                 source_id="main",
             )
         )
-    elapsed = (process_time_ns() - started) / 1_000_000_000
     assistant = next(block for block in frame.blocks if block.kind == "assistant")
+    if assistant.data["text"] != payload:
+        raise AssertionError("streamed fragments must reconstruct the complete payload")
+    elapsed = (process_time_ns() - started) / 1_000_000_000
     return elapsed, assistant.revision
 
 
