@@ -380,10 +380,11 @@ async def build_agent(
     from .catalog import get_model
     from .models import expand_model_spec
     catalog_model = get_model(expand_model_spec(cfg.model, cfg)[0], cfg)
-    middleware.append(CompactionMiddleware(Compactor(
+    compactor = Compactor(
         roles["summarizer"], cfg.compaction,
-        (catalog_model.context_window or 128_000) if catalog_model else 128_000, bus=bus,
-    )))
+        (catalog_model.context_window or 128_000) if catalog_model else 128_000,
+    )
+    middleware.append(CompactionMiddleware(compactor))
 
     prompt = "\n\n".join(
         value
@@ -436,6 +437,7 @@ async def build_agent(
         always_allowed=frozenset(allowed),
         mode_interrupt_on=dict(mode.interrupt_on),
     ))
+    compactor.attach_bus(bus)
     graph = _create_graph(
         kwargs, exclude_general_purpose=exclude_general_purpose
     )

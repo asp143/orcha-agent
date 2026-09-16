@@ -121,6 +121,7 @@ class SessionSwitch(Event):
     old: str | None
     new: str | None
 
+
 @dataclass(slots=True)
 class ThreadSwitch(Event):
     session_id: str
@@ -201,6 +202,14 @@ class EventBus:
                 entry.event_type.__name__,
             )
         )
+
+    def off(self, event_type: type[Event], handler: EventHandler) -> None:
+        """Remove only the matching subscription, preserving other plugins."""
+        self.handlers[:] = [
+            entry
+            for entry in self.handlers
+            if not (entry.event_type is event_type and entry.handler is handler)
+        ]
 
     async def emit(self, event: Event) -> Handled | None:
         for registration in tuple(self.handlers):

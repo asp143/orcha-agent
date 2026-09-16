@@ -95,6 +95,8 @@ async def test_overflow_retries_once_and_preserves_response():
     assert response.model_response.result[0].content == "success"
     assert calls[1].messages[0].additional_kwargs["lc_source"] == "summarization"
     calls.clear()
+    # A separate turn/controller tests failure on the one allowed recovery retry.
+    middleware = CompactionMiddleware(Compactor(Summary(), CompactionConfig()))
 
     async def always_fail(request):
         calls.append(request)
