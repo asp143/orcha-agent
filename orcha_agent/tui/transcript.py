@@ -21,7 +21,7 @@ from orcha_agent.core.events import (
 )
 from orcha_agent.core.registry import Registry
 
-from .frame import Block, BlockState, Frame, FrameScheduler
+from .frame import Block, BlockState, Frame, FrameScheduler, StreamingData
 
 
 def _matches(match: Any, event: object) -> bool:
@@ -121,14 +121,11 @@ class Transcript:
             block.update(duration=max(0.0, time.monotonic() - block.created))
         block.settle()
 
-
     def _discard_working(self) -> None:
         working = self._working
         if working is None:
             return
-        self.frame.blocks[:] = [
-            block for block in self.frame.blocks if block is not working
-        ]
+        self.frame.blocks[:] = [block for block in self.frame.blocks if block is not working]
         self._working = None
         if self.scheduler is not None:
             self.scheduler.request_invalidate()
@@ -162,8 +159,7 @@ class Transcript:
             block = self._show_working()
         block.update(
             message=(
-                f"Retrying ({attempt}/{max_attempts}) "
-                f"in {max(0, int(delay_seconds + 0.999999))}s…"
+                f"Retrying ({attempt}/{max_attempts}) in {max(0, int(delay_seconds + 0.999999))}s…"
             ),
             level="warning",
             attempt=attempt,
@@ -179,9 +175,7 @@ class Transcript:
         error = self._pinned_error
         if error is None:
             return
-        self.frame.blocks[:] = [
-            block for block in self.frame.blocks if block is not error
-        ]
+        self.frame.blocks[:] = [block for block in self.frame.blocks if block is not error]
         self._pinned_error = None
         if self.scheduler is not None:
             self.scheduler.request_invalidate()
@@ -315,9 +309,8 @@ class Transcript:
                 if block.kind == "task" and block.state is BlockState.ACTIVE
             }
             self._read_groups.clear()
-            if (
-                event.text.startswith("<system-notification>")
-                and event.text.rstrip().endswith("</system-notification>")
+            if event.text.startswith("<system-notification>") and event.text.rstrip().endswith(
+                "</system-notification>"
             ):
                 return
             if self._legacy(event):
@@ -349,9 +342,7 @@ class Transcript:
             )
             self.show_retry(
                 attempt=int(getattr(event, "attempt", 1)),
-                max_attempts=int(
-                    getattr(event, "max_attempts", getattr(event, "max_attempt", 1))
-                ),
+                max_attempts=int(getattr(event, "max_attempts", getattr(event, "max_attempt", 1))),
                 delay_seconds=delay,
             )
             return
@@ -492,8 +483,7 @@ class Transcript:
         candidates = [
             block
             for block in self._task_blocks.values()
-            if block.state is BlockState.ACTIVE
-            and str(block.source_id or "main") == parent_id
+            if block.state is BlockState.ACTIVE and str(block.source_id or "main") == parent_id
         ]
         for block in candidates:
             for agent in self._task_agents(block):
@@ -559,24 +549,18 @@ class Transcript:
                 ):
                     original = tasks[duplicate]
                     item = (
-                        dict(original)
-                        if isinstance(original, Mapping)
-                        else {"task": str(original)}
+                        dict(original) if isinstance(original, Mapping) else {"task": str(original)}
                     )
                     restored = {
                         "run_id": f"pending:{block.data.get('id', block.id)}:{duplicate}",
-                        "name": item.get("name")
-                        or item.get("agent")
-                        or f"agent {duplicate + 1}",
+                        "name": item.get("name") or item.get("agent") or f"agent {duplicate + 1}",
                         "agent_type": item.get("agent") or "task",
                         "description": item.get("task") or "",
                         "status": "pending",
                     }
                 else:
                     restored = dict(agents[duplicate])
-                    restored["run_id"] = (
-                        f"pending:{block.data.get('id', block.id)}:{duplicate}"
-                    )
+                    restored["run_id"] = f"pending:{block.data.get('id', block.id)}:{duplicate}"
                     restored["status"] = "pending"
                     for key in ("result", "delivered", "reason"):
                         restored.pop(key, None)
@@ -629,11 +613,15 @@ class Transcript:
         if not isinstance(result, Mapping):
             return
         errors = result.get("errors")
-        error_indexes = {
-            error.get("index")
-            for error in errors
-            if isinstance(error, Mapping) and isinstance(error.get("index"), int)
-        } if isinstance(errors, Sequence) and not isinstance(errors, (str, bytes)) else set()
+        error_indexes = (
+            {
+                error.get("index")
+                for error in errors
+                if isinstance(error, Mapping) and isinstance(error.get("index"), int)
+            }
+            if isinstance(errors, Sequence) and not isinstance(errors, (str, bytes))
+            else set()
+        )
         success_indexes = iter(
             index for index in range(len(self._task_agents(block))) if index not in error_indexes
         )
@@ -687,8 +675,7 @@ class Transcript:
             str(agent.get("status", "")).casefold() in terminal
             and "result" in agent
             and (
-                bool(agent.get("delivered"))
-                or str(agent.get("run_id", "")).startswith("pending:")
+                bool(agent.get("delivered")) or str(agent.get("run_id", "")).startswith("pending:")
             )
             for agent in agents
         ):
@@ -847,9 +834,7 @@ class Transcript:
         calls = block.data.get("calls")
         if isinstance(calls, list):
             updated = [
-                {**call, "result": event.result}
-                if call.get("id") == event.id
-                else call
+                {**call, "result": event.result} if call.get("id") == event.id else call
                 for call in calls
             ]
             block.update(calls=updated)
@@ -878,11 +863,7 @@ class Transcript:
         if (
             block is not None
             and self._source_tails.get(source_id) is block
-            and (
-                kind != "thinking"
-                or run_key is None
-                or block.data.get("run_key") == run_key
-            )
+            and (kind != "thinking" or run_key is None or block.data.get("run_key") == run_key)
         ):
             return block
         data: dict[str, Any] = {"text": "", "role": role}
@@ -894,6 +875,7 @@ class Transcript:
         else:
             data.update(run_key=run_key, summary_part=None)
         block = self.frame.add(kind, data, source_id=source_id)
+        block.data = StreamingData(data)
         self._source_blocks[key] = block
         self._source_tails[source_id] = block
         return block
@@ -906,10 +888,7 @@ class Transcript:
         visible = False
         usage_tokens = _reasoning_tokens(event.chunk)
         for part in parts:
-            if (
-                isinstance(part, Mapping)
-                and part.get("type") in {"reasoning", "thinking"}
-            ):
+            if isinstance(part, Mapping) and part.get("type") in {"reasoning", "thinking"}:
                 run_key = _reasoning_run_key(part)
                 for summary_part, content in _thinking_fragments(part):
                     if not content:
@@ -920,24 +899,24 @@ class Transcript:
                         event.role,
                         run_key=run_key,
                     )
-                    prior = str(block.data["text"])
+                    data = block.data
+                    assert isinstance(data, StreamingData)
                     previous_part = block.data.get("summary_part")
                     separator = (
                         "\n\n"
-                        if prior
+                        if data.text_length
                         and summary_part is not None
                         and previous_part is not None
                         and summary_part != previous_part
                         else ""
                     )
-                    accumulated = f"{prior}{separator}{content}"
+                    data.append_text(separator + content)
                     changes: dict[str, Any] = {
-                        "text": accumulated,
                         "summary_part": summary_part,
                         "reasoning_tokens": (
                             usage_tokens
                             if usage_tokens is not None
-                            else max(1, (len(accumulated) + 3) // 4)
+                            else max(1, (data.text_length + 3) // 4)
                         ),
                     }
                     block.update(changes)
@@ -949,14 +928,14 @@ class Transcript:
             if not content:
                 continue
             block = self._source_block(source_id, "assistant", event.role)
-            block.update(text=f"{block.data['text']}{content}")
+            data = block.data
+            assert isinstance(data, StreamingData)
+            data.append_text(content)
+            block.update()
             visible = True
         if usage_tokens is not None:
             thinking = self._source_blocks.get((source_id, "thinking"))
-            if (
-                thinking is not None
-                and thinking.data.get("reasoning_tokens") != usage_tokens
-            ):
+            if thinking is not None and thinking.data.get("reasoning_tokens") != usage_tokens:
                 thinking.update(reasoning_tokens=usage_tokens)
             thinking_seen = thinking is not None
         if self.scheduler is not None:
@@ -977,57 +956,37 @@ class Transcript:
         self._commit(block)
         return block
 
-
     def release_committed(self, blocks: list[Block]) -> None:
         """Release accumulator references after scrollback owns the blocks."""
 
-        committed = {
-            block.id
-            for block in blocks
-            if block.state is BlockState.COMMITTED
-        }
+        committed = {block.id for block in blocks if block.state is BlockState.COMMITTED}
         if not committed:
             return
         self._source_blocks = {
-            key: block
-            for key, block in self._source_blocks.items()
-            if block.id not in committed
+            key: block for key, block in self._source_blocks.items() if block.id not in committed
         }
         self._source_tails = {
-            key: block
-            for key, block in self._source_tails.items()
-            if block.id not in committed
+            key: block for key, block in self._source_tails.items() if block.id not in committed
         }
         self._tools = {
-            key: block
-            for key, block in self._tools.items()
-            if block.id not in committed
+            key: block for key, block in self._tools.items() if block.id not in committed
         }
         self._read_groups = {
-            key: block
-            for key, block in self._read_groups.items()
-            if block.id not in committed
+            key: block for key, block in self._read_groups.items() if block.id not in committed
         }
         self._task_blocks = {
-            key: block
-            for key, block in self._task_blocks.items()
-            if block.id not in committed
+            key: block for key, block in self._task_blocks.items() if block.id not in committed
         }
         self._agent_tasks = {
-            key: block
-            for key, block in self._agent_tasks.items()
-            if block.id not in committed
+            key: block for key, block in self._agent_tasks.items() if block.id not in committed
         }
         self._parent_tasks = {
-            key: block
-            for key, block in self._parent_tasks.items()
-            if block.id not in committed
+            key: block for key, block in self._parent_tasks.items() if block.id not in committed
         }
         self._deliveries = {
-            key: block
-            for key, block in self._deliveries.items()
-            if block.id not in committed
+            key: block for key, block in self._deliveries.items() if block.id not in committed
         }
+
     def clear(self) -> None:
         self.frame.blocks.clear()
         self._source_blocks.clear()

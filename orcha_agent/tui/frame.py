@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 import math
-from collections.abc import Callable, Mapping
+from collections import UserDict
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import count
@@ -21,6 +22,31 @@ class BlockState(str, Enum):
     COMMITTED = "committed"
 
 
+class StreamingData(UserDict[str, Any]):
+    """Keep streamed fragments separate until a consumer requests the text."""
+
+    def __init__(self, data: Mapping[str, Any]) -> None:
+        self._parts: list[str] = []
+        self.text_length = 0
+        super().__init__(data)
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "text" and self._parts:
+            self.data[key] = str(self.data.get(key, "")) + "".join(self._parts)
+            self._parts.clear()
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key == "text":
+            self._parts.clear()
+            self.text_length = len(str(value))
+        super().__setitem__(key, value)
+
+    def append_text(self, value: str) -> None:
+        self._parts.append(value)
+        self.text_length += len(value)
+
+
 @dataclass(slots=True)
 class Block:
     id: str
@@ -29,7 +55,11 @@ class Block:
     revision: int = 0
     source_id: str | None = None
     created: float = field(default_factory=time.monotonic)
-    data: dict[str, Any] = field(default_factory=dict)
+    data: MutableMapping[str, Any] = field(default_factory=dict)
+
+    _rendered_rows: dict[tuple[Any, ...], str] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     def update(
         self,
@@ -44,6 +74,7 @@ class Block:
         if changes:
             self.data.update(changes)
         self.revision += 1
+        self._rendered_rows.clear()
 
     def settle(self) -> None:
         if self.state is BlockState.COMMITTED:
@@ -113,17 +144,9 @@ class Frame:
     def prune_committed(self, blocks: list[Block]) -> None:
         """Release committed blocks after their scrollback write succeeds."""
 
-        committed = {
-            block.id
-            for block in blocks
-            if block.state is BlockState.COMMITTED
-        }
+        committed = {block.id for block in blocks if block.state is BlockState.COMMITTED}
         if committed:
-            self.blocks[:] = [
-                block
-                for block in self.blocks
-                if block.id not in committed
-            ]
+            self.blocks[:] = [block for block in self.blocks if block.id not in committed]
 
     @staticmethod
     def row_budget(
@@ -152,9 +175,7 @@ class Frame:
         budget = max(0, budget_rows)
         if budget == 0:
             return []
-        candidates = [
-            block for block in self.blocks if block.state is not BlockState.COMMITTED
-        ]
+        candidates = [block for block in self.blocks if block.state is not BlockState.COMMITTED]
 
         def minimum_rows(block: Block) -> int:
             return max(1, minimum(block)) if minimum is not None else 1
@@ -172,10 +193,7 @@ class Frame:
                 remaining = 0
             break
         selected = list(reversed(newest))
-        allocations = {
-            block.id: min(minimum_rows(block), budget)
-            for block in selected
-        }
+        allocations = {block.id: min(minimum_rows(block), budget) for block in selected}
 
         def desired(block: Block) -> int:
             if block.kind == "tool":
@@ -185,10 +203,7 @@ class Frame:
             content = str(block.data.get("text", block.data.get("message", "")))
             if width is None:
                 return max(1, content.count("\n") + 1)
-            return sum(
-                max(1, (len(line) + width - 1) // width)
-                for line in content.split("\n")
-            )
+            return sum(max(1, (len(line) + width - 1) // width) for line in content.split("\n"))
 
         # Keep every active block observable. Prose gets surplus rows before
         # activity cards (tool and task), which then degrade deterministically

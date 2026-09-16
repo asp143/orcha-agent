@@ -135,9 +135,6 @@ def _bindings() -> KeyBindings:
     return bindings
 
 
-
-
-
 def _bottom_toolbar(ctx: Any) -> Any:
     if not bool(getattr(ctx.cfg, "statusbar", True)):
         return []
@@ -151,6 +148,7 @@ def _bottom_toolbar(ctx: Any) -> Any:
         width=width,
         composer_shape=getattr(ctx.cfg, "composer", "box"),
     )
+
 
 _MAIN_ACCOUNTING_EVENTS = (TurnStart, ModelChunk, TurnEnd)
 
@@ -195,9 +193,6 @@ async def dispatch_command(registry: Registry, ctx: Any, text: str) -> bool:
     return True
 
 
-
-
-
 def _compat(name: str, default: Any) -> Any:
     facade = sys.modules.get("orcha_agent.tui.app")
     return getattr(facade, name, default) if facade is not None else default
@@ -223,7 +218,6 @@ def _resolve_runtime_themes(
         warn(f"Unknown theme '{selected}'; using dark.")
         active = themes["dark"]
     return themes, active
-
 
 
 class UIFacade:
@@ -288,7 +282,6 @@ class UIFacade:
         if callable(invalidate):
             invalidate()
 
-
     def toggle_thinking(self) -> bool:
         self.thinking_visible = not self.thinking_visible
         return self.thinking_visible
@@ -330,7 +323,9 @@ class ApplicationRuntime:
         self.composer_shape = composer_shape
         self._themes = dict(themes or {})
         current_theme_id = str(
-            getattr(theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default")
+            getattr(
+                theme, "id", theme.get("id", "default") if isinstance(theme, Mapping) else "default"
+            )
         )
         self._themes.setdefault(current_theme_id, theme)
         if registry is None:
@@ -340,9 +335,7 @@ class ApplicationRuntime:
                 "delivery": render_delivery,
             }
         else:
-            block_renderers = {
-                entry.kind: entry.render for entry in registry.block_renderers
-            }
+            block_renderers = {entry.kind: entry.render for entry in registry.block_renderers}
             block_renderers.setdefault("task", render_task)
             block_renderers.setdefault("delivery", render_delivery)
         self._block_dispatcher = BlockRendererDispatcher(block_renderers)
@@ -390,9 +383,7 @@ class ApplicationRuntime:
         self._drill_refresh_task: asyncio.Future[Any] | None = None
         self._turn_active = False
         self._spinner_frame = 0
-        self._hud_sections = {
-            kind: Block(f"hud-{kind}", kind) for kind in ("todo", "queue")
-        }
+        self._hud_sections = {kind: Block(f"hud-{kind}", kind) for kind in ("todo", "queue")}
         self._approval_notification_sent = False
         self._shell_runner = shell_runner
         self._shell_process: asyncio.subprocess.Process | None = None
@@ -469,9 +460,9 @@ class ApplicationRuntime:
                 event.current_buffer.insert_text("?")
 
         overlay_bindings = DynamicKeyBindings(
-            lambda: self._active_overlay.bindings
-            if self._active_overlay is not None
-            else KeyBindings()
+            lambda: (
+                self._active_overlay.bindings if self._active_overlay is not None else KeyBindings()
+            )
         )
         bindings = merge_key_bindings([bindings, core_bindings, overlay_bindings])
 
@@ -670,7 +661,9 @@ class ApplicationRuntime:
         session = getattr(self.ctx, "session", None)
         session_id = getattr(self.ctx, "session_id", None)
         try:
-            info = session.get(session_id) if session is not None and session_id is not None else None
+            info = (
+                session.get(session_id) if session is not None and session_id is not None else None
+            )
         except Exception:
             info = None
         return str(getattr(info, "title", None) or "new session")
@@ -711,12 +704,10 @@ class ApplicationRuntime:
                     "queue",
                     {
                         "prompts": [
-                            {"text": item.text, "mode": item.mode}
-                            for item in self.queue.entries
+                            {"text": item.text, "mode": item.mode} for item in self.queue.entries
                         ],
                         "dequeue_hint": format_key_bindings(
-                            effective
-                            for effective in self._effective_keys.get("dequeue", ())
+                            effective for effective in self._effective_keys.get("dequeue", ())
                         ),
                     },
                 )
@@ -754,9 +745,7 @@ class ApplicationRuntime:
                         "id": event.id,
                         "name": event.id,
                         "description": str(
-                            event.args.get("description")
-                            or event.args.get("task")
-                            or "task"
+                            event.args.get("description") or event.args.get("task") or "task"
                         ),
                         "status": "running",
                     }
@@ -841,9 +830,7 @@ class ApplicationRuntime:
             return overlay
         if not isinstance(overlay, str):
             raise TypeError("overlay must be an Overlay instance or registered name")
-        registration = (
-            None if self.registry is None else self.registry.overlays.get(overlay)
-        )
+        registration = None if self.registry is None else self.registry.overlays.get(overlay)
         if registration is None:
             return None
         created = registration.factory(self.ctx, *args, **kwargs)
@@ -909,7 +896,6 @@ class ApplicationRuntime:
                 self.application.layout.focus(self.buffer)
                 self.application.invalidate()
 
-
     def _cwd(self) -> Path:
         value = getattr(getattr(self.ctx, "cfg", None), "cwd", Path.cwd())
         return Path(value)
@@ -944,9 +930,7 @@ class ApplicationRuntime:
         saved_queue = state.get("queue")
         has_draft = isinstance(draft, str) and bool(draft)
         restored_queue = (
-            isinstance(saved_queue, list)
-            and bool(saved_queue)
-            and self.queue.restore(saved_queue)
+            isinstance(saved_queue, list) and bool(saved_queue) and self.queue.restore(saved_queue)
         )
         if not has_draft and not restored_queue:
             return
@@ -1055,10 +1039,12 @@ class ApplicationRuntime:
         if self.registry is None:
             return handlers
         for action, registration in self.registry.keybindings.items():
+
             def invoke(event: Any, registration: Any = registration) -> None:
                 result = registration.handler(self.ctx, event)
                 if inspect.isawaitable(result):
                     self._track(result)
+
             handlers[action] = invoke
         return handlers
 
@@ -1182,9 +1168,9 @@ class ApplicationRuntime:
             else:
                 options["reasoning_effort"] = self.thinking_level
         if prefix == "anthropic":
-            self.ctx.plugin_states.setdefault("provider_anthropic", {})[
-                "thinking"
-            ] = "off" if self.thinking_level == "off" else "summary"
+            self.ctx.plugin_states.setdefault("provider_anthropic", {})["thinking"] = (
+                "off" if self.thinking_level == "off" else "summary"
+            )
 
     def _toggle_thinking(self) -> None:
         state = self.ctx.plugin_states.setdefault("render_default", {})
@@ -1257,7 +1243,9 @@ class ApplicationRuntime:
             return text
         path = ""
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".md", delete=False) as stream:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".md", delete=False
+            ) as stream:
                 stream.write(text)
                 path = stream.name
             subprocess.run([*shlex.split(command), path], check=True)
@@ -1265,7 +1253,6 @@ class ApplicationRuntime:
         finally:
             if path:
                 Path(path).unlink(missing_ok=True)
-
 
     async def _run_shell(self, command: str) -> None:
         identifier = f"execute-{time.monotonic_ns()}"
@@ -1390,9 +1377,7 @@ class ApplicationRuntime:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-            lines.append(
-                payload.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            )
+            lines.append(payload.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
         lines.append("</system-notification>")
         return "\n".join(lines)
 
@@ -1407,11 +1392,7 @@ class ApplicationRuntime:
         agents = getattr(self.ctx, "agents", None)
         if agents is None:
             return None
-        runs = [
-            run
-            for run in agents.jobs("main")
-            if run.terminal and not run.delivered
-        ]
+        runs = [run for run in agents.jobs("main") if run.terminal and not run.delivered]
         if not runs:
             return None
         notification = self._agent_delivery_notification(runs)
@@ -1537,7 +1518,6 @@ class ApplicationRuntime:
         self.ui.themes = self._themes
         return self._apply_theme(selected)
 
-
     def _root_height(self) -> int:
         return max(1, self.application.output.get_size().rows - 1)
 
@@ -1582,6 +1562,21 @@ class ApplicationRuntime:
         *,
         force_terminal: bool,
     ) -> str:
+        # The built-in prose renderers ignore the row allocation. Capture their
+        # ANSI rows once and reuse those exact rows for measurement and paint.
+        prose = self._uses_prose_rows(block)
+        if prose:
+            rows = 10_000
+        key = (
+            block.revision,
+            width,
+            rows,
+            force_terminal,
+            id(self.theme),
+            self.ui.tools_expanded,
+        )
+        if key in block._rendered_rows:
+            return block._rendered_rows[key]
         stream = StringIO()
         console = Console(
             file=stream,
@@ -1593,14 +1588,24 @@ class ApplicationRuntime:
             theme=getattr(self.theme, "rich", None),
         )
         self._print_block(console, block, width, rows, viewport=True)
-        return stream.getvalue()
+        value = stream.getvalue()
+        if len(block._rendered_rows) >= 4:
+            block._rendered_rows.pop(next(iter(block._rendered_rows)))
+        block._rendered_rows[key] = value
+        return value
+
+    def _uses_prose_rows(self, block: Block) -> bool:
+        return (
+            block.kind in {"assistant", "thinking"}
+            and self._block_dispatcher._renderers.get(block.kind) is DEFAULT_RENDERERS[block.kind]
+        )
 
     def _measure_block(self, block: Block, width: int) -> int:
         rendered = self._capture_block(
             block,
             width,
             10_000,
-            force_terminal=False,
+            force_terminal=self._uses_prose_rows(block),
         )
         lines = rendered.splitlines()
         return max(1, len(lines))
@@ -1625,16 +1630,11 @@ class ApplicationRuntime:
             budget,
             width=width,
             measure=self._measure_block,
-            minimum=lambda block: (
-                2 if block.kind in LEADING_SPACER_KINDS else 1
-            ),
+            minimum=lambda block: 2 if block.kind in LEADING_SPACER_KINDS else 1,
         )
         for index, item in enumerate(plan):
             render_rows = item.rows
-            if (
-                item.block.kind in LEADING_SPACER_KINDS
-                and render_rows > 1
-            ):
+            if item.block.kind in LEADING_SPACER_KINDS and render_rows > 1:
                 render_rows -= 1
             value = self._capture_block(
                 item.block,
@@ -1645,11 +1645,7 @@ class ApplicationRuntime:
             lines = value.splitlines(keepends=True)
             leading: list[str] = []
             content_rows = item.rows
-            if (
-                item.block.kind in LEADING_SPACER_KINDS
-                and lines
-                and not lines[0].strip()
-            ):
+            if item.block.kind in LEADING_SPACER_KINDS and lines and not lines[0].strip():
                 if content_rows > 1:
                     leading, lines = lines[:1], lines[1:]
                     content_rows -= 1
@@ -1664,10 +1660,7 @@ class ApplicationRuntime:
                     else lines[:content_rows]
                 )
             rendered.append("".join([*leading, *lines]))
-            if (
-                index + 1 < len(plan)
-                and plan[index + 1].block.kind not in LEADING_SPACER_KINDS
-            ):
+            if index + 1 < len(plan) and plan[index + 1].block.kind not in LEADING_SPACER_KINDS:
                 rendered.append("\n")
         output_lines = "".join(rendered).splitlines(keepends=True)
         if len(output_lines) > budget:
@@ -1767,6 +1760,7 @@ def _register_theme_refresh(
         priority=9_000,
     )
 
+
 async def _run_runtime(ctx: AppContext, runtime: Any, bus: EventBus) -> int:
     shutdown_completed = False
     try:
@@ -1828,11 +1822,7 @@ async def _run_app(cfg: Config) -> int:
             cfg = replace(
                 cfg,
                 cwd=Path(saved_session.cwd),
-                model=(
-                    cfg.model
-                    if cfg.model_overridden
-                    else history_model
-                ),
+                model=(cfg.model if cfg.model_overridden else history_model),
                 mode=saved_session.mode,
                 trust_cwd=is_trusted_cwd(
                     saved_session.cwd,
@@ -1842,9 +1832,8 @@ async def _run_app(cfg: Config) -> int:
             )
             session_id = saved_session.thread_id
             resume_live_thread = saved_session.current_thread
-            checkpoint_live = (
-                resume_live_thread is not None
-                and store.checkpoint_exists(resume_live_thread)
+            checkpoint_live = resume_live_thread is not None and store.checkpoint_exists(
+                resume_live_thread
             )
             if not checkpoint_live:
                 thread_id = _uncheckpointed_seed_target(
@@ -1899,14 +1888,14 @@ async def _run_app(cfg: Config) -> int:
         )
         ctx._pending_switch_old_thread = pending_switch_old_thread
         holder["ctx"] = ctx
-        if cfg.resume and resume_live_thread is not None and store.checkpoint_exists(
-            resume_live_thread
+        if (
+            cfg.resume
+            and resume_live_thread is not None
+            and store.checkpoint_exists(resume_live_thread)
         ):
             ctx.recover_checkpoint(session_id, resume_live_thread)
             context = build_context(ctx.ledger.path(session_id))
-            pending_interrupt = store.checkpoint_has_pending_interrupt(
-                resume_live_thread
-            )
+            pending_interrupt = store.checkpoint_has_pending_interrupt(resume_live_thread)
             if context.dangling and not pending_interrupt:
                 old_thread = ctx.thread_id
                 ctx.ledger.set_position(
@@ -1916,6 +1905,7 @@ async def _run_app(cfg: Config) -> int:
                 )
                 ctx.thread_id = store.next_thread_id(session_id)
                 ctx._pending_switch_old_thread = old_thread
+
         async def submit(text: str) -> None:
             try:
                 if not text.startswith("/"):
@@ -1954,11 +1944,7 @@ async def _run_app(cfg: Config) -> int:
                 session_id=session_id,
             ),
             status=lambda: _bottom_toolbar(ctx),
-            console=(
-                ctx.console.console
-                if isinstance(ctx.console, ConsoleOutput)
-                else None
-            ),
+            console=(ctx.console.console if isinstance(ctx.console, ConsoleOutput) else None),
             theme=active_theme,
             themes=available_themes,
             ctx=ctx,

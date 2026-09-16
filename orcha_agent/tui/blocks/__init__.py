@@ -138,6 +138,16 @@ class BlockRendererDispatcher:
             return block.data.get("text", block.data.get("message", str(block.data)))
         partition = (block.id, block.kind, budget_rows)
         key = (block.revision, width, expanded, theme_id(theme))
+        # Row allocations fluctuate while streaming/resizing. Keep only a
+        # bounded number of variants, and never retain an older revision.
+        for previous in list(self._cache):
+            if previous[0] == block.id and any(
+                cached[0] != block.revision for cached in self._cache[previous]
+            ):
+                del self._cache[previous]
+        owned = [previous for previous in self._cache if previous[0] == block.id]
+        if partition not in self._cache and len(owned) >= 4:
+            del self._cache[owned[0]]
         cache = self._cache.setdefault(partition, {})
         if key not in cache:
             cache.clear()

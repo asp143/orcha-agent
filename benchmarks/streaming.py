@@ -70,7 +70,7 @@ async def _viewport_case(
     *,
     columns: int = 100,
     rows: int = 36,
-) -> tuple[list[float], list[int]]:
+) -> tuple[list[float], list[int], list[float]]:
     stream = StringIO()
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
@@ -82,11 +82,15 @@ async def _viewport_case(
         block = runtime.frame.add("assistant", {"text": "", "role": "main"})
         try:
             paint_samples: list[float] = []
+            cached_paint_samples: list[float] = []
             for _ in range(repetitions):
                 block.update(text=payload)
                 started = perf_counter_ns()
                 runtime._viewport_text()
                 paint_samples.append((perf_counter_ns() - started) / 1_000_000_000)
+                started = perf_counter_ns()
+                runtime._viewport_text()
+                cached_paint_samples.append((perf_counter_ns() - started) / 1_000_000_000)
 
             layout_samples: list[int] = []
             layout_calls = 0
@@ -106,7 +110,7 @@ async def _viewport_case(
                     layout_samples.append(layout_calls - before)
             finally:
                 setattr(Markdown, "__rich_console__", original)
-            return paint_samples, layout_samples
+            return paint_samples, layout_samples, cached_paint_samples
         finally:
             await runtime.scheduler.aclose()
 
@@ -146,7 +150,7 @@ async def _run(config: RunConfig) -> dict[str, Any]:
                 }
             )
 
-        paint_samples, layout_samples = await _viewport_case(
+        paint_samples, layout_samples, cached_paint_samples = await _viewport_case(
             payload,
             config.repetitions,
         )
@@ -162,6 +166,7 @@ async def _run(config: RunConfig) -> dict[str, Any]:
                 },
                 "measurements": {
                     "viewport_paint": measurement(paint_samples, "seconds"),
+                    "unchanged_viewport_paint": measurement(cached_paint_samples, "seconds"),
                     "rich_layouts_per_revision": measurement(
                         layout_samples, "layouts_per_revision"
                     ),
