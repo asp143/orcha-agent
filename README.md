@@ -220,8 +220,10 @@ holds recoverable tool output. Relative allowed roots are resolved from the
 workspace. The default deny patterns shown above block sensitive filenames and
 `Credentials/` directories, including inside allowed roots. An explicit `deny`
 list replaces those defaults; `deny = []` removes filename exclusions. Approval
-prompts show resolved target paths. These file-tool restrictions are not an OS
-sandbox: an approved `bash` command can access resources outside those roots.
+prompts show resolved target paths. Containment and deny patterns apply only to
+the file tools. `bash` is deliberately unconfined; the selected approval mode
+controls shell execution, and shell commands can access resources outside the
+allowed roots or matching deny patterns.
 
 With `edit_format = "hashline"`, `read` supplies a `[path#TAG]` snapshot header
 and numbered anchors. Pass `edit(patch="...")` using that exact header:
