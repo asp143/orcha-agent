@@ -390,6 +390,10 @@ class SessionStore:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS threads_session ON threads(session_id)"
         )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS sessions_created "
+            "ON sessions(created DESC, thread_id DESC)"
+        )
         thread_columns = {
             row["name"]
             for row in self._connection.execute("PRAGMA table_info(threads)")

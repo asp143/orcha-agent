@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 from typing import Any
 
-from .select import SelectList
+from prompt_toolkit.application.current import get_app
+from prompt_toolkit.buffer import Buffer
+
+from orcha_agent.core.session import SessionStore
+from orcha_agent.core.session_picker import session_page
+
+from .select import SelectList, _fuzzy
 
 
 def _age(created: Any) -> str:
@@ -111,22 +119,17 @@ def _shorten_path(value: object, *, max_length: int = 30) -> str:
 
 class SessionOverlay(SelectList[Any]):
     def __init__(self, ctx: Any) -> None:
-        sessions = tuple(ctx.session.list())
-        labels: dict[str, str] = {}
-        for session in sessions:
-            session_id = str(getattr(session, "thread_id", ""))
-            title = (
-                _clean_text(getattr(session, "title", None))
-                or _first_prompt(ctx, session)
-                or "Untitled"
-            )
-            count = ctx.ledger.count(session_id)
-            cwd = _shorten_path(getattr(session, "cwd", ""))
-            age = _age(getattr(session, "created", None))
-            labels[session_id] = f"{title} · {age} · {cwd} · {count} entries"
+        self._ctx = ctx
+        self._page_offset = 0
+        self._page_limit = 200
+        self._has_next = False
+        self._labels: dict[str, str] = {}
+        self._search_cancel = Event()
+        self._search_task: asyncio.Task[None] | None = None
+        sessions = self._load_page()
 
         def label(session: Any) -> str:
-            return labels[str(getattr(session, "thread_id", ""))]
+            return self._labels[str(getattr(session, "thread_id", ""))]
 
         async def resume(session: Any) -> str:
             session_id = str(session.thread_id)
@@ -140,6 +143,150 @@ class SessionOverlay(SelectList[Any]):
             empty_text="No saved sessions",
             on_accept=resume,
         )
+
+    @staticmethod
+    def _read_page(
+        ctx: Any,
+        page_offset: int,
+        page_limit: int,
+        query: str,
+        cancelled: Event,
+    ) -> tuple[tuple[Any, ...], dict[str, str], bool]:
+        labels: dict[str, str] = {}
+        has_next = False
+        if isinstance(ctx.session, SessionStore):
+            snapshots = []
+            offset = 0 if query else page_offset
+            skipped = 0
+            while not cancelled.is_set():
+                rows = session_page(
+                    ctx.session,
+                    limit=page_limit + 1,
+                    offset=offset,
+                    cancelled=cancelled,
+                )
+                for row in rows:
+                    if cancelled.is_set():
+                        return (), {}, False
+                    session = row.session
+                    prompt = _message_text(row.first_message)
+                    label = SessionOverlay._label_text(session, row.count, prompt)
+                    if query and not _fuzzy(query, label):
+                        continue
+                    if query and skipped < page_offset:
+                        skipped += 1
+                        continue
+                    snapshots.append((session, row.count, prompt))
+                    if len(snapshots) > page_limit:
+                        break
+                if len(snapshots) > page_limit or len(rows) <= page_limit or not query:
+                    break
+                offset += len(rows)
+            has_next = len(snapshots) > page_limit
+            snapshots = snapshots[:page_limit]
+        else:
+            # Preserve the public duck-typed context protocol used by plugins.
+            snapshots = [
+                (session, ctx.ledger.count(session.thread_id), _first_prompt(ctx, session))
+                for session in ctx.session.list()
+            ]
+        for session, count, prompt in snapshots:
+            labels[str(session.thread_id)] = SessionOverlay._label_text(session, count, prompt)
+        return tuple(session for session, _, _ in snapshots), labels, has_next
+
+    def _load_page(self, query: str = "") -> tuple[Any, ...]:
+        items, self._labels, self._has_next = self._read_page(
+            self._ctx,
+            self._page_offset,
+            self._page_limit,
+            query,
+            Event(),
+        )
+        return items
+
+    def _request_page(self, query: str, index: int = 0) -> None:
+        self._search_cancel.set()
+        cancelled = self._search_cancel = Event()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.items = self._load_page(query)
+            self.index = max(0, min(len(self.items) - 1, index))
+            self._changed()
+            return
+        offset = self._page_offset
+        app = get_app()
+        # Do not leave old selections actionable while a new filter is loading.
+        self.items = ()
+        self._labels = {}
+        self._has_next = False
+        self.index = 0
+        self.empty_text = "Searching sessions…"
+        self._error = None
+
+        async def search() -> None:
+            try:
+                result = await asyncio.to_thread(
+                    self._read_page,
+                    self._ctx,
+                    offset,
+                    self._page_limit,
+                    query,
+                    cancelled,
+                )
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            except Exception as exc:
+                if not cancelled.is_set() and not self.done:
+                    self._error = f"{type(exc).__name__}: {exc}"
+                    self.empty_text = "No saved sessions"
+                    app.invalidate()
+                return
+            if cancelled.is_set() or self.done:
+                return
+            self.items, self._labels, self._has_next = result
+            self.index = max(0, min(len(self.items) - 1, index))
+            self.empty_text = "No saved sessions"
+            self._changed()
+            app.invalidate()
+
+        self._search_task = loop.create_task(search())
+
+    def resolve(self, value: Any) -> None:
+        self._search_cancel.set()
+        super().resolve(value)
+
+    @staticmethod
+    def _label_text(session: Any, count: int, prompt: str) -> str:
+        title = _clean_text(getattr(session, "title", None)) or prompt or "Untitled"
+        cwd = _shorten_path(getattr(session, "cwd", ""))
+        age = _age(getattr(session, "created", None))
+        return f"{title} · {age} · {cwd} · {count} entries"
+
+    def _filter_changed(self, buffer: Buffer) -> None:
+        if isinstance(self._ctx.session, SessionStore):
+            self._page_offset = 0
+            self._request_page(buffer.text)
+        super()._filter_changed(buffer)
+
+    def _filtered_pairs(self) -> list[tuple[int, Any]]:
+        if isinstance(self._ctx.session, SessionStore):
+            return list(enumerate(self.items))
+        return super()._filtered_pairs()
+
+    def _move(self, delta: int) -> None:
+        if isinstance(self._ctx.session, SessionStore):
+            target = self.index + delta
+            if target >= len(self.items) and self._has_next:
+                self._page_offset += self._page_limit
+                self._request_page(self.filter.text, target - self._page_limit)
+                return
+            if target < 0 and self._page_offset:
+                self._page_offset = max(0, self._page_offset - self._page_limit)
+                self._request_page(self.filter.text, self._page_limit + target)
+                return
+        super()._move(delta)
 
 
 __all__ = ["SessionOverlay"]

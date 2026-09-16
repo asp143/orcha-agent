@@ -206,7 +206,7 @@ def _capture_case(
                     "files": files,
                 }
                 graph = _CaptureGraph(values)
-                cfg: Any = SimpleNamespace()
+                cfg: Any = SimpleNamespace(agents=SimpleNamespace(max_concurrency=4))
                 bus: Any = object()
                 console: Any = _CaptureConsole()
                 context = AppContext(
@@ -311,7 +311,7 @@ def run_history_load(config: RunConfig) -> dict[str, Any]:
                 started = perf_counter_ns()
                 loaded = list(history.load_history_strings())
                 load_samples.append((perf_counter_ns() - started) / 1_000_000_000)
-                if len(loaded) != rows:
+                if len(loaded) != min(rows, history.load_limit):
                     raise AssertionError("history loader returned the wrong fixture size")
                 del loaded
                 gc.collect()
@@ -322,7 +322,7 @@ def run_history_load(config: RunConfig) -> dict[str, Any]:
                 started = perf_counter_ns()
                 overlay = HistoryOverlay(context)
                 overlay_samples.append((perf_counter_ns() - started) / 1_000_000_000)
-                if len(overlay.items) != rows:
+                if len(overlay.items) != min(rows, history.load_limit):
                     raise AssertionError("history overlay returned the wrong fixture size")
                 del overlay
                 gc.collect()
@@ -333,6 +333,7 @@ def run_history_load(config: RunConfig) -> dict[str, Any]:
                     "parameters": {
                         "rows": rows,
                         "prompt_bytes": len("prompt 000000 deterministic fixture text"),
+                        "load_limit": history.load_limit,
                         "fixture_population_timed": False,
                     },
                     "measurements": {
@@ -423,7 +424,7 @@ def run_session_overlay_load(config: RunConfig) -> dict[str, Any]:
                     started = perf_counter_ns()
                     overlay = SessionOverlay(context)
                     overlay_samples.append((perf_counter_ns() - started) / 1_000_000_000)
-                    if len(overlay.items) != rows:
+                    if len(overlay.items) != min(rows, 200):
                         raise AssertionError("session overlay returned the wrong fixture size")
                     del overlay
                     gc.collect()
@@ -434,7 +435,8 @@ def run_session_overlay_load(config: RunConfig) -> dict[str, Any]:
                         "parameters": {
                             "rows": rows,
                             "fixture_population_timed": False,
-                            "overlay_scope": "constructor data load only",
+                            "overlay_scope": "bounded recent page with precomputed labels",
+                            "overlay_limit": 200,
                         },
                         "measurements": {
                             "session_store_list_wall": measurement(list_samples, "seconds"),

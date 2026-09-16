@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
@@ -28,14 +29,14 @@ class SQLiteHistory(History):
         cwd: str | Path | None = None,
         session_id: str | None = None,
         legacy_path: str | Path | None = None,
+        load_limit: int = 1000,
     ) -> None:
+        self.load_limit = max(1, load_limit)
         self.path = Path(path) if path is not None else history_path()
         self.cwd = str(Path(cwd).resolve()) if cwd is not None else ""
         self.session_id = session_id or ""
         self.legacy_path = (
-            Path(legacy_path)
-            if legacy_path is not None
-            else self.path.with_suffix("")
+            Path(legacy_path) if legacy_path is not None else self.path.with_suffix("")
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
@@ -61,7 +62,7 @@ class SQLiteHistory(History):
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS history (
@@ -128,19 +129,21 @@ class SQLiteHistory(History):
         return True
 
     def append_string(self, string: str) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             inserted = self._insert(connection, string, skip_duplicate=True)
         if inserted:
             self._loaded_strings.insert(0, string)
+            del self._loaded_strings[self.load_limit :]
 
     def store_string(self, string: str) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             self._insert(connection, string, skip_duplicate=True)
 
     def load_history_strings(self) -> Iterable[str]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
-                "SELECT prompt FROM history ORDER BY id DESC"
+                "SELECT prompt FROM history ORDER BY id DESC LIMIT ?",
+                (self.load_limit,),
             ).fetchall()
         return (str(row[0]) for row in rows)
 
@@ -149,7 +152,7 @@ class SQLiteHistory(History):
         if not terms:
             return []
         expression = " AND ".join(f'"{term.replace(chr(34), chr(34) * 2)}"*' for term in terms)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT history.prompt
