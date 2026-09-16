@@ -61,7 +61,14 @@ class TerminalTitle:
         return self._emit()
 
     def set_turn(self, active: bool, *, spinner: str | None = None) -> bool:
+        changed = self.turn_active != bool(active)
         self.turn_active = bool(active)
+        if changed:
+            try:
+                self.output.write_raw(f"\x1b]9;4;{3 if active else 0}\x07")
+                self.output.flush()
+            except (AttributeError, OSError):
+                pass
         if spinner is not None:
             self.spinner = spinner if self.unicode else "*"
         return self._emit()

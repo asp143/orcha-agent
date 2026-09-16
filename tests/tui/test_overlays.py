@@ -155,7 +155,7 @@ async def test_approval_overlay_shortcuts(wait_until) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None:
+async def test_runtime_serializes_overlays_and_keeps_viewport_mouse(wait_until) -> None:
     with create_pipe_input() as pipe:
         runtime = ApplicationRuntime(
             lambda _text: asyncio.sleep(0), input=pipe, output=DummyOutput()
@@ -181,7 +181,7 @@ async def test_runtime_serializes_overlays_and_toggles_mouse(wait_until) -> None
         pipe.send_bytes(b"\x1b")
         assert await asyncio.wait_for(second_result, 1) is None
         assert runtime.active_overlay is None
-        assert not runtime.application.mouse_support()
+        assert runtime.application.mouse_support()
         assert len(runtime.application.layout.container.floats) == base_float_count
         pipe.send_bytes(b"\x04")
         await asyncio.wait_for(task, 1)
