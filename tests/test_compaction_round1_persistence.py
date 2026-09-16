@@ -197,3 +197,90 @@ def test_compaction_gallery_golden(update_goldens):
     if update_goldens:
         path.write_text(actual)
     assert path.read_text() == actual
+
+
+@pytest.mark.parametrize("capture_kind", ["replace", "reset", "summary"])
+def test_multiple_shake_markers_reuse_one_prior_context(tmp_path, monkeypatch, capture_kind):
+    from orcha_agent.core import capture as capture_module
+
+    messages = [
+        HumanMessage(content="original request", id="user"),
+        AIMessage(
+            content="",
+            id="calls",
+            tool_calls=[
+                {"id": "read-a", "name": "read", "args": {"path": "a"}},
+                {"id": "read-b", "name": "read", "args": {"path": "b"}},
+            ],
+        ),
+        ToolMessage(content="old a", id="result-a", tool_call_id="read-a"),
+        ToolMessage(content="old b", id="result-b", tool_call_id="read-b"),
+    ]
+    with SessionStore(tmp_path / "multiple-shakes.db") as store:
+        session = store.create(tmp_path, "fake:test")
+        thread = session.current_thread
+        assert thread is not None
+        capture_graph_values(
+            store, session.thread_id, thread, {"messages": messages}, only_if_new=False
+        )
+        changed = [
+            *messages[:2],
+            *[
+                message.model_copy(
+                    update={
+                        "content": f"replacement {index}",
+                        "additional_kwargs": {"compaction_shake": {"tokens_before": 100 + index}},
+                    }
+                )
+                for index, message in enumerate(messages[2:])
+            ],
+        ]
+        if capture_kind == "summary":
+            changed = [create_summary_message("decisions retained", message_id="summary"), *changed]
+        elif capture_kind == "reset":
+            changed = [HumanMessage(content="new request", id="new-user"), *changed]
+
+        calls = []
+
+        def reconstruct(path):
+            calls.append(len(path))
+            return build_context(path)
+
+        monkeypatch.setattr(capture_module, "build_context", reconstruct)
+        capture_graph_values(
+            store, session.thread_id, thread, {"messages": changed}, only_if_new=False
+        )
+        assert len(calls) == 1
+        path = Ledger(store).path(session.thread_id)
+        replay = build_context(path).messages
+        assert [
+            (message.tool_call_id, message.content)
+            for message in replay
+            if isinstance(message, ToolMessage)
+        ] == [("read-a", "replacement 0"), ("read-b", "replacement 1")]
+        shakes = [
+            entry
+            for entry in path
+            if isinstance(entry, CompactionEntry) and entry.method == "shake"
+        ]
+        assert [entry.tokens_before for entry in shakes] == [100, 101]
+        if capture_kind == "summary":
+            assert any("decisions retained" in message.text for message in replay)
+
+        # A reset that echoes both already-recorded markers must not emit them again.
+        calls.clear()
+        capture_graph_values(
+            store,
+            session.thread_id,
+            thread,
+            {"messages": [HumanMessage(content="reset again", id="again"), *changed]},
+            only_if_new=False,
+        )
+        assert len(calls) == 1
+        assert (
+            sum(
+                isinstance(entry, CompactionEntry) and entry.method == "shake"
+                for entry in Ledger(store).path(session.thread_id)
+            )
+            == 2
+        )

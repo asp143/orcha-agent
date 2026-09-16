@@ -18,6 +18,7 @@ from langchain_core.messages import (
 from .capture_cursor import CaptureBatch, FingerprintCache, message_digest
 from .ledger import (
     CompactionEntry,
+    Context,
     CustomEntry,
     Entry,
     Ledger,
@@ -139,10 +140,14 @@ def capture_graph_values(
     messages: list[BaseMessage] = list(values.get("messages", ()))
     fingerprints = cache.messages_digest(messages)
     previous = persisted
+    path: list[Entry] | None = None
+    context: Context | None = None
     if not previous and thread["captured"]:
         # One-time migration of old cursor rows. Use ledger content, not current
         # graph content, so same-ID changes during recovery remain detectable.
-        previous_messages = build_context(Ledger(store).path(session_id)).messages
+        path = Ledger(store).path(session_id)
+        context = build_context(path)
+        previous_messages = context.messages
         previous = [(message.id, message_digest(message)) for message in previous_messages]
     unchanged_prefix = len(fingerprints) >= len(previous) and all(
         current == old or (not old[1] and current[0] == old[0])
@@ -181,8 +186,10 @@ def capture_graph_values(
     )
     changed = []
     if summary_index is not None:
-        path = Ledger(store).path(session_id)
-        context = build_context(path)
+        if context is None:
+            path = Ledger(store).path(session_id)
+            context = build_context(path)
+        assert path is not None
         candidates = messages[summary_index + 1 :]
         # Reuse only an ordered suffix of the live persisted messages. Arbitrary
         # reorder/drop still needs a snapshot, never ID-based deduplication.
@@ -226,7 +233,9 @@ def capture_graph_values(
             ]
         candidates = candidates[retained_count:]
     elif reset:
-        context = build_context(Ledger(store).path(session_id))
+        if context is None:
+            path = Ledger(store).path(session_id)
+            context = build_context(path)
         entries.append(CustomEntry(custom_type="checkpoint_reset", data={}))
         if any(
             isinstance(message, HumanMessage)
@@ -265,7 +274,10 @@ def capture_graph_values(
         metadata = message.additional_kwargs.get("compaction_shake")
         if isinstance(metadata, dict):
             # An unchanged marker replayed in a reset snapshot is not a new event.
-            old_messages = build_context(Ledger(store).path(session_id)).messages
+            if context is None:
+                path = Ledger(store).path(session_id)
+                context = build_context(path)
+            old_messages = context.messages
             if any(
                 old.id == message.id and old.additional_kwargs.get("compaction_shake") == metadata
                 for old in old_messages
