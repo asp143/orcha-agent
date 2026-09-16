@@ -7,7 +7,7 @@ import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
@@ -19,10 +19,12 @@ from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, VSpli
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.processors import BeforeInput
 
-from orcha_agent.core.ledger import Ledger, build_context
 from orcha_agent.tui.frame import Block, Frame
 
 from .base import Overlay
+
+if TYPE_CHECKING:
+    from orcha_agent.core.ledger import Ledger as Ledger, build_context as build_context
 
 _STATUS_GLYPHS = {
     "queued": "○",
@@ -139,6 +141,8 @@ def _ledger_messages(ctx: Any, run: Any) -> list[Any]:
     store = getattr(run, "session", None) or getattr(ctx, "session", None)
     if store is None:
         return []
+    from orcha_agent.core.ledger import Ledger, build_context
+
     try:
         return list(build_context(Ledger(store).path(session_id)).messages)
     except Exception:
