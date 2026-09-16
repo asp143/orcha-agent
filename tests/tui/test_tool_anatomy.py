@@ -47,7 +47,7 @@ def test_read_call_result_and_group_match_omp_anatomy() -> None:
         )
     )
 
-    assert "⠋ Read: src/app.py:5-12" in pending
+    assert "⠋ Read src/app.py:5-12" in pending
     assert "≡ Read src/app.py:5-19" in result
     assert " 5│line 1" in result
     assert "… 3 more lines · Ctrl+O to expand" in result

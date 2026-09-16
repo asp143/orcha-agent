@@ -127,6 +127,12 @@ TOOL_GALLERY_FIXTURES: dict[
         result={"diff": _DIFF},
         error="edit did not apply",
     ),
+    "long_read_file": _tool_states(
+        "read_file",
+        args={"path": "src/" + "nested-module/" * 16 + "renderer_output.py"},
+        result="\n".join(f"source {index}" for index in range(15)),
+        error="file is not readable",
+    ),
     "delete": _tool_states(
         "delete",
         args={"path": "tmp/obsolete.txt"},

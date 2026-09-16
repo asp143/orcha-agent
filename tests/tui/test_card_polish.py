@@ -37,7 +37,7 @@ def test_long_tool_header_retains_title_path_styles_and_right_aligned_time(width
         width=width,
     )
     top = value.plain.splitlines()[1]
-    assert len(top) == width and top.endswith("Took 1.2s─╮")
+    assert len(top) == width and top.endswith("Took 1.2s ─╮")
     assert "source.py" in top and "…" in top
     title = value.get_style_at_offset(console, value.plain.index("Read"))
     glyph = value.get_style_at_offset(console, value.plain.index("≡"))

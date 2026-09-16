@@ -42,6 +42,7 @@ def test_tool_gallery_covers_every_builtin_tool_in_every_state(tmp_path: Path) -
         "execute",
         "ls",
         "read_file",
+        "long_read_file",
         "write_file",
         "edit_file",
         "delete",

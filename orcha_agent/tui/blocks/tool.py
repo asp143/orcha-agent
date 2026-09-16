@@ -307,7 +307,7 @@ def _header_with_timing(header: str | Text, block: Block, state: str, theme: Any
         if name in _BASH or name == "bash_jobs"
         else name
     )
-    defaults = {"read": "≡", "write": "✎", "edit": "±", "bash": "$", "todo": "✓"}
+    defaults = {"read": "≡", "write": "✎", "delete": "×", "edit": "±", "bash": "$", "todo": "✓"}
     glyph = (
         str(theme_symbol(theme, f"tool.{tool_key}", defaults.get(tool_key, "◆")))
         if state == "done"
@@ -379,7 +379,7 @@ def _frame(
     pieces = header_value.split("\t")
     header_value = pieces[0]
     timing = pieces[1] if len(pieces) > 1 else Text()
-    timing_width = timing.cell_len + 3 if timing else 0
+    timing_width = timing.cell_len + 4 if timing else 0
     available = max(0, max_header_width - timing_width)
     if header_value.cell_len > available:
         # Slice Text rather than rebuilding it so title, path and status styles survive.
@@ -400,6 +400,7 @@ def _frame(
     if timing:
         top.append(" · ", style=border)
         top.append(timing)
+        top.append(" ", style=border)
     top.append(f"{h}{tr}", style=border)
     _append_line(output, top)
     capacity = max(0, budget_rows - 2)
@@ -536,11 +537,7 @@ def _read_display_rows(
         rows.append(row)
     hidden = len(source_rows) - len(visible)
     if hidden:
-        rows.append(
-            Text(
-                f"{' ' * (gutter_width + 1)}… {hidden} more lines {EXPAND_HINT}", style=gutter_style
-            )
-        )
+        rows.append(Text(f"… {hidden} more lines {EXPAND_HINT}", style=gutter_style))
     return rows
 
 
@@ -574,7 +571,7 @@ def _read_rows(
         return f"• Read ({len(calls)})", rows
     path = _path(args, cwd)
     if _state(block) == "running":
-        return f"Read: {path}{_selection(args)}", []
+        return f"Read {path}{_selection(args)}", []
     source_rows, first, last = _read_source_rows(block.data.get("result"), args)
     if str(block.data.get("name")) == "read" and first is not None:
         path = re.sub(r"(?::(?:raw|[-\d,+]+))+$", "", path)

@@ -189,6 +189,7 @@ SYMBOL_PRESETS: dict[str, dict[str, str]] = {
 _TOOL_KEYS = (
     "read",
     "write",
+    "delete",
     "edit",
     "bash",
     "ls",
@@ -200,9 +201,9 @@ _TOOL_KEYS = (
     "ask",
     "generic",
 )
-_TOOL_UNICODE = ("≡", "✎", "±", "$", "▤", "⌕", "⌕", "◎", "✓", "◇", "?", "◆")
-_TOOL_ASCII = ("R", "W", "E", "$", "L", "G", "G", "W", "+", "A", "?", "*")
-_TOOL_NERD = ("󰈙", "󰏫", "󰷈", "", "", "", "", "󰖟", "󰄬", "󰙅", "󰋽", "󰒓")
+_TOOL_UNICODE = ("≡", "✎", "×", "±", "$", "▤", "⌕", "⌕", "◎", "✓", "◇", "?", "◆")
+_TOOL_ASCII = ("R", "W", "D", "E", "$", "L", "G", "G", "W", "+", "A", "?", "*")
+_TOOL_NERD = ("󰈙", "󰏫", "󰆴", "󰷈", "", "", "", "", "󰖟", "󰄬", "󰙅", "󰋽", "󰒓")
 SYMBOL_KEYS += tuple(f"tool.{key}" for key in _TOOL_KEYS) + (
     "todo.pending",
     "todo.running",
