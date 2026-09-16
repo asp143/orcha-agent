@@ -622,6 +622,28 @@ class Ledger:
         reverse_path.reverse()
         return reverse_path
 
+    def _active_rows(self, session_id: str, leaf_id: str | None) -> list[sqlite3.Row]:
+        # UNION (not UNION ALL) terminates corrupt cycles; the Python walker
+        # still reports both cycles and missing parents explicitly. Recurse on
+        # IDs only so abandoned payloads never cross the storage boundary.
+        return self.store._connection.execute(
+            """
+            WITH RECURSIVE ancestors(id, parent_id) AS (
+                SELECT id, parent_id FROM entries
+                WHERE session_id = ? AND id = ?
+                UNION
+                SELECT parent.id, parent.parent_id FROM entries AS parent
+                JOIN ancestors AS child ON parent.id = child.parent_id
+                WHERE parent.session_id = ?
+            )
+            SELECT entry.session_id, entry.id, entry.parent_id,
+                   entry.type, entry.ts, entry.payload
+            FROM ancestors JOIN entries AS entry ON entry.id = ancestors.id
+            WHERE entry.session_id = ?
+            """,
+            (session_id, leaf_id, session_id, session_id),
+        ).fetchall()
+
     def path(self, session_id: str, leaf: str | None = None) -> list[Entry]:
         with self.store.saver.lock:
             connection = self.store._connection
@@ -629,17 +651,14 @@ class Ledger:
                 session = connection.execute(
                     "SELECT leaf_id FROM sessions WHERE thread_id = ?", (session_id,)
                 ).fetchone()
-                leaf_id = None if session is None else session["leaf_id"]
+                if session is None:
+                    raise EntryNotFound(session_id)
+                leaf_id = session["leaf_id"]
             else:
                 leaf_id = leaf
-            rows = connection.execute(
-                """
-                SELECT session_id, id, parent_id, type, ts, payload
-                FROM entries WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchall()
+            rows = self._active_rows(session_id, leaf_id)
         return self._path_from_rows(rows, leaf_id)
+
     def latest_custom(
         self,
         session_id: str,
@@ -688,13 +707,7 @@ class Ledger:
                     raise EntryNotFound(session_id)
                 if target is None:
                     raise EntryNotFound(new_session_id)
-                rows = connection.execute(
-                    """
-                    SELECT session_id, id, parent_id, type, ts, payload
-                    FROM entries WHERE session_id = ?
-                    """,
-                    (session_id,),
-                ).fetchall()
+                rows = self._active_rows(session_id, source["leaf_id"])
                 active_path = self._path_from_rows(rows, source["leaf_id"])
                 for seq, entry in enumerate(active_path):
                     entry_type, payload = _encode_payload(entry)

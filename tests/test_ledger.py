@@ -971,3 +971,21 @@ def test_export_session_force_refuses_to_follow_a_symlink(
 
     assert error.value.errno == errno.ELOOP
     assert target.read_text(encoding="utf-8") == "keep target"
+
+
+def test_active_query_transfers_only_ancestors_and_rejects_missing_session(
+    ledger_session: tuple[Ledger, SessionStore, str],
+) -> None:
+    ledger, store, session_id = ledger_session
+    root = ledger.append(session_id, _message(HumanMessage(content="root")))
+    ledger.append_many(
+        session_id,
+        [CustomEntry(custom_type="abandoned", data="x" * 1024) for _ in range(500)],
+    )
+    ledger.branch(session_id, root.id)
+    leaf = ledger.append(session_id, _message(HumanMessage(content="active")))
+    with store.saver.lock:
+        rows = ledger._active_rows(session_id, leaf.id)
+    assert {row["id"] for row in rows} == {root.id, leaf.id}
+    with pytest.raises(EntryNotFound, match="missing-session"):
+        ledger.path("missing-session")
